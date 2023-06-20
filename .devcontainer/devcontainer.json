@@ -1,0 +1,21 @@
+// For format details, see https://aka.ms/devcontainer.json.
+{
+	"name": "resin-container",
+
+    "build": {
+	    "dockerfile": "../Dockerfile"
+    },
+
+	"workspaceMount": "source=${localWorkspaceFolder},target=/home/developer/resin,type=bind",
+	"workspaceFolder": "/home/developer/resin",
+
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"rust-lang.rust-analyzer",
+				"redhat.vscode-yaml",
+				"ms-iot.vscode-ros"
+			]
+		}
+	}
+}
