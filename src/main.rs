@@ -81,14 +81,26 @@ fn main() {
     //     println!("{}", measurement);
     // }
 
-    let a = shared_leaf(1.0, 0.0, "a".to_string());
-    let b = shared_leaf(2.0, 0.0, "b".to_string());
-    let c = shared_leaf(3.0, 0.0, "c".to_string());
+    let a = shared_leaf(0.5, 0.0, "a".to_string());
+    let b = shared_leaf(0.9, 0.0, "b".to_string());
+    let c = shared_leaf(0.1, 0.0, "c".to_string());
 
-    let rc = ReactiveCircuit::new();
-    rc.add_world(vec![a.clone(), b.clone(), c.clone()]);
-    rc.add_world(vec![a.clone(), b.clone(), c.clone()]);
+    let rc =
+        ReactiveCircuit::from_worlds(vec![vec![a.clone(), b.clone()], vec![a.clone(), c.clone()]]);
     println!("{}", rc.value());
+    rc.remove(&a);
+    println!("{}", rc.value());
+
+    let all = vec![a, b, c];
+    let power_set = ReactiveCircuit::power_set(&all);
+    for set in power_set {
+        println!(
+            "{}",
+            set.iter().fold(String::new(), |acc, &leaf| acc
+                + &leaf.lock().unwrap().to_string()
+                + ", ")
+        );
+    }
 
     // let c = LeafNode::new(2.0);
 
