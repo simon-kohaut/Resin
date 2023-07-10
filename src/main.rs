@@ -8,9 +8,11 @@ mod frequency;
 mod kalman;
 mod nodes;
 mod reactive_circuit;
+mod utility;
 
 use crate::nodes::shared_leaf;
 use crate::reactive_circuit::ReactiveCircuit;
+use crate::utility::power_set;
 
 struct RepublisherNode {
     node: rclrs::Node,
@@ -91,16 +93,8 @@ fn main() {
     rc.remove(&a);
     println!("{}", rc.value());
 
-    let all = vec![a, b, c];
-    let power_set = ReactiveCircuit::power_set(&all);
-    for set in power_set {
-        println!(
-            "{}",
-            set.iter().fold(String::new(), |acc, &leaf| acc
-                + &leaf.lock().unwrap().to_string()
-                + ", ")
-        );
-    }
+    // let all = vec![a, b, c];
+    // let power_set = power_set(&all);
 
     // let c = LeafNode::new(2.0);
 

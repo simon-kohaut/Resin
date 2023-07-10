@@ -1,5 +1,5 @@
-use ndarray::{array, concatenate, Array, Array1, Axis};
-use std::fmt;
+use ndarray::Array;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use crate::nodes::SharedLeaf;
@@ -9,10 +9,10 @@ pub struct Operator {
     pub value: f64,
     leafs: Vec<SharedLeaf>,
     operators: Vec<SharedOperator>,
-    weights: Array1<f64>,
     operation: Operation,
     valid: bool,
     parents: Vec<SharedOperator>,
+    domain: HashSet<String>,
 }
 
 pub type SharedOperator = Arc<Mutex<Operator>>;
@@ -56,35 +56,19 @@ impl Operator {
         // Recompute own value
         match self.operation {
             Operation::Sum => {
-                self.value = Array::from_vec(operands).dot(&self.weights);
+                self.value = Array::from_vec(operands).sum();
             }
             Operation::Product => {
                 self.value = Array::from_vec(operands).product();
             }
             Operation::Max => {
                 // TODO: Set max rather than sum
-                self.value = Array::from_vec(operands).dot(&self.weights);
+                self.value = Array::from_vec(operands).sum();
             }
         }
 
         // After recomputing the value, this node is valid again
         self.valid = true;
-    }
-
-    pub fn contains(&self, name: &String) -> bool {
-        for leaf in self.leafs.iter() {
-            if leaf.lock().unwrap().name == *name {
-                return true;
-            }
-        }
-
-        for operator in self.operators.iter() {
-            if operator.lock().unwrap().contains(&name) {
-                return true;
-            }
-        }
-
-        false
     }
 
     pub fn invalidate(&mut self) {
@@ -98,23 +82,68 @@ impl Operator {
         }
     }
 
-    pub fn remove(&mut self, leaf: &SharedLeaf) {
-        for operator in &self.operators {
-            operator.lock().unwrap().remove(&leaf);
+    pub fn leafs_contain(&self, searched_leaf: &SharedLeaf) -> bool {
+        for leaf in self.leafs.iter() {
+            if Arc::ptr_eq(&leaf, &searched_leaf) {
+                return true;
+            }
         }
 
+        false
+    }
+
+    pub fn operators_contain(&self, searched_leaf: &SharedLeaf) -> bool {
+        for operator in &self.operators {
+            if operator.lock().unwrap().contains(&searched_leaf) {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    pub fn contains(&self, searched_leaf: &SharedLeaf) -> bool {
+        self.leafs_contain(searched_leaf) || self.operators_contain(searched_leaf)
+    }
+
+    pub fn remove_from_leafs(&mut self, leaf: &SharedLeaf) {
         let number_leafs_before = self.leafs.len();
+
         self.leafs.retain(|l| Arc::ptr_eq(&l, &leaf));
 
         if self.leafs.len() < number_leafs_before {
             self.invalidate();
         }
     }
-}
 
-impl fmt::Display for Operator {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "({:?} = {})", self.operation, self.value)
+    pub fn remove_from_operators(&mut self, leaf: &SharedLeaf) {
+        for operator in &self.operators {
+            operator.lock().unwrap().remove(&leaf);
+        }
+    }
+
+    pub fn remove(&mut self, leaf: &SharedLeaf) {
+        self.remove_from_operators(leaf);
+        self.remove_from_leafs(leaf);
+    }
+
+    pub fn prune(&mut self) {
+        for operator in &self.operators {
+            operator.lock().unwrap().prune();
+        }
+
+        self.operators
+            .retain(|o| o.lock().unwrap().leafs.len() > 0 || o.lock().unwrap().operators.len() > 0)
+    }
+
+    pub fn update_domain(&mut self) {
+        for operator in &self.operators {
+            self.domain.extend(operator.lock().unwrap().domain.clone());
+        }
+
+        for parent in &self.parents {
+            parent.lock().unwrap().update_domain();
+        }
     }
 }
 
@@ -123,11 +152,9 @@ pub fn add_leaf(leaf: SharedLeaf, operator: SharedOperator) {
     let mut operator_access = operator.lock().unwrap();
     operator_access.leafs.push(leaf.clone());
     operator_access.invalidate();
-    operator_access.weights = concatenate(
-        Axis(0),
-        &[operator_access.weights.view(), array![1.0].view()],
-    )
-    .unwrap();
+    operator_access
+        .domain
+        .insert(leaf.lock().unwrap().name.clone());
 }
 
 pub fn add_operator(operator: SharedOperator, parent: SharedOperator) {
@@ -135,8 +162,7 @@ pub fn add_operator(operator: SharedOperator, parent: SharedOperator) {
     let mut parent_access = parent.lock().unwrap();
     parent_access.operators.push(operator.clone());
     parent_access.invalidate();
-    parent_access.weights =
-        concatenate(Axis(0), &[parent_access.weights.view(), array![1.0].view()]).unwrap();
+    parent_access.update_domain();
 }
 
 pub fn sum_node() -> SharedOperator {
@@ -144,10 +170,10 @@ pub fn sum_node() -> SharedOperator {
         value: 0.0,
         leafs: Vec::new(),
         operators: Vec::new(),
-        weights: Array1::from_vec(Vec::new()),
         operation: Operation::Sum,
         valid: false,
         parents: Vec::new(),
+        domain: HashSet::new(),
     }))
 }
 
@@ -156,10 +182,10 @@ pub fn product_node() -> SharedOperator {
         value: 0.0,
         leafs: Vec::new(),
         operators: Vec::new(),
-        weights: Array1::from_vec(Vec::new()),
         operation: Operation::Product,
         valid: false,
         parents: Vec::new(),
+        domain: HashSet::new(),
     }))
 }
 
@@ -168,9 +194,9 @@ pub fn max_node() -> SharedOperator {
         value: 0.0,
         leafs: Vec::new(),
         operators: Vec::new(),
-        weights: Array1::from_vec(Vec::new()),
         operation: Operation::Max,
         valid: false,
         parents: Vec::new(),
+        domain: HashSet::new(),
     }))
 }

@@ -1,13 +1,12 @@
 use crate::nodes::SharedOperator;
-use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::vec::Vec;
 
 #[derive(Debug)]
 pub struct Leaf {
     value: f64,
+    frequency: f64,
     pub parents: Vec<SharedOperator>,
-    pub frequency: f64,
     pub name: String,
 }
 
@@ -32,11 +31,5 @@ impl Leaf {
         for parent in &self.parents {
             parent.lock().unwrap().invalidate();
         }
-    }
-}
-
-impl fmt::Display for Leaf {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "(Leaf {} = {})", self.name, self.value)
     }
 }
