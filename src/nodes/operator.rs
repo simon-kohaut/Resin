@@ -8,7 +8,7 @@ use crate::nodes::SharedLeaf;
 pub struct Operator {
     pub value: f64,
     leafs: Vec<SharedLeaf>,
-    operators: Vec<SharedOperator>,
+    pub operators: Vec<SharedOperator>,
     operation: Operation,
     valid: bool,
     parents: Vec<SharedOperator>,
@@ -143,6 +143,20 @@ impl Operator {
 
         for parent in &self.parents {
             parent.lock().unwrap().update_domain();
+        }
+    }
+
+    pub fn lift(&mut self, leaf: SharedLeaf) {
+        if self.leafs_contain(&leaf) {
+            self.remove_from_leafs(&leaf);
+            
+            for parent in &self.parents {
+                add_leaf(leaf.clone(), parent.clone());
+            }
+        }
+
+        for operator in &self.operators {
+            operator.lock().unwrap().lift(leaf.clone());
         }
     }
 }

@@ -1,94 +1,74 @@
-use std::sync::Arc;
+// Standard library
+use std::sync::{Arc, Mutex};
 
+// Resin
 use crate::nodes::SharedLeaf;
-use crate::nodes::SharedOperator;
-use crate::nodes::{add_leaf, add_operator, product_node, sum_node};
 
-pub struct Layer {
-    roots: Vec<SharedOperator>,
-    leafs: Vec<SharedLeaf>,
-}
 
 pub struct ReactiveCircuit {
-    pub root: SharedOperator,
-    leafs: Vec<Vec<SharedLeaf>>,
-    layers: Vec<Layer>,
+    models: Vec<Model>,
+    valid: bool
+}
+
+pub struct Model {
+    leafs: Vec<SharedLeaf>,
+    circuit: Option<ReactiveCircuit>
 }
 
 impl ReactiveCircuit {
+
     pub fn new() -> Self {
-        Self {
-            leafs: Vec::new(),
-            root: sum_node(),
-            layers: Vec::new(),
-        }
+        Self { models: Vec::new(), valid: false }
     }
 
-    pub fn from_worlds(worlds: Vec<Vec<SharedLeaf>>) -> Self {
-        let circuit = Self::new();
-
-        for world in worlds {
-            circuit.add_world(world);
-        }
-
-        circuit
+    pub fn add_model(&mut self, model: Model) {
+        self.models.push(model);
     }
 
     pub fn value(&self) -> f64 {
-        let mut root_guard = self.root.lock().unwrap();
-        root_guard.update();
-        root_guard.value
-    }
+        let mut sum = 0.0; 
 
-    pub fn remove(&self, leaf: &SharedLeaf) {
-        let mut root_guard = self.root.lock().unwrap();
-        root_guard.remove(&leaf);
-        root_guard.invalidate();
-    }
-
-    pub fn add_world(&self, world: Vec<SharedLeaf>) {
-        let product = product_node();
-        for leaf in world {
-            add_leaf(leaf.clone(), product.clone());
-        }
-        add_operator(product.clone(), self.root.clone());
-    }
-
-    pub fn lift(&mut self, leaf: &SharedLeaf) {
-        let mut layer_index = 0;
-        // let mut leaf_containers = Vec::new();
-        for layer in &mut self.layers {
-            if layer.contains(&leaf) {
-                layer_index += 1;
-                // leaf_containers = layer.leaf_containers(&leaf);
-                layer.remove(&leaf);
-                layer.prune();
-            }
+        for model in &self.models {
+            sum += model.value();
         }
 
-        // let mut leaf_layer = &mut self.layers[layer_index];
-        // let mut layer_above = &mut self.layers[layer_index - 1];
-
-        // leaf_layer.leafs.retain(|l| !Arc::ptr_eq(l, leaf));
-        // layer_above.leafs.push(leaf.clone());
+        sum
     }
+
+    pub fn remove(&mut self, leaf: SharedLeaf) {
+        for model in &mut self.models {
+            model.remove(leaf.clone());
+        }
+    }
+
 }
 
-impl Layer {
-    pub fn leaf_containers(&self, leaf: &SharedLeaf) -> Vec<SharedOperator> {
-        let mut containers = Vec::new();
-        for root in &self.roots {
-            if root.lock().unwrap().contains(leaf) {
-                containers.push(root.clone());
-            }
-        }
+impl Model {
 
-        containers
+    pub fn new(leafs: Vec<SharedLeaf>, circuit: Option<ReactiveCircuit>) -> Self{
+        Self { leafs, circuit }
     }
 
-    pub fn contains(&self, leaf: &SharedLeaf) -> bool {
-        for own_leaf in &self.leafs {
-            if Arc::ptr_eq(&own_leaf, &leaf) {
+    // Read interface
+    pub fn value(&self) -> f64 {
+        let mut product = 1.0; 
+
+        for leaf in &self.leafs {
+            let leaf_guard = leaf.lock().unwrap();
+            product *= leaf_guard.get_value();
+        }
+
+        match &self.circuit {
+            Some(circuit) => product *= circuit.value(),
+            None => (),
+        }
+
+        product
+    }
+
+    pub fn contains(&self, searched_leaf: SharedLeaf) -> bool {
+        for leaf in self.leafs.iter() {
+            if Arc::ptr_eq(&leaf, &searched_leaf) {
                 return true;
             }
         }
@@ -96,17 +76,33 @@ impl Layer {
         false
     }
 
-    pub fn remove(&mut self, leaf: &SharedLeaf) {
-        self.leafs.retain(|l| Arc::ptr_eq(&l, &leaf));
-
-        for root in &mut self.roots {
-            root.lock().unwrap().remove(&leaf);
-        }
+    // Write interface
+    pub fn append(&mut self, leaf: SharedLeaf) {
+        self.leafs.push(leaf.clone());
     }
 
-    pub fn prune(&mut self) {
-        for root in &mut self.roots {
-            root.lock().unwrap().prune();
+    pub fn remove(&mut self, leaf: SharedLeaf) {
+        self.leafs.retain(|l| Arc::ptr_eq(&l, &leaf));
+    }
+
+}
+
+pub fn drop(circuit: &mut ReactiveCircuit, leaf: SharedLeaf) {
+    for model in &mut circuit.models {
+        if model.contains(leaf.clone()) {
+            model.remove(leaf.clone());
+            match model.circuit {
+                Some(ref mut model_circuit) => {
+                    for model in &mut model_circuit.models {
+                        model.append(leaf.clone());
+                    }
+                },
+                None => {
+                    let mut new_circuit = ReactiveCircuit::new();
+                    new_circuit.add_model(Model::new(vec![leaf.clone()], None));
+                    model.circuit = Some(new_circuit);
+                }
+            }
         }
     }
 }
