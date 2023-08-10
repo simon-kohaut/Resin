@@ -149,7 +149,7 @@ impl Operator {
     pub fn lift(&mut self, leaf: SharedLeaf) {
         if self.leafs_contain(&leaf) {
             self.remove_from_leafs(&leaf);
-            
+
             for parent in &self.parents {
                 add_leaf(leaf.clone(), parent.clone());
             }

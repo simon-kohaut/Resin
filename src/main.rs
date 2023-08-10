@@ -1,4 +1,6 @@
 #![allow(dead_code)]
+#[macro_use]
+extern crate lazy_static;
 
 // use plotly::{Plot, Scatter};
 use std::sync::{Arc, Mutex};
@@ -11,9 +13,8 @@ mod reactive_circuit;
 mod utility;
 
 use crate::nodes::shared_leaf;
-use crate::reactive_circuit::{ReactiveCircuit, Model, drop};
+use crate::reactive_circuit::{drop, lift, Model, ReactiveCircuit};
 use crate::utility::power_set;
-
 
 fn main() {
     // Result<(), rclrs::RclrsError> {
@@ -47,13 +48,33 @@ fn main() {
     let b = shared_leaf(0.9, 0.0, "b".to_string());
     let c = shared_leaf(0.1, 0.0, "c".to_string());
 
-    let mut rc = ReactiveCircuit::new();
-    rc.add_model(Model::new(vec![a.clone(), b.clone()], None));
-    rc.add_model(Model::new(vec![a.clone(), c.clone()], None));
-    println!("{}", rc.value());
+    let rc = Arc::new(Mutex::new(ReactiveCircuit::new()));
+    rc.lock().unwrap().add_model(Arc::new(Mutex::new(Model::new(
+        vec![a.clone(), b.clone()],
+        None,
+    ))));
+    rc.lock().unwrap().add_model(Arc::new(Mutex::new(Model::new(
+        vec![a.clone(), c.clone()],
+        None,
+    ))));
+    // println!("{}", rc.value());
+    // println!("{:#?}", rc);
     // rc.remove(a.clone());
-    drop(&mut rc, a.clone());
-    println!("{}", rc.value());
+    // drop(&mut rc, a.clone());
+    // drop(&mut rc, a.clone());
+    // println!("{}", rc.value());
+    // println!("{:#?}", rc);
+
+    println!("Original: \n {:#?}", rc);
+    drop(rc.clone(), a.clone());
+    println!("Drop a: \n {:#?}", rc);
+    // println!("Lift a: \n {:#?}", rc);
+    // drop(rc.clone(), a.clone());
+    // println!("Drop a: \n {:#?}", rc);
+    // println!("{:#?}", rc);
+    // println!("{}", rc.lock().unwrap().value());
+    // lift(rc.clone(), a.clone());
+    // println!("{:#?}", rc);
 
     // let mut rc = RC::new();
     // rc.add_product(vec![a.clone(), b.clone()]);
