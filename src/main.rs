@@ -1,6 +1,4 @@
 #![allow(dead_code)]
-#[macro_use]
-extern crate lazy_static;
 
 // use plotly::{Plot, Scatter};
 use std::sync::{Arc, Mutex};
@@ -13,7 +11,7 @@ mod reactive_circuit;
 mod utility;
 
 use crate::nodes::shared_leaf;
-use crate::reactive_circuit::{drop, lift, Model, ReactiveCircuit};
+use crate::reactive_circuit::{drop, Model, ReactiveCircuit};
 use crate::utility::power_set;
 
 fn main() {
@@ -46,29 +44,31 @@ fn main() {
 
     let a = shared_leaf(0.5, 0.0, "a".to_string());
     let b = shared_leaf(0.9, 0.0, "b".to_string());
-    let c = shared_leaf(0.1, 0.0, "c".to_string());
+    let c = shared_leaf(0.25, 0.0, "c".to_string());
+    let d = shared_leaf(0.3, 0.0, "d".to_string());
+    let e = shared_leaf(0.8, 0.0, "e".to_string());
+    let f = shared_leaf(0.9, 0.0, "f".to_string());
 
-    let rc = Arc::new(Mutex::new(ReactiveCircuit::new()));
-    rc.lock().unwrap().add_model(Arc::new(Mutex::new(Model::new(
-        vec![a.clone(), b.clone()],
+    let mut rc = ReactiveCircuit::new();
+    rc.add_model(Model::new(
+        vec![a.clone(), b.clone(), d.clone(), e.clone()],
         None,
-    ))));
-    rc.lock().unwrap().add_model(Arc::new(Mutex::new(Model::new(
-        vec![a.clone(), c.clone()],
+    ));
+    rc.add_model(Model::new(
+        vec![a.clone(), c.clone(), e.clone(), f.clone()],
         None,
-    ))));
-    // println!("{}", rc.value());
-    // println!("{:#?}", rc);
-    // rc.remove(a.clone());
-    // drop(&mut rc, a.clone());
-    // drop(&mut rc, a.clone());
-    // println!("{}", rc.value());
-    // println!("{:#?}", rc);
+    ));
 
-    println!("Original: \n {:#?}", rc);
-    drop(rc.clone(), a.clone());
-    drop(rc.clone(), a.clone());
-    println!("Drop a: \n {:#?}", rc);
+    println!("Original: {}", &rc);
+    rc = drop(&rc, a.clone());
+    rc = drop(&rc, b.clone());
+    rc = drop(&rc, d.clone());
+    println!("Drop {{a, b, d}}: {}", &rc);
+    rc = drop(&rc, e.clone());
+    rc = drop(&rc, f.clone());
+    println!("Drop {{e, f}}: {}", &rc);
+    println!("{}", rc.value());
+
     // println!("Lift a: \n {:#?}", rc);
     // drop(rc.clone(), a.clone());
     // println!("Drop a: \n {:#?}", rc);
