@@ -67,6 +67,7 @@ fn main() {
 
     println!("Original: \n {:#?}", rc);
     drop(rc.clone(), a.clone());
+    drop(rc.clone(), a.clone());
     println!("Drop a: \n {:#?}", rc);
     // println!("Lift a: \n {:#?}", rc);
     // drop(rc.clone(), a.clone());
