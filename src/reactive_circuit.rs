@@ -124,7 +124,36 @@ impl Model {
     }
 }
 
-pub fn drop(circuit: &ReactiveCircuit, leaf: SharedLeaf) -> ReactiveCircuit{
+pub fn lift(circuit: &ReactiveCircuit, leaf: SharedLeaf) -> ReactiveCircuit {
+    let mut updated_circuit = circuit.copy();
+
+    // Assume we will only visit a circuit containing this leaf if
+    // it is the root circuit. Otherwise, we remove the leaf beforehand to
+    // not require a reference to the parent circuit
+    if updated_circuit.contains(leaf.clone()) {
+        for model in &mut updated_circuit.models {
+            model.remove(leaf.clone());
+        }
+
+        let mut new_root_circuit = ReactiveCircuit::new();
+        new_root_circuit.add_model(Model::new(vec![leaf.clone()], Some(updated_circuit.copy())));
+        updated_circuit = new_root_circuit;
+    } else {
+        for model in &mut updated_circuit.models {
+            if model.circuit.is_some() {
+                if model.circuit.as_ref().unwrap().contains(leaf.clone()) {
+                    model.circuit.as_mut().unwrap().remove(leaf.clone());
+                    model.append(leaf.clone());
+                } else {
+                    model.circuit = Some(lift(&model.circuit.as_ref().unwrap(), leaf.clone()));
+                }
+            }
+        }
+    }
+    updated_circuit
+}
+
+pub fn drop(circuit: &ReactiveCircuit, leaf: SharedLeaf) -> ReactiveCircuit {
     let mut updated_circuit = circuit.copy();
     if updated_circuit.contains(leaf.clone()) {
         for model in &mut updated_circuit.models {
@@ -154,6 +183,31 @@ pub fn drop(circuit: &ReactiveCircuit, leaf: SharedLeaf) -> ReactiveCircuit{
         }
     }
     updated_circuit
+}
+
+pub fn prune(circuit: &ReactiveCircuit) -> Option<ReactiveCircuit> {
+    let mut updated_circuit = circuit.copy();
+
+    // Prune underlying circuits
+    for model in &mut updated_circuit.models {
+        if model.circuit.is_some() {
+           model.circuit = prune(&model.circuit.as_ref().unwrap());
+        }
+    }
+
+    // Remove empty models
+    updated_circuit
+        .models
+        .retain(|m| m.leafs.len() > 0 || m.circuit.is_some());
+
+    // Remove this circuit if it is empty
+    if updated_circuit.models.len() == 0 {
+        return None;
+    }
+
+    // TODO: Merge circuits horizontally where domain of upper circuits are equal
+
+    Some(updated_circuit)
 }
 
 impl std::fmt::Display for ReactiveCircuit {
