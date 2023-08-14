@@ -7,7 +7,7 @@ mod reactive_circuit;
 mod utility;
 
 use crate::nodes::shared_leaf;
-use crate::reactive_circuit::{drop, lift, prune, Model, ReactiveCircuit};
+use crate::reactive_circuit::{Model, ReactiveCircuit};
 
 
 fn main() {
@@ -28,27 +28,40 @@ fn main() {
         None,
     ));
 
-    println!("Original: {}", &rc);
-    println!("Value: {}", rc.value());
-    rc = drop(&rc, a.clone());
-    rc = drop(&rc, b.clone());
-    rc = drop(&rc, c.clone());
-    rc = drop(&rc, d.clone());
-    rc = drop(&rc, f.clone());
-    println!("Drop {{a, b, c, d, f}}: {}", &rc);
-    println!("Value: {}", rc.value());
-    rc = drop(&rc, e.clone());
-    rc = drop(&rc, f.clone());
-    println!("Drop {{e, f}}: {}", &rc);
-    println!("Value: {}", rc.value());
-    rc = lift(&rc, a.clone());
-    rc = lift(&rc, b.clone());
-    rc = lift(&rc, d.clone());
-    rc = lift(&rc, e.clone());
-    rc = lift(&rc, f.clone());
-    println!("Lift {{a, b, d, e, f}}: {}", &rc);
-    println!("Value: {}", rc.value());
-    rc = prune(&rc).unwrap();
-    println!("Prune: {}", &rc);
-    println!("Value: {}", rc.value());
+    println!("Original: \t\t{} \t\t= {}", &rc, rc.value());
+    rc = rc.lift(vec![a.clone()]);
+    println!("Lift {{a}}: \t\t{} \t\t= {}", &rc, rc.value());
+
+    rc = rc.drop(vec![a.clone()]);
+    println!("Drop {{a}}: \t\t{} \t\t= {}", &rc, rc.value());
+
+    rc = rc.lift(vec![c.clone()]);
+    println!("Lift {{c}}: \t\t{} \t= {}", &rc, rc.value());
+
+    rc = rc.drop(vec![c.clone()]);
+    println!("Drop {{c}}: \t\t{} \t\t= {}", &rc, rc.value());
+
+    rc = rc.drop(vec![a.clone(), b.clone(), c.clone()]);
+    println!("Drop {{a, b, d}}: \t{} \t= {}", &rc, rc.value());
+
+    rc = rc.drop(vec![e.clone(), f.clone()]);
+    println!("Drop {{e, f}}: \t\t{} \t= {}", &rc, rc.value());
+
+    rc = rc.lift(vec![a.clone(), b.clone(), c.clone()]);
+    println!("Lift {{a, b, d}}: \t{} \t= {}", &rc, rc.value());
+
+    rc = rc.lift(vec![e.clone(), f.clone()]);
+    println!("Lift {{e, f}}: \t\t{} \t\t= {}", &rc, rc.value());
+
+    rc = rc.drop(vec![a.clone(), b.clone(), c.clone()]);
+    println!("Drop {{a, b, c}}: \t{} \t= {}", &rc, rc.value());
+
+    rc = rc.drop(vec![d.clone(), e.clone(), f.clone()]);
+    println!("Drop {{d, e, f}}: \t{} \t\t= {}", &rc, rc.value());
+
+    rc = rc.drop(vec![b.clone(), c.clone(), d.clone(), e.clone(), f.clone()]);
+    println!("Drop {{b, c, d, e, f}}: \t{} \t= {}", &rc, rc.value());
+
+    rc = rc.lift(vec![b.clone(), c.clone(), d.clone(), e.clone(), f.clone()]);
+    println!("Lift {{b, c, d, e, f}}: \t{} \t\t= {}", &rc, rc.value());
 }

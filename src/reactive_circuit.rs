@@ -55,6 +55,24 @@ impl ReactiveCircuit {
         copy
     }
 
+    pub fn lift(&self, leafs: Vec<SharedLeaf>) -> ReactiveCircuit {
+        let mut lifted_circuit = self.copy();
+        for leaf in &leafs {
+            lifted_circuit = lift(&lifted_circuit, leaf.clone());
+        }
+
+        prune(&lifted_circuit).unwrap()
+    }
+
+    pub fn drop(&self, leafs: Vec<SharedLeaf>) -> ReactiveCircuit {
+        let mut lifted_circuit = self.copy();
+        for leaf in &leafs {
+            lifted_circuit = drop(&lifted_circuit, leaf.clone());
+        }
+
+        prune(&lifted_circuit).unwrap()
+    }
+
     // Write interface
     pub fn remove(&mut self, leaf: SharedLeaf) {
         for model in &mut self.models {
@@ -131,25 +149,39 @@ pub fn lift(circuit: &ReactiveCircuit, leaf: SharedLeaf) -> ReactiveCircuit {
     // it is the root circuit. Otherwise, we remove the leaf beforehand to
     // not require a reference to the parent circuit
     if updated_circuit.contains(leaf.clone()) {
+        // A new root with two models, one containing the relevant leaf and a circuit
+        // of all models with that leaf, one with all models that do not contain the leaf
+        let mut root_circuit = ReactiveCircuit::new();
+        let mut non_leaf_circuit = ReactiveCircuit::new();
+        let mut leaf_circuit = ReactiveCircuit::new();
+
         for model in &mut updated_circuit.models {
-            model.remove(leaf.clone());
+            if model.contains(leaf.clone()) {
+                model.remove(leaf.clone());
+                leaf_circuit.add_model(model.copy());
+            } else {
+                non_leaf_circuit.add_model(model.copy());
+            }
         }
 
-        let mut new_root_circuit = ReactiveCircuit::new();
-        new_root_circuit.add_model(Model::new(vec![leaf.clone()], Some(updated_circuit.copy())));
-        updated_circuit = new_root_circuit;
+        root_circuit.add_model(Model::new(Vec::new(), Some(non_leaf_circuit)));
+        root_circuit.add_model(Model::new(vec![leaf.clone()], Some(leaf_circuit)));
+        updated_circuit = root_circuit;
     } else {
         for model in &mut updated_circuit.models {
             if model.circuit.is_some() {
                 if model.circuit.as_ref().unwrap().contains(leaf.clone()) {
-                    model.circuit.as_mut().unwrap().remove(leaf.clone());
                     model.append(leaf.clone());
-                } else {
+                    model.circuit.as_mut().unwrap().remove(leaf.clone());
+                }
+                else {
                     model.circuit = Some(lift(&model.circuit.as_ref().unwrap(), leaf.clone()));
+
                 }
             }
         }
     }
+
     updated_circuit
 }
 
@@ -182,6 +214,7 @@ pub fn drop(circuit: &ReactiveCircuit, leaf: SharedLeaf) -> ReactiveCircuit {
             }
         }
     }
+    
     updated_circuit
 }
 
@@ -204,8 +237,30 @@ pub fn prune(circuit: &ReactiveCircuit) -> Option<ReactiveCircuit> {
     if updated_circuit.models.len() == 0 {
         return None;
     }
+    
+    // println!("#models: {}, #leafs in model0: {}", updated_circuit.models.len(), updated_circuit.models[0].leafs.len());
+    if updated_circuit.models.len() == 1 && updated_circuit.models[0].leafs.len() == 0 {
+        let lonesome_circuit = updated_circuit.models[0].circuit.as_ref().unwrap();
+        updated_circuit = lonesome_circuit.copy();
+    }
 
-    // TODO: Merge circuits horizontally where domain of upper circuits are equal
+    // Merge all underlying circuits into one if this one does not have any leafs
+    let mut contains_leafs = false;
+    for model in &updated_circuit.models {
+        if model.leafs.len() > 0 {
+            contains_leafs = true;
+        }
+    }
+
+    if !contains_leafs {
+        let mut merge_circuit = ReactiveCircuit::new();
+        for model in &updated_circuit.models {
+            for inner_model in &model.circuit.as_ref().unwrap().models {
+                merge_circuit.add_model(inner_model.copy());
+            }
+        }
+        updated_circuit = merge_circuit;
+    }
 
     Some(updated_circuit)
 }
@@ -227,7 +282,13 @@ impl std::fmt::Display for ReactiveCircuit {
 
             // Write next RC within this ones product, i.e., (... * (d * e * ...))
             match &model.circuit {
-                Some(model_circuit) => write!(f, " * {}", model_circuit)?,
+                Some(model_circuit) => {
+                    if model.leafs.len() == 0 {
+                        write!(f, "({})", model_circuit)?
+                    } else {
+                        write!(f, " * ({})", model_circuit)?
+                    }
+                }
                 None => (),
             }
             write!(f, ")")?;
