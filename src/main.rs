@@ -9,7 +9,6 @@ mod utility;
 use crate::nodes::shared_leaf;
 use crate::reactive_circuit::{Model, ReactiveCircuit};
 
-
 fn main() {
     let a = shared_leaf(0.5, 0.0, "a".to_string());
     let b = shared_leaf(0.9, 0.0, "b".to_string());
@@ -64,4 +63,16 @@ fn main() {
 
     rc = rc.lift(vec![b.clone(), c.clone(), d.clone(), e.clone(), f.clone()]);
     println!("Lift {{b, c, d, e, f}}: \t{} \t\t= {}", &rc, rc.value());
+
+    println!("Base circuit: \n{}", rc.to_dot_file(None));
+    rc = rc.lift(vec![a.clone()]);
+    rc = rc.drop(vec![b.clone(), c.clone(), d.clone()]);
+    // rc = rc.drop(vec![d.clone(), e.clone()]);
+    println!("Optimized circuit: \t{} \t\t= {}\n{}", &rc, rc.value(), rc.to_dot_file(None));
+    
+    /*
+        abde + acef
+        (a (bde + cef))
+        (a (e (bd) + ef (c)))
+     */
 }

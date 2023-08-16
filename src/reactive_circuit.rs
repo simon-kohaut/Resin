@@ -1,5 +1,8 @@
 // Standard library
-use std::sync::{Arc, Mutex};
+use std::{
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 
 // Resin
 use crate::nodes::SharedLeaf;
@@ -71,6 +74,67 @@ impl ReactiveCircuit {
         }
 
         prune(&lifted_circuit).unwrap()
+    }
+
+    pub fn to_dot_file(&self, index: Option<i32>) -> String {
+        let mut dot_text = String::new();
+
+        let mut circuit_index = 0;
+        if index.is_some() {
+            circuit_index = index.unwrap();
+        }
+
+        dot_text += &String::from_str(&format!("rc{index} [shape=box, label=\"RC{index}\"]\n", index=circuit_index)).unwrap();
+        dot_text += &String::from_str(&format!("s{} [label=\"+\"]\n", circuit_index)).unwrap();
+        dot_text += &String::from_str(&format!("rc{index} -> s{index}\n", index=circuit_index)).unwrap();
+
+        let mut model_index = 0;
+        for model in &self.models {
+            // Add product node for this model
+            dot_text += &String::from_str(&format!(
+                "p{}{} [label=\"*\"]\n",
+                circuit_index, model_index
+            ))
+            .unwrap();
+
+            // Add connection of sum-root to this model's product
+            dot_text += &String::from_str(&format!(
+                "s{} -> p{}{}\n",
+                circuit_index, circuit_index, model_index
+            ))
+            .unwrap();
+
+            // Add leaf node connections
+            for leaf in &model.leafs {
+                dot_text += &String::from_str(&format!(
+                    "p{}{} -> {}\n",
+                    circuit_index,
+                    model_index,
+                    leaf.lock().unwrap().name
+                ))
+                .unwrap();
+            }
+
+            if model.circuit.is_some() {
+                dot_text += &String::from_str(&format!(
+                    "p{}{} -> rc{}\n",
+                    circuit_index,
+                    model_index,
+                    circuit_index + 1
+                ))
+                .unwrap();
+
+                dot_text += &model
+                    .circuit
+                    .as_ref()
+                    .unwrap()
+                    .to_dot_file(Some(circuit_index + 1));
+            }
+
+            model_index += 1;
+        }
+
+        dot_text
     }
 
     // Write interface
@@ -173,10 +237,8 @@ pub fn lift(circuit: &ReactiveCircuit, leaf: SharedLeaf) -> ReactiveCircuit {
                 if model.circuit.as_ref().unwrap().contains(leaf.clone()) {
                     model.append(leaf.clone());
                     model.circuit.as_mut().unwrap().remove(leaf.clone());
-                }
-                else {
+                } else {
                     model.circuit = Some(lift(&model.circuit.as_ref().unwrap(), leaf.clone()));
-
                 }
             }
         }
@@ -214,7 +276,7 @@ pub fn drop(circuit: &ReactiveCircuit, leaf: SharedLeaf) -> ReactiveCircuit {
             }
         }
     }
-    
+
     updated_circuit
 }
 
@@ -224,7 +286,7 @@ pub fn prune(circuit: &ReactiveCircuit) -> Option<ReactiveCircuit> {
     // Prune underlying circuits
     for model in &mut updated_circuit.models {
         if model.circuit.is_some() {
-           model.circuit = prune(&model.circuit.as_ref().unwrap());
+            model.circuit = prune(&model.circuit.as_ref().unwrap());
         }
     }
 
@@ -237,7 +299,7 @@ pub fn prune(circuit: &ReactiveCircuit) -> Option<ReactiveCircuit> {
     if updated_circuit.models.len() == 0 {
         return None;
     }
-    
+
     // println!("#models: {}, #leafs in model0: {}", updated_circuit.models.len(), updated_circuit.models[0].leafs.len());
     if updated_circuit.models.len() == 1 && updated_circuit.models[0].leafs.len() == 0 {
         let lonesome_circuit = updated_circuit.models[0].circuit.as_ref().unwrap();
@@ -284,9 +346,9 @@ impl std::fmt::Display for ReactiveCircuit {
             match &model.circuit {
                 Some(model_circuit) => {
                     if model.leafs.len() == 0 {
-                        write!(f, "({})", model_circuit)?
+                        write!(f, "{}", model_circuit)?
                     } else {
-                        write!(f, " * ({})", model_circuit)?
+                        write!(f, " * {}", model_circuit)?
                     }
                 }
                 None => (),
