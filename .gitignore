@@ -19,6 +19,12 @@ install
 build
 log
 
+# MacOS
+.DS_Store
+
 # Local settings
 .cargo
 .vscode
+
+# Generated files
+output/
