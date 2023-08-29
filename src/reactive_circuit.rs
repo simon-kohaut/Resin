@@ -279,6 +279,7 @@ pub fn lift(circuit: &ReactiveCircuit, leaf: SharedLeaf) -> ReactiveCircuit {
         updated_circuit = root_circuit;
     } else {
         let mut non_leaf_circuit = ReactiveCircuit::new();
+        non_leaf_circuit.layer = updated_circuit.layer + 1;
         for model in &mut updated_circuit.models {
             if model.circuit.is_some() {
                 if model.circuit.as_ref().unwrap().contains(leaf.clone()) {

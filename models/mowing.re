@@ -1,14 +1,16 @@
-a <- source("/topic_name", ResinType).
-
 /* Source signals 
- * Received from sensors, MLPs and estimators
+ * Received from sensors, MLPs, estimators, ...
  */
 raining <- source("/rain_sensor", Probability).
 day <- source("/calendar", Number).
 
-// First-order logic
+/* First-order logic
+ */
 grass_long <- Probability(0.7).
-mow_grass if day != 7 and not raining and grass_long.
+sunny <- Probability(0.8).
+
+cloudy if not sunny.
+mow_grass if day != 7 and not raining and sunny and grass_long.
 
 /*
  * Target signals 

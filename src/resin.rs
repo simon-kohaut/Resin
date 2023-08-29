@@ -28,7 +28,7 @@ pub fn parse(model: String) -> Vec<ReactiveCircuit> {
     // let source_re = Regex::new(r#"(?<atom>\w) <- source\("(?<topic>\/[a-zA-Z]+(?:_[a-zA-Z]+)*)", (?<type>\w)\)\."#).unwrap();
     let target_re = Regex::new(r#"(?<atom>\w+) -> target\("(?<topic>\/[a-zA-Z]+(?:_[a-zA-Z]+)*)"\)\."#).unwrap();
     let clause_head_re = Regex::new(r#"(?<atom>\w+) if (?<body>.*?)\."#).unwrap();
-    let clause_body_re = Regex::new(r#"(?:and )?(?<atom>\w+)"#).unwrap();
+    let clause_body_re = Regex::new(r#"(?:and )?(?<atom>(?:not )?\w+(?: [!<>=]* \d+)?)"#).unwrap();
 
     for line in model.lines() {
         if source_re.is_match(line) {

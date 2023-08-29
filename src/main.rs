@@ -16,10 +16,9 @@ use std::fs::read_to_string;
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
-    println!("Hello {}!", args.source);
-
-    let model = read_to_string("models/mowing.re").unwrap();
+    let model = read_to_string(args.source).unwrap();
     parse(model);
+    return Ok(());
 
     let a = shared_leaf(0.5, 0.0, "a".to_string());
     let b = shared_leaf(0.9, 0.0, "b".to_string());
