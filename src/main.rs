@@ -5,11 +5,22 @@ mod kalman;
 mod nodes;
 mod reactive_circuit;
 mod utility;
+mod resin;
 
 use crate::nodes::shared_leaf;
 use crate::reactive_circuit::{Model, ReactiveCircuit};
+use crate::resin::{Args, parse};
+use clap::Parser;
+use std::fs::read_to_string;
 
 fn main() -> std::io::Result<()> {
+    let args = Args::parse();
+
+    println!("Hello {}!", args.source);
+
+    let model = read_to_string("models/mowing.re").unwrap();
+    parse(model);
+
     let a = shared_leaf(0.5, 0.0, "a".to_string());
     let b = shared_leaf(0.9, 0.0, "b".to_string());
     let c = shared_leaf(0.25, 0.0, "c".to_string());
@@ -33,44 +44,6 @@ fn main() -> std::io::Result<()> {
 
     println!("Original: \t\t{} \t\t= {}", &rc, rc.value());
     rc.to_svg("output/0".to_string())?;
-
-    // rc = rc.drop(vec![a.clone()]);
-    // println!("Drop {{a}}: \t\t{} \t\t= {}", &rc, rc.value());
-
-    // rc = rc.lift(vec![c.clone()]);
-    // println!("Lift {{c}}: \t\t{} \t= {}", &rc, rc.value());
-
-    // rc = rc.drop(vec![c.clone()]);
-    // println!("Drop {{c}}: \t\t{} \t\t= {}", &rc, rc.value());
-
-    // rc = rc.drop(vec![a.clone(), b.clone(), c.clone()]);
-    // println!("Drop {{a, b, d}}: \t{} \t= {}", &rc, rc.value());
-
-    // rc = rc.drop(vec![e.clone(), f.clone()]);
-    // println!("Drop {{e, f}}: \t\t{} \t= {}", &rc, rc.value());
-
-    // rc = rc.lift(vec![a.clone(), b.clone(), c.clone()]);
-    // println!("Lift {{a, b, d}}: \t{} \t= {}", &rc, rc.value());
-
-    // rc = rc.lift(vec![e.clone(), f.clone()]);
-    // println!("Lift {{e, f}}: \t\t{} \t\t= {}", &rc, rc.value());
-
-    // rc = rc.drop(vec![a.clone(), b.clone(), c.clone()]);
-    // println!("Drop {{a, b, c}}: \t{} \t= {}", &rc, rc.value());
-
-    // rc = rc.drop(vec![d.clone(), e.clone(), f.clone()]);
-    // println!("Drop {{d, e, f}}: \t{} \t\t= {}", &rc, rc.value());
-
-    // rc = rc.drop(vec![b.clone(), c.clone(), d.clone(), e.clone(), f.clone()]);
-    // println!("Drop {{b, c, d, e, f}}: \t{} \t= {}", &rc, rc.value());
-
-    // rc = rc.lift(vec![b.clone(), c.clone(), d.clone(), e.clone(), f.clone()]);
-    // println!("Lift {{b, c, d, e, f}}: \t{} \t\t= {}", &rc, rc.value());
-
-    // rc = rc.lift(vec![a.clone()]);
-    // rc = rc.drop(vec![b.clone(), c.clone(), d.clone()]);
-    // rc = rc.drop(vec![d.clone(), e.clone()]);
-    // rc = rc.lift(vec![a.clone()]);
 
     rc = rc.lift(vec![b.clone()]);
     println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
@@ -109,10 +82,4 @@ fn main() -> std::io::Result<()> {
     rc.to_svg("output/9".to_string())?;
 
     Ok(())
-
-    /*
-       abde + acef
-       (a (bde + cef))
-       (a (e (bd) + ef (c)))
-    */
 }

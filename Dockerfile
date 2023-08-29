@@ -3,7 +3,10 @@ FROM ros:iron-ros-base-jammy
 
 # Resolve APT dependencies
 RUN apt-get update -qq && apt-get upgrade -y
-RUN apt-get install curl git libclang-dev python3-pip python3-vcstool -y
+RUN apt-get install curl git libclang-dev python3-pip python3-vcstool software-proterties-common -y
+RUN add-apt-repository ppa:potassco/stable
+RUN apt-get update -qq
+RUN apt-get install gringo -y
 
 # Create and use new user with fixed ID and enable the installation of dependencies
 RUN useradd --create-home --shell /bin/bash --uid 1000 developer
@@ -16,6 +19,7 @@ ENV HOME=/home/developer
 ENV ROS_DISTRO=iron
 ENV TERM=xterm-256color
 ENV PATH=$HOME/.local/bin:$PATH
+ENV CLINGO_LIBRARY_PATH=/lib
 
 # Setup Rust with ROS2 bindings
 # Reference: https://github.com/ros2-rust/ros2_rust
@@ -29,4 +33,3 @@ RUN pip install git+https://github.com/colcon/colcon-ros-cargo.git
 RUN echo '# Environment setup' >> $HOME/.bashrc
 RUN echo 'source $HOME/.cargo/env' >> $HOME/.bashrc
 RUN echo 'source /opt/ros/$ROS_DISTRO/setup.bash' >> $HOME/.bashrc
-

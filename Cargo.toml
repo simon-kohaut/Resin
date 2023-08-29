@@ -1,7 +1,13 @@
 [package]
 name = "resin"
-version = "0.1.0"
 edition = "2021"
+version = "0.0.1"
+description = "A reactive, probabilistic logic programming language using Reactive Circuits."
+repository = "https://github.com/simon-kohaut/resin"
+keywords = [
+  "probabilistic logic",
+  "reactive circuits",
+]
 
 [dependencies]
 rclrs = "*"
@@ -11,3 +17,7 @@ ndarray = "*"
 ndarray-stats = "*"
 clippy = "*"
 itertools = "*"
+nom = "*"
+regex = "*"
+clingo = { version = "0.7.2", features = ["derive"] }
+clap = { version = "4.4.1", features = ["derive"] }
