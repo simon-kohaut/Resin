@@ -113,7 +113,7 @@ impl ReactiveCircuit {
         dot_text += &String::from_str(&format!(
             "rc{index} [shape=square, label=\"RC{index} - {layer}\"]\n",
             index = circuit_index,
-            layer=self.layer
+            layer = self.layer
         ))
         .unwrap();
         dot_text += &String::from_str(&format!("s{} [label=\"+\"]\n", circuit_index)).unwrap();
@@ -161,11 +161,7 @@ impl ReactiveCircuit {
                 ))
                 .unwrap();
 
-                dot_text += &model
-                    .circuit
-                    .as_ref()
-                    .unwrap()
-                    .to_dot_file(index);
+                dot_text += &model.circuit.as_ref().unwrap().to_dot_file(index);
             }
 
             model_index += 1;
@@ -360,7 +356,10 @@ pub fn prune(circuit: &ReactiveCircuit) -> Option<ReactiveCircuit> {
 
     // Remove this circuit if its only model is a forwarding of another circuit
     // i.e. unneccessary indirection
-    if updated_circuit.models.len() == 1 && updated_circuit.models[0].leafs.len() == 0 && updated_circuit.layer - updated_circuit.models[0].circuit.as_ref().unwrap().layer > 1 {
+    if updated_circuit.models.len() == 1
+        && updated_circuit.models[0].leafs.len() == 0
+        && updated_circuit.layer - updated_circuit.models[0].circuit.as_ref().unwrap().layer > 1
+    {
         let lonesome_circuit = updated_circuit.models[0].circuit.as_ref().unwrap();
         updated_circuit = lonesome_circuit.copy();
     }

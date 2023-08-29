@@ -4,12 +4,12 @@ mod frequency;
 mod kalman;
 mod nodes;
 mod reactive_circuit;
-mod utility;
 mod resin;
+mod utility;
 
 use crate::nodes::shared_leaf;
 use crate::reactive_circuit::{Model, ReactiveCircuit};
-use crate::resin::{Args, parse};
+use crate::resin::{parse, Args};
 use clap::Parser;
 use std::fs::read_to_string;
 
@@ -63,7 +63,7 @@ fn main() -> std::io::Result<()> {
     rc = rc.drop(vec![b.clone()]);
     println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
     rc.to_svg("output/5".to_string())?;
-    
+
     rc = rc.drop(vec![a.clone()]);
     println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
     rc.to_svg("output/6".to_string())?;
