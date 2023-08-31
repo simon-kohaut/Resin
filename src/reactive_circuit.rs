@@ -274,27 +274,29 @@ pub fn lift(circuit: &ReactiveCircuit, leaf: SharedLeaf) -> ReactiveCircuit {
         root_circuit.add_model(Model::new(vec![leaf.clone()], Some(leaf_circuit)));
         updated_circuit = root_circuit;
     } else {
-        let mut non_leaf_circuit = ReactiveCircuit::new();
-        non_leaf_circuit.layer = updated_circuit.layer + 1;
+        let mut non_leaf_models = Vec::new();
         for model in &mut updated_circuit.models {
             if model.circuit.is_some() {
                 if model.circuit.as_ref().unwrap().contains(leaf.clone()) {
-                    model.append(leaf.clone());
-
+                    let mut non_leaf_circuit = ReactiveCircuit::new();
+                    non_leaf_circuit.layer = updated_circuit.layer + 1;
                     for inner_model in &mut model.circuit.as_mut().unwrap().models {
                         if !inner_model.contains(leaf.clone()) {
                             non_leaf_circuit.add_model(inner_model.copy());
                             inner_model.empty();
                         }
                     }
-
+                    non_leaf_models.push(Model::new(model.leafs.clone(), Some(non_leaf_circuit.copy())));                    
                     model.circuit.as_mut().unwrap().remove(leaf.clone());
+                    model.append(leaf.clone());
                 } else {
                     model.circuit = Some(lift(&model.circuit.as_ref().unwrap(), leaf.clone()));
                 }
             }
         }
-        updated_circuit.add_model(Model::new(Vec::new(), Some(non_leaf_circuit.copy())));
+        for model in non_leaf_models {
+            updated_circuit.add_model(model);
+        }
     }
 
     updated_circuit

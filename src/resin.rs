@@ -44,6 +44,7 @@ pub fn parse(model: String) -> Vec<ReactiveCircuit> {
     let topic = r#""(?<topic>\/[a-zA-Z]+(?:_[a-zA-Z]+)*)""#.to_string();
     let dtype = r"(?<dtype>Probability|Density|Number)".to_string();
     let number = r"(?:[!<>=]*\s+\d+(?:\.d+)?)?)".to_string();
+    let lambda = r"(?:\s+[!<>=]+\s+\d+\.\d+".to_string();
 
     let assignment_regex = Regex::new(&format!(r"{}\s+<-\s+{}\.", atom, probability)).unwrap();
     let conditional_probability_regex =

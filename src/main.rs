@@ -14,11 +14,11 @@ use clap::Parser;
 use std::fs::read_to_string;
 
 fn main() -> std::io::Result<()> {
-    let args = Args::parse();
+    // let args = Args::parse();
 
-    let model = read_to_string(args.source).unwrap();
-    parse(model);
-    return Ok(());
+    // let model = read_to_string(args.source).unwrap();
+    // parse(model);
+    // return Ok(());
 
     let a = shared_leaf(0.5, 0.0, "a".to_string());
     let b = shared_leaf(0.9, 0.0, "b".to_string());
@@ -31,54 +31,66 @@ fn main() -> std::io::Result<()> {
 
     let mut rc = ReactiveCircuit::new();
     rc.add_model(Model::new(
-        vec![a.clone(), b.clone(), d.clone(), e.clone()],
+        vec![d.clone()],
         None,
     ));
     rc.add_model(Model::new(
-        vec![a.clone(), c.clone(), e.clone(), f.clone()],
+        vec![a.clone(), d.clone()],
         None,
     ));
-    rc.add_model(Model::new(vec![c.clone(), f.clone()], None));
-    rc.add_model(Model::new(vec![g.clone(), h.clone()], None));
+    rc.add_model(Model::new(
+        vec![b.clone(), d.clone()],
+        None,
+    ));
+    rc.add_model(Model::new(
+        vec![a.clone(), b.clone(), d.clone()],
+        None,
+    ));
+    // rc.add_model(Model::new(vec![c.clone(), f.clone()], None));
+    // rc.add_model(Model::new(vec![g.clone(), h.clone()], None));
 
     println!("Original: \t\t{} \t\t= {}", &rc, rc.value());
     rc.to_svg("output/0".to_string())?;
 
     rc = rc.lift(vec![b.clone()]);
     println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
-    rc.to_svg("output/1".to_string())?;
-
+    rc.to_svg("output/1".to_string())?;    
+    
     rc = rc.lift(vec![a.clone()]);
     println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
     rc.to_svg("output/2".to_string())?;
 
-    rc = rc.drop(vec![d.clone()]);
-    println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
-    rc.to_svg("output/3".to_string())?;
+    // rc = rc.lift(vec![a.clone()]);
+    // println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
+    // rc.to_svg("output/2".to_string())?;
 
-    rc = rc.drop(vec![e.clone()]);
-    println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
-    rc.to_svg("output/4".to_string())?;
+    // rc = rc.drop(vec![d.clone()]);
+    // println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
+    // rc.to_svg("output/3".to_string())?;
 
-    rc = rc.drop(vec![b.clone()]);
-    println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
-    rc.to_svg("output/5".to_string())?;
+    // rc = rc.drop(vec![e.clone()]);
+    // println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
+    // rc.to_svg("output/4".to_string())?;
 
-    rc = rc.drop(vec![a.clone()]);
-    println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
-    rc.to_svg("output/6".to_string())?;
+    // rc = rc.drop(vec![b.clone()]);
+    // println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
+    // rc.to_svg("output/5".to_string())?;
 
-    rc = rc.lift(vec![d.clone()]);
-    println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
-    rc.to_svg("output/7".to_string())?;
+    // rc = rc.drop(vec![a.clone()]);
+    // println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
+    // rc.to_svg("output/6".to_string())?;
 
-    rc = rc.lift(vec![e.clone()]);
-    println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
-    rc.to_svg("output/8".to_string())?;
+    // rc = rc.lift(vec![d.clone()]);
+    // println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
+    // rc.to_svg("output/7".to_string())?;
 
-    rc = rc.lift(vec![e.clone()]);
-    println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
-    rc.to_svg("output/9".to_string())?;
+    // rc = rc.lift(vec![e.clone()]);
+    // println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
+    // rc.to_svg("output/8".to_string())?;
+
+    // rc = rc.lift(vec![e.clone()]);
+    // println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
+    // rc.to_svg("output/9".to_string())?;
 
     Ok(())
 }
