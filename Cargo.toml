@@ -19,5 +19,6 @@ clippy = "*"
 itertools = "*"
 nom = "*"
 regex = "*"
+lazy_static = "*"
 clingo = { version = "0.7.2", features = ["derive"] }
 clap = { version = "4.4.1", features = ["derive"] }

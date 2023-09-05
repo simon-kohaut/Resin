@@ -14,5 +14,5 @@ mow_grass <- Probability(0.3) if not raining and day and sunny and grass_long.
  * Computed via probabilistic inference in Reactive Circuit
  */
 mow_grass -> target("/start_mowing").
-
 cloudy -> target("/weather").
+sunny -> target("/sun").

@@ -2,13 +2,13 @@
 
 mod frequency;
 mod kalman;
-mod nodes;
-mod reactive_circuit;
+mod language;
+mod circuit;
 mod resin;
 mod utility;
 
-use crate::nodes::shared_leaf;
-use crate::reactive_circuit::{Model, ReactiveCircuit};
+use crate::circuit::shared_leaf;
+use crate::circuit::{Model, ReactiveCircuit};
 use crate::resin::{parse, Args};
 use clap::Parser;
 use std::fs::read_to_string;
@@ -30,22 +30,10 @@ fn main() -> std::io::Result<()> {
     let h = shared_leaf(0.9, 0.0, "h".to_string());
 
     let mut rc = ReactiveCircuit::new();
-    rc.add_model(Model::new(
-        vec![d.clone()],
-        None,
-    ));
-    rc.add_model(Model::new(
-        vec![a.clone(), d.clone()],
-        None,
-    ));
-    rc.add_model(Model::new(
-        vec![b.clone(), d.clone()],
-        None,
-    ));
-    rc.add_model(Model::new(
-        vec![a.clone(), b.clone(), d.clone()],
-        None,
-    ));
+    rc.add_model(Model::new(vec![d.clone()], None));
+    rc.add_model(Model::new(vec![a.clone(), d.clone()], None));
+    rc.add_model(Model::new(vec![b.clone(), d.clone()], None));
+    rc.add_model(Model::new(vec![a.clone(), b.clone(), d.clone()], None));
     // rc.add_model(Model::new(vec![c.clone(), f.clone()], None));
     // rc.add_model(Model::new(vec![g.clone(), h.clone()], None));
 
@@ -54,8 +42,8 @@ fn main() -> std::io::Result<()> {
 
     rc = rc.lift(vec![b.clone()]);
     println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
-    rc.to_svg("output/1".to_string())?;    
-    
+    rc.to_svg("output/1".to_string())?;
+
     rc = rc.lift(vec![a.clone()]);
     println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
     rc.to_svg("output/2".to_string())?;

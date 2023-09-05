@@ -8,7 +8,7 @@ use std::{
 };
 
 // Resin
-use crate::nodes::SharedLeaf;
+use crate::circuit::SharedLeaf;
 
 #[derive(Debug)]
 pub struct ReactiveCircuit {
@@ -286,7 +286,10 @@ pub fn lift(circuit: &ReactiveCircuit, leaf: SharedLeaf) -> ReactiveCircuit {
                             inner_model.empty();
                         }
                     }
-                    non_leaf_models.push(Model::new(model.leafs.clone(), Some(non_leaf_circuit.copy())));                    
+                    non_leaf_models.push(Model::new(
+                        model.leafs.clone(),
+                        Some(non_leaf_circuit.copy()),
+                    ));
                     model.circuit.as_mut().unwrap().remove(leaf.clone());
                     model.append(leaf.clone());
                 } else {
