@@ -14,11 +14,11 @@ use clap::Parser;
 use std::fs::read_to_string;
 
 fn main() -> std::io::Result<()> {
-    // let args = Args::parse();
+    let args = Args::parse();
 
-    // let model = read_to_string(args.source).unwrap();
-    // parse(model);
-    // return Ok(());
+    let model = read_to_string(args.source).unwrap();
+    parse(model);
+    return Ok(());
 
     let a = shared_leaf(0.5, 0.0, "a".to_string());
     let b = shared_leaf(0.9, 0.0, "b".to_string());
