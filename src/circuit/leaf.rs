@@ -1,5 +1,4 @@
 use std::sync::{Arc, Mutex};
-use std::vec::Vec;
 
 #[derive(Debug)]
 pub struct Leaf {

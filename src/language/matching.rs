@@ -2,8 +2,8 @@ use lazy_static::lazy_static;
 use regex::Regex;
 
 // Individual language elements and named groups
-const ATOM_PATTERN: &str = r"(?<atom>\w+)";
-const LITERAL_PATTERN: &str = r"(?<literal>(?:not\s+)?\w+)";
+const ATOM_PATTERN: &str = r"(?<atom>[\w\(\)]+)";
+const LITERAL_PATTERN: &str = r"(?<literal>(?:not\s+)?[\w\(\)]+)";
 const PROBABILITY_PATTERN: &str = r"Probability\((?<probability>[01][.]\d+)\)";
 const BODY_PATTERN: &str = r"(?<body>.+)";
 const TOPIC_PATTERN: &str = r#""(?<topic>(?:\/\w+)+)""#;

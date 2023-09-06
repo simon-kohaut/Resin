@@ -4,12 +4,11 @@ mod frequency;
 mod kalman;
 mod language;
 mod circuit;
-mod resin;
 mod utility;
 
 use crate::circuit::shared_leaf;
 use crate::circuit::{Model, ReactiveCircuit};
-use crate::resin::{parse, Args};
+use crate::circuit::{compile, Args};
 use clap::Parser;
 use std::fs::read_to_string;
 
@@ -17,7 +16,7 @@ fn main() -> std::io::Result<()> {
     let args = Args::parse();
 
     let model = read_to_string(args.source).unwrap();
-    parse(model);
+    compile(model);
     return Ok(());
 
     let a = shared_leaf(0.5, 0.0, "a".to_string());
