@@ -94,43 +94,72 @@ impl ReactiveCircuit {
 
         let circuit_index = index.clone();
 
-        dot_text += "node [fixedsize=true, width=1.5]\n";
+        let color = if self.valid {
+            "color=deepskyblue"
+        } else {
+            "color=firebrick"
+        };
+
         dot_text += &String::from_str(&format!(
-            "rc{index} [shape=square, label=\"RC{index} - {layer}\"]\n",
+            "rc{index} [shape=square, label=\"RC{index} - {layer}\n{value:.2}\", {color}]\n",
             index = circuit_index,
-            layer = self.layer
+            layer = self.layer,
+            value = self.value,
+            color = color
         ))
         .unwrap();
         dot_text += &String::from_str(&format!("s{} [label=\"+\"]\n", circuit_index)).unwrap();
-        dot_text +=
-            &String::from_str(&format!("rc{index} -> s{index}\n", index = circuit_index)).unwrap();
+        dot_text += &String::from_str(&format!(
+            "rc{index} -> s{index} [{color}]\n",
+            index = circuit_index,
+            color = color
+        ))
+        .unwrap();
 
         let mut model_index = 0;
         // let mut sub_circuit_index = circuit_index + 1;
         for model in &self.models {
             // Add product node for this model
             dot_text += &String::from_str(&format!(
-                "p{circuit}{model} [label=\"&times;\"]\n",
+                "p{circuit}{model} [label=\"&times;\", {color}]\n",
                 circuit = circuit_index,
-                model = model_index
+                model = model_index,
+                color = color
             ))
             .unwrap();
 
             // Add connection of sum-root to this model's product
             dot_text += &String::from_str(&format!(
-                "s{circuit} -> p{circuit}{model}\n",
+                "s{circuit} [{color}]\n",
                 circuit = circuit_index,
-                model = model_index
+                color = color
+            ))
+            .unwrap();
+            dot_text += &String::from_str(&format!(
+                "s{circuit} -> p{circuit}{model} [{color}]\n",
+                circuit = circuit_index,
+                model = model_index,
+                color = color
             ))
             .unwrap();
 
             // Add leaf node connections
             for leaf in &model.leafs {
+                let name = leaf.lock().unwrap().name.clone();
+                let value = leaf.lock().unwrap().get_value();
                 dot_text += &String::from_str(&format!(
-                    "p{circuit}{model} -> \"{leaf_name}\"\n",
+                    "\"{name}\n{value:.2}\" [{color}]\n",
+                    name = name,
+                    color = color,
+                    value = value,
+                ))
+                .unwrap();
+                dot_text += &String::from_str(&format!(
+                    "p{circuit}{model} -> \"{leaf_name}\" [{color}]\n",
                     circuit = circuit_index,
                     model = model_index,
                     leaf_name = leaf.lock().unwrap().name,
+                    color = color
                 ))
                 .unwrap();
             }
@@ -140,10 +169,11 @@ impl ReactiveCircuit {
                     *index += 1;
 
                     dot_text += &String::from_str(&format!(
-                        "p{circuit}{model}-> rc{next_circuit}\n",
+                        "p{circuit}{model}-> rc{next_circuit} [{color}]\n",
                         circuit = circuit_index,
                         model = model_index,
-                        next_circuit = index
+                        next_circuit = index,
+                        color = color
                     ))
                     .unwrap();
 
@@ -228,8 +258,8 @@ pub fn lift_leaf(circuit: SharedReactiveCircuit, leaf: SharedLeaf) {
         // A new root with two models, one containing the relevant leaf and a circuit
         // of all models with that leaf, one with all models that do not contain the leaf
         let mut root_circuit = ReactiveCircuit::empty_new();
-        let mut non_leaf_circuit = ReactiveCircuit::empty_new().share();
-        let mut leaf_circuit = ReactiveCircuit::empty_new().share();
+        let non_leaf_circuit = ReactiveCircuit::empty_new().share();
+        let leaf_circuit = ReactiveCircuit::empty_new().share();
 
         for model in &mut circuit_guard.models {
             // Let leafs of this model forget about this circuit
@@ -272,7 +302,6 @@ pub fn lift_leaf(circuit: SharedReactiveCircuit, leaf: SharedLeaf) {
             .push(Model::new(vec![leaf.clone()], Some(leaf_circuit)));
         *circuit_guard = root_circuit;
     } else {
-        let mut non_leaf_models = Vec::new();
         for model in &mut circuit_guard.models {
             if model.circuit.is_some() {
                 if model
@@ -286,10 +315,11 @@ pub fn lift_leaf(circuit: SharedReactiveCircuit, leaf: SharedLeaf) {
                     // Build new circuit for parts that are irrelevant to leaf
                     let mut non_leaf_circuit = ReactiveCircuit::empty_new();
                     non_leaf_circuit.layer = circuit_layer + 1;
-                    non_leaf_models.push(Model::new(
+                    add_model(
+                        model.circuit.as_ref().unwrap().clone(),
                         model.leafs.clone(),
                         Some(non_leaf_circuit.share()),
-                    ));
+                    );
 
                     // Make this model react to leaf
                     model.append(leaf.clone());
@@ -314,9 +344,6 @@ pub fn lift_leaf(circuit: SharedReactiveCircuit, leaf: SharedLeaf) {
                 }
             }
         }
-        for model in non_leaf_models {
-            circuit_guard.models.push(model);
-        }
     }
 }
 
@@ -339,13 +366,14 @@ pub fn drop_leaf(circuit: SharedReactiveCircuit, leaf: SharedLeaf) {
                         }
                     }
                     None => {
-                        model.circuit = Some(
-                            ReactiveCircuit::new(
-                                vec![Model::new(vec![leaf.clone()], None)],
-                                Some(circuit.clone()),
-                                circuit_layer,
-                            )
-                            .share(),
+                        model.circuit = Some(ReactiveCircuit::empty_new().share());
+                        model.circuit.as_ref().unwrap().lock().unwrap().parent =
+                            Some(circuit.clone());
+                        model.circuit.as_ref().unwrap().lock().unwrap().layer = circuit_layer;
+                        add_model(
+                            model.circuit.as_ref().unwrap().clone(),
+                            vec![leaf.clone()],
+                            None,
                         );
                     }
                 }
@@ -382,6 +410,8 @@ pub fn prune(circuit: Option<SharedReactiveCircuit>) -> Option<SharedReactiveCir
     circuit_guard
         .models
         .retain(|m| m.leafs.len() > 0 || m.circuit.is_some());
+
+    circuit_guard.update();
 
     // Remove this circuit if it is empty
     if circuit_guard.models.len() == 0 {

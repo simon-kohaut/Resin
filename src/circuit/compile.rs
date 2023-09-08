@@ -82,7 +82,6 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin, target: &St
                     if resin.leafs.get(&name).is_none() {
                         leaf = shared_leaf(1.0, 0.0, name.clone());
                         resin.leafs.insert(name, leaf.clone());
-                        print! {"-inserted"}
                     } else {
                         leaf = resin.leafs.get(&name).unwrap().clone();
                     }
@@ -143,50 +142,79 @@ pub fn compile(model: String) -> Vec<ReactiveCircuit> {
             }
 
             match resin.leafs.get(&format!("¬{}", clause.head)) {
-                Some(leaf) => leaf.lock().unwrap().set_value(1.0 - clause.probability),
+                Some(leaf) => {
+                    if clause.body.len() > 0 {
+                        leaf.lock().unwrap().set_value(1.0);
+                    } else {
+                        leaf.lock().unwrap().set_value(1.0 - clause.probability)
+                    }
+                }
                 None => (),
             }
         }
 
-        let not_rain = resin.leafs.get("¬rain").unwrap().clone();
-        let rain = resin.leafs.get("rain").unwrap().clone();
-        let not_speed = resin.leafs.get("¬speed").unwrap().clone();
-        let speed = resin.leafs.get("speed").unwrap().clone();
+        // let not_rain = resin.leafs.get("¬rain").unwrap().clone();
+        // let rain = resin.leafs.get("rain").unwrap().clone();
+        // let not_speed = resin.leafs.get("¬speed").unwrap().clone();
+        // let speed = resin.leafs.get("speed").unwrap().clone();
         // let not_clearance = leafs.get("¬clearance").unwrap().clone();
-        let clearance = resin.leafs.get("clearance").unwrap().clone();
+        // let clearance = resin.leafs.get("clearance").unwrap().clone();
 
         // let not_high_speed = leafs.get("¬high_speed").unwrap().clone();
         // let high_speed = leafs.get("high_speed").unwrap().clone();
-        // let not_sunny = leafs.get("¬sunny").unwrap().clone();
-        // let sunny = leafs.get("sunny").unwrap().clone();
-        // let not_cloudy = leafs.get("¬cloudy").unwrap().clone();
-        // let cloudy = leafs.get("cloudy").unwrap().clone();
-        // let not_day = leafs.get("¬day").unwrap().clone();
-        // let day = leafs.get("day").unwrap().clone();
-        // let not_raining = leafs.get("¬raining").unwrap().clone();
-        // let raining = leafs.get("raining").unwrap().clone();
-        // let not_grass_long_1 = leafs.get("¬grass_long(l1)").unwrap().clone();
-        // let grass_long_1 = leafs.get("grass_long(l1)").unwrap().clone();
-        // let not_grass_long_2 = leafs.get("¬grass_long(l2)").unwrap().clone();
-        // let grass_long_2 = leafs.get("grass_long(l2)").unwrap().clone();
-        // let lawn_1 = leafs.get("lawn(l1)").unwrap().clone();
-        // let lawn_2 = leafs.get("lawn(l2)").unwrap().clone();
+        
+        // let not_sunny = resin.leafs.get("¬sunny").unwrap().clone();
+        // let sunny = resin.leafs.get("sunny").unwrap().clone();
+        // let not_cloudy = resin.leafs.get("¬cloudy").unwrap().clone();
+        // let cloudy = resin.leafs.get("cloudy").unwrap().clone();
+        // let not_day = resin.leafs.get("¬day").unwrap().clone();
+        // let day = resin.leafs.get("day").unwrap().clone();
+        // let not_raining = resin.leafs.get("¬raining").unwrap().clone();
+        // let raining = resin.leafs.get("raining").unwrap().clone();
+        // let not_grass_long_1 = resin.leafs.get("¬grass_long(l1)").unwrap().clone();
+        // let grass_long_1 = resin.leafs.get("grass_long(l1)").unwrap().clone();
+        // let not_grass_long_2 = resin.leafs.get("¬grass_long(l2)").unwrap().clone();
+        // let grass_long_2 = resin.leafs.get("grass_long(l2)").unwrap().clone();
+        // let lawn_1 = resin.leafs.get("lawn(l1)").unwrap().clone();
+        // let lawn_2 = resin.leafs.get("lawn(l2)").unwrap().clone();
+        
+        let john = resin.leafs.get("hears_alarm(john)").unwrap().clone();
+        let not_john = resin.leafs.get("¬hears_alarm(john)").unwrap().clone();
 
-        // update(rain.clone(), 0.3);
+        println!("{} - {}", john.lock().unwrap().get_value(), not_john.lock().unwrap().get_value());
 
-        let _ = rc.lock().unwrap().to_svg("wmc_resin".to_string());
+        let _ = rc.lock().unwrap().to_svg("0".to_string());
         println!("{}", rc.lock().unwrap().get_value());
+
+        // lift![rc, raining, not_raining];
+        // let _ = rc.lock().unwrap().to_svg("1".to_string());
+        // println!("{}", rc.lock().unwrap().get_value());
+
+        // lift![rc, raining, not_raining];
+        // lift![rc, cloudy, not_cloudy, sunny, not_sunny];
+        // let _ = rc.lock().unwrap().to_svg("2".to_string());
+        // println!("{}", rc.lock().unwrap().get_value());
+
+        // drop![rc, lawn_1, lawn_2];
+        // update(not_raining.clone(), 0.7);
+        // update(raining.clone(), 0.3);
+        // update(grass_long_1.clone(), 1.0);
+        // update(not_grass_long_1.clone(), 0.0);
+
+        // let _ = rc.lock().unwrap().to_svg("3".to_string());
+        
+        // println!("{}", rc.lock().unwrap().get_value());
 
         // rc = rc.drop(vec![lawn_1.clone(), lawn_2.clone(), day.clone(), not_day.clone()]);
         // rc = rc.lift(vec![sunny.clone(), cloudy.clone(), not_sunny.clone(), not_cloudy.clone(), raining.clone(), not_raining.clone()]);
-        lift![rc, not_speed, speed];
-        println!("{}", rc.lock().unwrap().get_value());
+        // lift![rc, not_speed, speed];
+        // println!("{}", rc.lock().unwrap().get_value());
 
-        // drop![rc, rain, not_rain];
-        update(rain.clone(), 0.2);
+        // // drop![rc, rain, not_rain];
+        // update(rain.clone(), 0.2);
 
-        println!("{}", rc.lock().unwrap().get_value());
-        let _ = rc.lock().unwrap().to_svg("fitted_resin".to_string());
+        // println!("{}", rc.lock().unwrap().get_value());
+        // let _ = rc.lock().unwrap().to_svg("fitted_resin".to_string());
     }
 
     // Create a Reactive Circuits for each target signal
