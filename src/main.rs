@@ -1,16 +1,17 @@
 #![allow(dead_code)]
 
+mod circuit;
 mod frequency;
 mod kalman;
 mod language;
-mod circuit;
 mod utility;
 
 use crate::circuit::shared_leaf;
-use crate::circuit::{Model, ReactiveCircuit};
+use crate::circuit::{add_model, ReactiveCircuit};
 use crate::circuit::{compile, Args};
 use clap::Parser;
 use std::fs::read_to_string;
+use std::sync::{Arc, Mutex};
 
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
@@ -28,24 +29,34 @@ fn main() -> std::io::Result<()> {
     let g = shared_leaf(0.9, 0.0, "g".to_string());
     let h = shared_leaf(0.9, 0.0, "h".to_string());
 
-    let mut rc = ReactiveCircuit::new();
-    rc.add_model(Model::new(vec![d.clone()], None));
-    rc.add_model(Model::new(vec![a.clone(), d.clone()], None));
-    rc.add_model(Model::new(vec![b.clone(), d.clone()], None));
-    rc.add_model(Model::new(vec![a.clone(), b.clone(), d.clone()], None));
-    // rc.add_model(Model::new(vec![c.clone(), f.clone()], None));
-    // rc.add_model(Model::new(vec![g.clone(), h.clone()], None));
+    let rc = ReactiveCircuit::empty_new().share();
+    add_model(rc.clone(), vec![d.clone()], None);
+    add_model(rc.clone(), vec![a.clone(), d.clone()], None);
+    add_model(rc.clone(), vec![b.clone(), d.clone()], None);
+    add_model(rc.clone(), vec![a.clone(), b.clone(), d.clone()], None);
+    add_model(rc.clone(), vec![c.clone(), f.clone()], None);
+    add_model(rc.clone(), vec![g.clone(), h.clone()], None);
 
-    println!("Original: \t\t{} \t\t= {}", &rc, rc.value());
-    rc.to_svg("output/0".to_string())?;
+    let rc_guard = rc.lock().unwrap();
 
-    rc = rc.lift(vec![b.clone()]);
-    println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
-    rc.to_svg("output/1".to_string())?;
+    println!("Original: \t\t{} \t\t= {}", rc_guard, rc_guard.get_value());
+    rc_guard.to_svg("output/0".to_string())?;
 
-    rc = rc.lift(vec![a.clone()]);
-    println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);
-    rc.to_svg("output/2".to_string())?;
+    lift![rc, b];
+    println!(
+        "Changed circuit: \t{} \t\t= {}",
+        rc_guard,
+        rc_guard.get_value(),
+    );
+    rc_guard.to_svg("output/1".to_string())?;
+
+    lift![rc, a];
+    println!(
+        "Changed circuit: \t{} \t\t= {}",
+        rc_guard,
+        rc_guard.get_value(),
+    );
+    rc_guard.to_svg("output/2".to_string())?;
 
     // rc = rc.lift(vec![a.clone()]);
     // println!("Changed circuit: \t{} \t\t= {}", &rc, rc.value(),);

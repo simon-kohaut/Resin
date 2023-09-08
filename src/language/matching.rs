@@ -11,7 +11,8 @@ const DTYPE_PATTERN: &str = r"(?<dtype>Probability|Density|Number)";
 
 // Regular expressions for complete Resin statements
 lazy_static! {
-    pub static ref LITERAL_REGEX: Regex = Regex::new(&format!(r"(?:\s+and\s+)?{}", LITERAL_PATTERN)).unwrap();
+    pub static ref LITERAL_REGEX: Regex =
+        Regex::new(&format!(r"(?:\s+and\s+)?{}", LITERAL_PATTERN)).unwrap();
     pub static ref CLAUSE_REGEX: Regex = Regex::new(&format!(
         r"{}(\s+<-\s+{})?(\s+if\s+{})?\.",
         ATOM_PATTERN, PROBABILITY_PATTERN, BODY_PATTERN
@@ -22,5 +23,9 @@ lazy_static! {
         ATOM_PATTERN, TOPIC_PATTERN, DTYPE_PATTERN
     ))
     .unwrap();
-    pub static ref TARGET_REGEX: Regex = Regex::new(&format!(r#"{}\s+->\s+target\({}\)\."#, ATOM_PATTERN, TOPIC_PATTERN)).unwrap();
+    pub static ref TARGET_REGEX: Regex = Regex::new(&format!(
+        r#"{}\s+->\s+target\({}\)\."#,
+        ATOM_PATTERN, TOPIC_PATTERN
+    ))
+    .unwrap();
 }

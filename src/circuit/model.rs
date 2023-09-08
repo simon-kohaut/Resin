@@ -3,18 +3,18 @@ use std::sync::{Arc, Mutex};
 
 // Resin
 use crate::circuit::SharedLeaf;
-use crate::circuit::ReactiveCircuit;
+use crate::circuit::SharedReactiveCircuit;
 
 pub type SharedModel = Arc<Mutex<Model>>;
 
 #[derive(Debug)]
 pub struct Model {
     pub leafs: Vec<SharedLeaf>,
-    pub circuit: Option<ReactiveCircuit>,
+    pub circuit: Option<SharedReactiveCircuit>,
 }
 
 impl Model {
-    pub fn new(leafs: Vec<SharedLeaf>, circuit: Option<ReactiveCircuit>) -> Self {
+    pub fn new(leafs: Vec<SharedLeaf>, circuit: Option<SharedReactiveCircuit>) -> Self {
         Self { leafs, circuit }
     }
 
@@ -23,21 +23,20 @@ impl Model {
         let mut product = 1.0;
 
         for leaf in &self.leafs {
-            let leaf_guard = leaf.lock().unwrap();
-            product *= leaf_guard.get_value();
+            product *= leaf.lock().unwrap().get_value();
         }
 
         match &self.circuit {
-            Some(circuit) => product *= circuit.value(),
+            Some(circuit) => product *= circuit.lock().unwrap().get_value(),
             None => (),
         }
 
         product
     }
 
-    pub fn contains(&self, searched_leaf: SharedLeaf) -> bool {
-        for leaf in self.leafs.iter() {
-            if Arc::ptr_eq(&leaf, &searched_leaf) {
+    pub fn contains(&self, leaf: SharedLeaf) -> bool {
+        for own_leaf in self.leafs.iter() {
+            if Arc::ptr_eq(&own_leaf, &leaf) {
                 return true;
             }
         }
@@ -53,7 +52,7 @@ impl Model {
         }
 
         match &self.circuit {
-            Some(circuit) => copy.circuit = Some(circuit.copy()),
+            Some(circuit) => copy.circuit = Some(circuit.clone()),
             None => (),
         }
 

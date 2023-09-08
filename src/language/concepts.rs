@@ -1,16 +1,18 @@
-use std::str::FromStr;
+use std::collections::HashMap;
 use std::panic;
-use std::collections::HashSet;
+use std::str::FromStr;
 
-use super::matching::{CLAUSE_REGEX, SOURCE_REGEX, TARGET_REGEX, LITERAL_REGEX};
+use crate::circuit::SharedLeaf;
+
 use super::super::circuit::ReactiveCircuit;
+use super::matching::{CLAUSE_REGEX, LITERAL_REGEX, SOURCE_REGEX, TARGET_REGEX};
 
 pub struct Resin {
     pub circuits: Vec<ReactiveCircuit>,
     pub clauses: Vec<Clause>,
     pub sources: Vec<Source>,
     pub targets: Vec<Target>,
-    pub symbols: HashSet<String>
+    pub leafs: HashMap<String, SharedLeaf>,
 }
 
 pub struct Clause {
@@ -93,27 +95,30 @@ impl FromStr for Resin {
     type Err = ();
 
     fn from_str(input: &str) -> Result<Resin, Self::Err> {
-        let mut resin = Resin { circuits: vec!(), clauses: vec!(), sources: vec!(), targets: vec!(), symbols: HashSet::new() };
+        let mut resin = Resin {
+            circuits: vec![],
+            clauses: vec![],
+            sources: vec![],
+            targets: vec![],
+            leafs: HashMap::new(),
+        };
 
         // Parse Resin source line by line into appropriate data structures
         for line in input.lines() {
             let source = line.parse::<Source>();
             if source.is_ok() {
-                resin.symbols.insert(source.as_ref().unwrap().name.clone());
                 resin.sources.push(source.unwrap());
                 continue;
             }
 
             let target = line.parse::<Target>();
             if target.is_ok() {
-                resin.symbols.insert(target.as_ref().unwrap().name.clone());
                 resin.targets.push(target.unwrap());
                 continue;
             }
 
             let clause = line.parse::<Clause>();
             if clause.is_ok() {
-                resin.symbols.insert(clause.as_ref().unwrap().head.clone());
                 resin.clauses.push(clause.unwrap());
                 continue;
             }
@@ -157,7 +162,7 @@ impl FromStr for Clause {
 
             return Ok(clause);
         } else {
-            return Err(())
+            return Err(());
         }
     }
 }
@@ -177,7 +182,7 @@ impl FromStr for Source {
 
             return Ok(source);
         } else {
-            return Err(())
+            return Err(());
         }
     }
 }
@@ -197,7 +202,7 @@ impl FromStr for Target {
 
             return Ok(target);
         } else {
-            return Err(())
+            return Err(());
         }
     }
 }

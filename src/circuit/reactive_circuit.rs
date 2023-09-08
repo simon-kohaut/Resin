@@ -8,38 +8,46 @@ use std::{
 };
 
 // Resin
-use crate::circuit::SharedLeaf;
 use crate::circuit::Model;
+use crate::circuit::SharedLeaf;
 
 #[derive(Debug)]
 pub struct ReactiveCircuit {
     pub models: Vec<Model>,
-    valid: bool,
+    parent: Option<SharedReactiveCircuit>,
     layer: i32,
+    value: f64,
+    valid: bool,
 }
 
 pub type SharedReactiveCircuit = Arc<Mutex<ReactiveCircuit>>;
 
 impl ReactiveCircuit {
-    pub fn new() -> Self {
+    pub fn new(models: Vec<Model>, parent: Option<SharedReactiveCircuit>, layer: i32) -> Self {
+        Self {
+            models,
+            parent,
+            layer,
+            value: 0.0,
+            valid: false,
+        }
+    }
+
+    pub fn empty_new() -> Self {
         Self {
             models: Vec::new(),
-            valid: false,
+            parent: None,
             layer: 0,
+            value: 0.0,
+            valid: false,
         }
+    }
+
+    pub fn share(&self) -> SharedReactiveCircuit {
+        Arc::new(Mutex::new(self.copy()))
     }
 
     // Read interface
-    pub fn value(&self) -> f64 {
-        let mut sum = 0.0;
-
-        for model in &self.models {
-            sum += model.value();
-        }
-
-        sum
-    }
-
     pub fn contains(&self, leaf: SharedLeaf) -> bool {
         for model in &self.models {
             if model.contains(leaf.clone()) {
@@ -50,30 +58,12 @@ impl ReactiveCircuit {
     }
 
     pub fn copy(&self) -> ReactiveCircuit {
-        let mut copy = ReactiveCircuit::new();
+        let mut copy = ReactiveCircuit::empty_new();
         for model in &self.models {
-            copy.add_model(model.copy());
+            copy.models.push(model.copy());
         }
         copy.layer = self.layer;
         copy
-    }
-
-    pub fn lift(&self, leafs: Vec<SharedLeaf>) -> ReactiveCircuit {
-        let mut lift_circuit = self.copy();
-        for leaf in &leafs {
-            lift_circuit = lift(&lift_circuit, leaf.clone());
-        }
-
-        prune(&lift_circuit).unwrap()
-    }
-
-    pub fn drop(&self, leafs: Vec<SharedLeaf>) -> ReactiveCircuit {
-        let mut drop_circuit = self.copy();
-        for leaf in &leafs {
-            drop_circuit = drop(&drop_circuit, leaf.clone());
-        }
-
-        prune(&drop_circuit).unwrap()
     }
 
     pub fn to_svg(&self, path: String) -> std::io::Result<()> {
@@ -145,18 +135,21 @@ impl ReactiveCircuit {
                 .unwrap();
             }
 
-            if model.circuit.is_some() {
-                *index += 1;
+            match &model.circuit {
+                Some(model_circuit) => {
+                    *index += 1;
 
-                dot_text += &String::from_str(&format!(
-                    "p{circuit}{model}-> rc{next_circuit}\n",
-                    circuit = circuit_index,
-                    model = model_index,
-                    next_circuit = index
-                ))
-                .unwrap();
+                    dot_text += &String::from_str(&format!(
+                        "p{circuit}{model}-> rc{next_circuit}\n",
+                        circuit = circuit_index,
+                        model = model_index,
+                        next_circuit = index
+                    ))
+                    .unwrap();
 
-                dot_text += &model.circuit.as_ref().unwrap().to_dot_file(index);
+                    dot_text += &model_circuit.lock().unwrap().to_dot_file(index);
+                }
+                None => (),
             }
 
             model_index += 1;
@@ -166,142 +159,246 @@ impl ReactiveCircuit {
     }
 
     // Write interface
+    pub fn get_value(&mut self) -> f64 {
+        if !self.valid {
+            self.update()
+        }
+
+        self.value
+    }
+
+    pub fn update(&mut self) {
+        let mut sum = 0.0;
+
+        for model in &self.models {
+            sum += model.value();
+        }
+
+        self.value = sum;
+        self.valid = true;
+    }
+
+    pub fn invalidate(&mut self) {
+        self.valid = false;
+        if self.parent.is_some() {
+            self.parent.as_mut().unwrap().lock().unwrap().invalidate();
+        }
+    }
+
     pub fn remove(&mut self, leaf: SharedLeaf) {
         for model in &mut self.models {
             model.remove(leaf.clone());
         }
     }
+}
 
-    pub fn add_model(&mut self, model: Model) {
-        self.models.push(model);
+pub fn update(leaf: SharedLeaf, value: f64) {
+    leaf.lock().unwrap().set_value(value);
+    let circuits = leaf.lock().unwrap().circuits.clone();
+    for circuit in circuits {
+        circuit.lock().unwrap().invalidate();
     }
 }
 
+pub fn add_model(
+    circuit: SharedReactiveCircuit,
+    leafs: Vec<SharedLeaf>,
+    sub_circuit: Option<SharedReactiveCircuit>,
+) {
+    let model = Model::new(leafs.clone(), sub_circuit.clone());
+    circuit.lock().unwrap().models.push(model);
 
-pub fn lift(circuit: &ReactiveCircuit, leaf: SharedLeaf) -> ReactiveCircuit {
-    let mut updated_circuit = circuit.copy();
+    for leaf in &leafs {
+        leaf.lock().unwrap().circuits.push(circuit.clone());
+    }
+
+    if sub_circuit.is_some() {
+        sub_circuit.as_ref().unwrap().lock().unwrap().parent = Some(circuit.clone());
+    }
+}
+
+pub fn lift_leaf(circuit: SharedReactiveCircuit, leaf: SharedLeaf) {
+    let mut circuit_guard = circuit.lock().unwrap();
+    let circuit_layer = circuit_guard.layer;
 
     // Assume we will only visit a circuit containing this leaf if
     // it is the root circuit. Otherwise, we remove the leaf beforehand to
     // not require a reference to the parent circuit
-    if updated_circuit.contains(leaf.clone()) {
+    if circuit_guard.contains(leaf.clone()) {
         // A new root with two models, one containing the relevant leaf and a circuit
         // of all models with that leaf, one with all models that do not contain the leaf
-        let mut root_circuit = ReactiveCircuit::new();
-        let mut non_leaf_circuit = ReactiveCircuit::new();
-        let mut leaf_circuit = ReactiveCircuit::new();
+        let mut root_circuit = ReactiveCircuit::empty_new();
+        let mut non_leaf_circuit = ReactiveCircuit::empty_new().share();
+        let mut leaf_circuit = ReactiveCircuit::empty_new().share();
 
-        for model in &mut updated_circuit.models {
+        for model in &mut circuit_guard.models {
+            // Let leafs of this model forget about this circuit
+            for model_leaf in &mut model.leafs {
+                model_leaf.lock().unwrap().remove_circuit(circuit.clone());
+            }
+
+            // Remove the leaf from all models of this circuit
             if model.contains(leaf.clone()) {
                 model.remove(leaf.clone());
-                leaf_circuit.add_model(model.copy());
-            } else {
-                non_leaf_circuit.add_model(model.copy());
+                add_model(
+                    leaf_circuit.clone(),
+                    model.leafs.clone(),
+                    model.circuit.clone(),
+                );
+            }
+            // Push models to their own circuit if they are independent of the leaf
+            else {
+                add_model(
+                    non_leaf_circuit.clone(),
+                    model.leafs.clone(),
+                    model.circuit.clone(),
+                );
             }
         }
 
-        root_circuit.layer = updated_circuit.layer;
-        leaf_circuit.layer = updated_circuit.layer + 1;
-        non_leaf_circuit.layer = updated_circuit.layer + 1;
+        // Set the correct layer numbering
+        root_circuit.layer = circuit_guard.layer;
+        leaf_circuit.lock().unwrap().layer = circuit_guard.layer + 1;
+        leaf_circuit.lock().unwrap().parent = Some(circuit.clone());
+        non_leaf_circuit.lock().unwrap().layer = circuit_guard.layer + 1;
+        non_leaf_circuit.lock().unwrap().parent = Some(circuit.clone());
 
-        root_circuit.add_model(Model::new(Vec::new(), Some(non_leaf_circuit)));
-        root_circuit.add_model(Model::new(vec![leaf.clone()], Some(leaf_circuit)));
-        updated_circuit = root_circuit;
+        // Construct the new root circuits models
+        root_circuit
+            .models
+            .push(Model::new(Vec::new(), Some(non_leaf_circuit)));
+        root_circuit
+            .models
+            .push(Model::new(vec![leaf.clone()], Some(leaf_circuit)));
+        *circuit_guard = root_circuit;
     } else {
         let mut non_leaf_models = Vec::new();
-        for model in &mut updated_circuit.models {
+        for model in &mut circuit_guard.models {
             if model.circuit.is_some() {
-                if model.circuit.as_ref().unwrap().contains(leaf.clone()) {
-                    let mut non_leaf_circuit = ReactiveCircuit::new();
-                    non_leaf_circuit.layer = updated_circuit.layer + 1;
-                    for inner_model in &mut model.circuit.as_mut().unwrap().models {
+                if model
+                    .circuit
+                    .as_ref()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .contains(leaf.clone())
+                {
+                    // Build new circuit for parts that are irrelevant to leaf
+                    let mut non_leaf_circuit = ReactiveCircuit::empty_new();
+                    non_leaf_circuit.layer = circuit_layer + 1;
+                    non_leaf_models.push(Model::new(
+                        model.leafs.clone(),
+                        Some(non_leaf_circuit.share()),
+                    ));
+
+                    // Make this model react to leaf
+                    model.append(leaf.clone());
+
+                    // Let leaf reference the new circuit and forget about the original
+                    leaf.lock().unwrap().remove_circuit(circuit.clone());
+                    leaf.lock()
+                        .unwrap()
+                        .circuits
+                        .push(model.circuit.as_mut().unwrap().clone());
+
+                    let mut model_circuit_guard = model.circuit.as_mut().unwrap().lock().unwrap();
+                    for inner_model in &mut model_circuit_guard.models {
                         if !inner_model.contains(leaf.clone()) {
-                            non_leaf_circuit.add_model(inner_model.copy());
+                            non_leaf_circuit.models.push(inner_model.copy());
                             inner_model.empty();
                         }
                     }
-                    non_leaf_models.push(Model::new(
-                        model.leafs.clone(),
-                        Some(non_leaf_circuit.copy()),
-                    ));
-                    model.circuit.as_mut().unwrap().remove(leaf.clone());
-                    model.append(leaf.clone());
+                    model_circuit_guard.remove(leaf.clone());
                 } else {
-                    model.circuit = Some(lift(&model.circuit.as_ref().unwrap(), leaf.clone()));
+                    lift_leaf(model.circuit.as_mut().unwrap().clone(), leaf.clone());
                 }
             }
         }
         for model in non_leaf_models {
-            updated_circuit.add_model(model);
+            circuit_guard.models.push(model);
         }
     }
-
-    updated_circuit
 }
 
-pub fn drop(circuit: &ReactiveCircuit, leaf: SharedLeaf) -> ReactiveCircuit {
-    let mut updated_circuit = circuit.copy();
-    if updated_circuit.contains(leaf.clone()) {
-        for model in &mut updated_circuit.models {
+pub fn drop_leaf(circuit: SharedReactiveCircuit, leaf: SharedLeaf) {
+    let mut circuit_guard = circuit.lock().unwrap();
+    let circuit_layer = circuit_guard.layer + 1;
+    if circuit_guard.contains(leaf.clone()) {
+        // Remove this circuit from being referenced by the leaf
+        leaf.lock().unwrap().remove_circuit(circuit.clone());
+
+        for model in &mut circuit_guard.models {
             if model.contains(leaf.clone()) {
                 model.remove(leaf.clone());
 
                 match &mut model.circuit {
                     Some(model_circuit) => {
-                        for circuit_model in &mut model_circuit.models {
+                        let mut model_circuit_guard = model_circuit.lock().unwrap();
+                        for circuit_model in &mut model_circuit_guard.models {
                             circuit_model.append(leaf.clone());
                         }
                     }
                     None => {
-                        model.circuit = Some(ReactiveCircuit {
-                            models: vec![Model::new(vec![leaf.clone()], None)],
-                            valid: false,
-                            layer: updated_circuit.layer + 1,
-                        });
+                        model.circuit = Some(
+                            ReactiveCircuit::new(
+                                vec![Model::new(vec![leaf.clone()], None)],
+                                Some(circuit.clone()),
+                                circuit_layer,
+                            )
+                            .share(),
+                        );
                     }
                 }
+
+                leaf.lock()
+                    .unwrap()
+                    .circuits
+                    .push(model.circuit.as_ref().unwrap().clone());
             }
         }
     } else {
-        for model in &mut updated_circuit.models {
-            if model.circuit.is_some() {
-                model.circuit = Some(drop(&model.circuit.as_ref().unwrap(), leaf.clone()));
+        for model in &mut circuit_guard.models {
+            match &model.circuit {
+                Some(model_circuit) => drop_leaf(model_circuit.clone(), leaf.clone()),
+                None => (),
             }
         }
     }
-
-    updated_circuit
 }
 
-pub fn prune(circuit: &ReactiveCircuit) -> Option<ReactiveCircuit> {
-    let mut updated_circuit = circuit.copy();
+pub fn prune(circuit: Option<SharedReactiveCircuit>) -> Option<SharedReactiveCircuit> {
+    if circuit.is_none() {
+        return None;
+    }
+
+    let mut circuit_guard = circuit.as_ref().unwrap().lock().unwrap();
 
     // Prune underlying circuits
-    for model in &mut updated_circuit.models {
-        if model.circuit.is_some() {
-            model.circuit = prune(&model.circuit.as_ref().unwrap());
-        }
+    for model in &mut circuit_guard.models {
+        model.circuit = prune(model.circuit.clone());
     }
 
     // Remove empty models
-    updated_circuit
+    circuit_guard
         .models
         .retain(|m| m.leafs.len() > 0 || m.circuit.is_some());
 
     // Remove this circuit if it is empty
-    if updated_circuit.models.len() == 0 {
+    if circuit_guard.models.len() == 0 {
         return None;
+    } else {
+        return circuit.clone();
     }
 
     // Remove this circuit if its only model is a forwarding of another circuit
     // i.e. unneccessary indirection
-    if updated_circuit.models.len() == 1
-        && updated_circuit.models[0].leafs.len() == 0
-        && updated_circuit.layer - updated_circuit.models[0].circuit.as_ref().unwrap().layer > 1
-    {
-        let lonesome_circuit = updated_circuit.models[0].circuit.as_ref().unwrap();
-        updated_circuit = lonesome_circuit.copy();
-    }
+    // if circuit_guard.models.len() == 1
+    //     && circuit_guard.models[0].leafs.len() == 0
+    //     && circuit_guard.layer - circuit_guard.models[0].circuit.as_ref().unwrap().layer > 1
+    // {
+    //     let lonesome_circuit = circuit_guard.models[0].circuit.unwrap().clone();
+    //     circuit_guard = lonesome_circuit.clone();
+    // }
 
     // Merge all underlying circuits into one if this one does not have any leafs
     // let mut contains_leafs = false;
@@ -321,27 +418,25 @@ pub fn prune(circuit: &ReactiveCircuit) -> Option<ReactiveCircuit> {
     //     merge_circuit.layer = updated_circuit.layer;
     //     updated_circuit = merge_circuit;
     // }
-
-    Some(updated_circuit)
 }
 
-pub fn fix(circuit: &ReactiveCircuit) -> ReactiveCircuit {
-    let mut fixed_circuit = circuit.copy();
+// pub fn fix(circuit: &ReactiveCircuit) -> ReactiveCircuit {
+//     let mut fixed_circuit = circuit.copy();
 
-    for model in &mut fixed_circuit.models {
-        if model.circuit.is_some() {
-            let sub_circuit = model.circuit.as_ref().unwrap();
-            if sub_circuit.layer - circuit.layer > 1 {
-                let mut buffer = ReactiveCircuit::new();
-                buffer.layer = circuit.layer + 1;
-                buffer.add_model(Model::new(Vec::new(), Some(sub_circuit.copy())));
-                model.circuit = Some(buffer);
-            }
-        }
-    }
+//     for model in &mut fixed_circuit.models {
+//         if model.circuit.is_some() {
+//             let sub_circuit = model.circuit.as_ref().unwrap();
+//             if sub_circuit.layer - circuit.layer > 1 {
+//                 let mut buffer = ReactiveCircuit::new();
+//                 buffer.layer = circuit.layer + 1;
+//                 buffer.add_model(Model::new(Vec::new(), Some(sub_circuit.copy())));
+//                 model.circuit = Some(buffer);
+//             }
+//         }
+//     }
 
-    fixed_circuit
-}
+//     fixed_circuit
+// }
 
 impl std::fmt::Display for ReactiveCircuit {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -362,9 +457,9 @@ impl std::fmt::Display for ReactiveCircuit {
             match &model.circuit {
                 Some(model_circuit) => {
                     if model.leafs.len() == 0 {
-                        write!(f, "{}", model_circuit)?
+                        write!(f, "{}", model_circuit.lock().unwrap())?
                     } else {
-                        write!(f, " * {}", model_circuit)?
+                        write!(f, " * {}", model_circuit.lock().unwrap())?
                     }
                 }
                 None => (),
