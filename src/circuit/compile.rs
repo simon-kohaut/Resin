@@ -129,28 +129,36 @@ pub fn compile(model: String) -> Vec<ReactiveCircuit> {
         // solve
         let leafs = solve(ctl, &mut rc, &resin.targets[target_index].name);
 
+        let not_rain = leafs.get("¬rain").unwrap().clone();
+        let rain = leafs.get("rain").unwrap().clone();
+        let not_speed = leafs.get("¬speed").unwrap().clone();
+        let speed = leafs.get("speed").unwrap().clone();
+        // let not_clearance = leafs.get("¬clearance").unwrap().clone();
+        let clearance = leafs.get("clearance").unwrap().clone();
+
         // let not_high_speed = leafs.get("¬high_speed").unwrap().clone();
         // let high_speed = leafs.get("high_speed").unwrap().clone();
-        let not_sunny = leafs.get("¬sunny").unwrap().clone();
-        let sunny = leafs.get("sunny").unwrap().clone();
-        let not_cloudy = leafs.get("¬cloudy").unwrap().clone();
-        let cloudy = leafs.get("cloudy").unwrap().clone();
-        let not_day = leafs.get("¬day").unwrap().clone();
-        let day = leafs.get("day").unwrap().clone();
-        let not_raining = leafs.get("¬raining").unwrap().clone();
-        let raining = leafs.get("raining").unwrap().clone();
-        let not_grass_long_1 = leafs.get("¬grass_long(l1)").unwrap().clone();
-        let grass_long_1 = leafs.get("grass_long(l1)").unwrap().clone();
-        let not_grass_long_2 = leafs.get("¬grass_long(l2)").unwrap().clone();
-        let grass_long_2 = leafs.get("grass_long(l2)").unwrap().clone();
-        let lawn_1 = leafs.get("lawn(l1)").unwrap().clone();
-        let lawn_2 = leafs.get("lawn(l2)").unwrap().clone();
+        // let not_sunny = leafs.get("¬sunny").unwrap().clone();
+        // let sunny = leafs.get("sunny").unwrap().clone();
+        // let not_cloudy = leafs.get("¬cloudy").unwrap().clone();
+        // let cloudy = leafs.get("cloudy").unwrap().clone();
+        // let not_day = leafs.get("¬day").unwrap().clone();
+        // let day = leafs.get("day").unwrap().clone();
+        // let not_raining = leafs.get("¬raining").unwrap().clone();
+        // let raining = leafs.get("raining").unwrap().clone();
+        // let not_grass_long_1 = leafs.get("¬grass_long(l1)").unwrap().clone();
+        // let grass_long_1 = leafs.get("grass_long(l1)").unwrap().clone();
+        // let not_grass_long_2 = leafs.get("¬grass_long(l2)").unwrap().clone();
+        // let grass_long_2 = leafs.get("grass_long(l2)").unwrap().clone();
+        // let lawn_1 = leafs.get("lawn(l1)").unwrap().clone();
+        // let lawn_2 = leafs.get("lawn(l2)").unwrap().clone();
        
         let _ = rc.to_svg("wmc_resin".to_string());
 
         // rc = rc.drop(vec![lawn_1.clone(), lawn_2.clone(), day.clone(), not_day.clone()]);
-        rc = rc.lift(vec![sunny.clone(), cloudy.clone(), not_sunny.clone(), not_cloudy.clone(), raining.clone(), not_raining.clone()]);
-        rc = rc.lift(vec![raining.clone(), not_raining.clone()]);
+        // rc = rc.lift(vec![sunny.clone(), cloudy.clone(), not_sunny.clone(), not_cloudy.clone(), raining.clone(), not_raining.clone()]);
+        rc = rc.lift(vec![speed.clone(), not_speed.clone()]);
+        rc = rc.drop(vec![rain.clone(), not_rain.clone()]);
 
         let _ = rc.to_svg("fitted_resin".to_string());
     }
