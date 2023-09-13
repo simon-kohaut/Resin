@@ -14,8 +14,11 @@ pub struct Model {
 }
 
 impl Model {
-    pub fn new(leafs: Vec<SharedLeaf>, circuit: Option<SharedReactiveCircuit>) -> Self {
-        Self { leafs, circuit }
+    pub fn new(leafs: &[SharedLeaf], circuit: &Option<SharedReactiveCircuit>) -> Self {
+        Self {
+            leafs: leafs.to_owned(),
+            circuit: circuit.clone(),
+        }
     }
 
     // Read interface
@@ -34,7 +37,7 @@ impl Model {
         product
     }
 
-    pub fn contains(&self, leaf: SharedLeaf) -> bool {
+    pub fn contains(&self, leaf: &SharedLeaf) -> bool {
         for own_leaf in self.leafs.iter() {
             if Arc::ptr_eq(&own_leaf, &leaf) {
                 return true;
@@ -45,10 +48,10 @@ impl Model {
     }
 
     pub fn copy(&self) -> Model {
-        let mut copy = Model::new(vec![], None);
+        let mut copy = Model::new(&vec![], &None);
 
         for leaf in &self.leafs {
-            copy.append(leaf.clone());
+            copy.append(&leaf);
         }
 
         match &self.circuit {
@@ -60,11 +63,11 @@ impl Model {
     }
 
     // Write interface
-    pub fn append(&mut self, leaf: SharedLeaf) {
+    pub fn append(&mut self, leaf: &SharedLeaf) {
         self.leafs.push(leaf.clone());
     }
 
-    pub fn remove(&mut self, leaf: SharedLeaf) {
+    pub fn remove(&mut self, leaf: &SharedLeaf) {
         self.leafs.retain(|l| !Arc::ptr_eq(&l, &leaf));
     }
 

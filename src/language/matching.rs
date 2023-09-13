@@ -4,10 +4,12 @@ use regex::Regex;
 // Individual language elements and named groups
 const ATOM_PATTERN: &str = r"(?<atom>[\w\(\)]+)";
 const LITERAL_PATTERN: &str = r"(?<literal>(?:not\s+)?[\w\(\)]+)";
-const PROBABILITY_PATTERN: &str = r"Probability\((?<probability>[01][.]\d+)\)";
+const PROBABILITY_PATTERN: &str = r"P\((?<probability>[01][.]\d+)\)";
 const BODY_PATTERN: &str = r"(?<body>.+)";
 const TOPIC_PATTERN: &str = r#""(?<topic>(?:\/\w+)+)""#;
 const DTYPE_PATTERN: &str = r"(?<dtype>Probability|Density|Number)";
+const VARIABLE_LIST_PATTERN: &str = r"((?:\()(?:(?:,\s+)?\w+)+(?:\)))";
+const VARIABLE_PATTERN: &str = r"((?:(,\s+)?)(?<variable>[A-Z]))";
 
 // Regular expressions for complete Resin statements
 lazy_static! {
@@ -28,4 +30,7 @@ lazy_static! {
         ATOM_PATTERN, TOPIC_PATTERN
     ))
     .unwrap();
+    pub static ref VARIABLE_LIST_REGEX: Regex =
+        Regex::new(&format!("{}", VARIABLE_LIST_PATTERN)).unwrap();
+    pub static ref VARIABLE_REGEX: Regex = Regex::new(&format!("{}", VARIABLE_PATTERN)).unwrap();
 }

@@ -1,11 +1,14 @@
-burglary <- Probability(0.1).
-hears_alarm(mary) <- Probability(0.5).
-hears_alarm(john) <- Probability(0.4).
-earthquake <- Probability(0.2).
+burglary <- P(0.1).
+hears_alarm(mary) <- P(0.5).
+hears_alarm(john) <- P(0.4).
+earthquake <- P(0.2).
 
-alarm if earthquake.
-alarm if burglary.
+alarm_e <- P(0.1) if earthquake.
+alarm_b <- P(0.5) if burglary.
 
-calls(X) if alarm and hears_alarm(X).
+alarm if alarm_e.
+alarm if alarm_b.
+
+calls(mary) if alarm and hears_alarm(mary).
 
 calls(mary) -> target("/landline").

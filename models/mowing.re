@@ -5,18 +5,16 @@ raining <- source("/rain_sensor/raining", Density).
 day <- source("/calendar", Number).
 
 /* First-order logic */
-thunder <- Probability(0.1).
-sunny <- Probability(0.8).
-cloudy if not sunny.
-mow_grass(L) <- Probability(0.3) if lawn(L) and not raining and grass_long(L).
-mow_grass(L) <- Probability(0.3) if lawn(L) and day and sunny and grass_long(L).
+thunder <- P(0.1).
+sunny <- P(0.8).
+grass_long(l1) <- P(0.7).
+grass_long(l2) <- P(0.25).
 
 lawn(l1).
 lawn(l2).
 
-grass_long(l1) <- Probability(0.7).
-grass_long(l2) <- Probability(0.25).
-
+cloudy if not sunny.
+mow_grass(L) if lawn(L) and not raining and grass_long(L).
 noisy if mow_grass(L) and lawn(L).
 noisy if thunder.
 

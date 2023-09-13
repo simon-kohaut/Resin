@@ -1,13 +1,10 @@
-use crate::circuit::reactive_circuit::update;
+use crate::circuit::leaf::Leaf;
 use crate::circuit::ReactiveCircuit;
 use crate::circuit::{shared_leaf, Model, SharedLeaf};
 use crate::language::Resin;
 use clap::Parser;
 use clingo::{control, Control, ModelType, Part, ShowType, SolveMode};
 use std::panic;
-use std::sync::{Arc, Mutex};
-
-use crate::{drop, lift};
 
 use super::SharedReactiveCircuit;
 
@@ -19,7 +16,7 @@ pub struct Args {
     pub source: String,
 }
 
-fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin, target: &String) {
+fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
     // get a solve handle
     let mut handle = ctl
         .solve(SolveMode::YIELD, &[])
@@ -51,43 +48,101 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin, target: &St
                     .symbols(ShowType::COMPLEMENT | ShowType::ALL)
                     .expect("Failed to retrieve complementary symbols in the model.");
 
-                let mut model = Model::new(vec![], None);
+                let mut model = Model::new(&vec![], &None);
                 println!("");
-                for symbol in complement {
-                    let name = format!("¬{}", symbol);
-                    if name == target.to_string() {
+
+                for source in &resin.sources {
+                    // Check if source atom is in symbols
+                    // If it is, add it with an initial probability of 0
+                    for symbol in &atoms {
+                        let name = format!("{}", symbol);
+                        if source.name == name {
+                            let leaf: SharedLeaf;
+                            if resin.leafs.get(&name).is_none() {
+                                leaf = Leaf::new(&0.0, &0.0, &name).share();
+                                resin.leafs.insert(name, leaf.clone());
+                            } else {
+                                leaf = resin.leafs.get(&name).unwrap().clone();
+                            }
+                            model.append(&leaf);
+                        }
+                    }
+
+                    // Check if source atom is in complementary symbols
+                    // If it is, add it with an initial probability of 1
+                    for symbol in &complement {
+                        let name = format!("¬{}", symbol);
+                        if source.name == name {
+                            let leaf: SharedLeaf;
+                            if resin.leafs.get(&name).is_none() {
+                                leaf = Leaf::new(&1.0, &0.0, &name).share();
+                                resin.leafs.insert(name, leaf.clone());
+                            } else {
+                                leaf = resin.leafs.get(&name).unwrap().clone();
+                            }
+                            model.append(&leaf);
+                        }
+                    }
+                }
+
+                for clause in &resin.clauses {
+                    // Clauses that are deterministic do not need to be included in model
+                    if clause.probability.is_none() {
                         continue;
                     }
 
-                    print!(" {}", name);
-                    let leaf: SharedLeaf;
-                    if resin.leafs.get(&name).is_none() {
-                        leaf = shared_leaf(0.0, 0.0, name.clone());
-                        resin.leafs.insert(name, leaf.clone());
-                    } else {
-                        leaf = resin.leafs.get(&name).unwrap().clone();
-                    }
-                    model.append(leaf)
-                }
-                println!("");
+                    // Check if clause atom is in symbols
+                    // If it is, check if conditions are met and add its conditional probability
+                    for symbol in &atoms {
+                        let name = format!("{}", symbol);
+                        let node_name = format!("P({} | {})", name, clause.body.join(", "));
+                        if clause.head == name {
+                            // If the conditions in this clause are violated,
+                            // We do not add the conditional probability
+                            let mut conditions_met = true;
+                            for condition in &clause.body {
+                                for complementary in &complement {
+                                    if condition == complementary.name().unwrap() {
+                                        conditions_met = false;
+                                        break;
+                                    }
+                                }
+                            }
 
-                for symbol in atoms {
-                    let name = format!("{}", symbol);
-                    if name == target.to_string() {
-                        continue;
+                            if conditions_met {
+                                let leaf: SharedLeaf;
+                                if resin.leafs.get(&node_name).is_none() {
+                                    leaf =
+                                        shared_leaf(clause.probability.unwrap(), 0.0, &node_name);
+                                    resin.leafs.insert(node_name.clone(), leaf.clone());
+                                } else {
+                                    leaf = resin.leafs.get(&node_name).unwrap().clone();
+                                }
+                                model.append(&leaf);
+                                println!("Added {} = {}", node_name, clause.probability.unwrap());
+                            }
+                        }
                     }
 
-                    print!(" {}", name);
-                    let leaf: SharedLeaf;
-                    if resin.leafs.get(&name).is_none() {
-                        leaf = shared_leaf(1.0, 0.0, name.clone());
-                        resin.leafs.insert(name, leaf.clone());
-                    } else {
-                        leaf = resin.leafs.get(&name).unwrap().clone();
+                    // Check if source atom is in complementary symbols
+                    // If it is, add it with an initial probability of 1
+                    for symbol in &complement {
+                        let name = format!("¬{}", symbol);
+                        let node_name = format!("P({} | {})", name, clause.body.join(", "));
+                        if clause.head == name[2..] {
+                            let leaf: SharedLeaf;
+                            if resin.leafs.get(&node_name).is_none() {
+                                leaf =
+                                    shared_leaf(1.0 - clause.probability.unwrap(), 0.0, &node_name);
+                                resin.leafs.insert(node_name.clone(), leaf.clone());
+                            } else {
+                                leaf = resin.leafs.get(&node_name).unwrap().clone();
+                            }
+                            model.append(&leaf);
+                            println!("Added {} = {}", node_name, clause.probability.unwrap());
+                        }
                     }
-                    model.append(leaf)
                 }
-                println!("");
 
                 rc.lock().unwrap().models.push(model);
                 for leaf in resin.leafs.values() {
@@ -115,7 +170,7 @@ pub fn compile(model: String) -> Vec<ReactiveCircuit> {
 
     // Pass data to Clingo and obtain stable models
     for target_index in 0..resin.targets.len() {
-        let mut rc = ReactiveCircuit::empty_new().share();
+        let rc = ReactiveCircuit::empty_new().share();
 
         let program = resin.to_asp(target_index);
         println!("\n{}\n", &program);
@@ -132,26 +187,7 @@ pub fn compile(model: String) -> Vec<ReactiveCircuit> {
             .expect("Failed to ground a logic program.");
 
         // solve
-        let target_name = resin.targets[target_index].name.clone();
-        solve(ctl, rc.clone(), &mut resin, &target_name);
-
-        for clause in &resin.clauses {
-            match resin.leafs.get(&clause.head) {
-                Some(leaf) => leaf.lock().unwrap().set_value(clause.probability),
-                None => (),
-            }
-
-            match resin.leafs.get(&format!("¬{}", clause.head)) {
-                Some(leaf) => {
-                    if clause.body.len() > 0 {
-                        leaf.lock().unwrap().set_value(1.0);
-                    } else {
-                        leaf.lock().unwrap().set_value(1.0 - clause.probability)
-                    }
-                }
-                None => (),
-            }
-        }
+        solve(ctl, rc.clone(), &mut resin);
 
         // let not_rain = resin.leafs.get("¬rain").unwrap().clone();
         // let rain = resin.leafs.get("rain").unwrap().clone();
@@ -162,7 +198,7 @@ pub fn compile(model: String) -> Vec<ReactiveCircuit> {
 
         // let not_high_speed = leafs.get("¬high_speed").unwrap().clone();
         // let high_speed = leafs.get("high_speed").unwrap().clone();
-        
+
         // let not_sunny = resin.leafs.get("¬sunny").unwrap().clone();
         // let sunny = resin.leafs.get("sunny").unwrap().clone();
         // let not_cloudy = resin.leafs.get("¬cloudy").unwrap().clone();
@@ -177,13 +213,8 @@ pub fn compile(model: String) -> Vec<ReactiveCircuit> {
         // let grass_long_2 = resin.leafs.get("grass_long(l2)").unwrap().clone();
         // let lawn_1 = resin.leafs.get("lawn(l1)").unwrap().clone();
         // let lawn_2 = resin.leafs.get("lawn(l2)").unwrap().clone();
-        
-        let john = resin.leafs.get("hears_alarm(john)").unwrap().clone();
-        let not_john = resin.leafs.get("¬hears_alarm(john)").unwrap().clone();
 
-        println!("{} - {}", john.lock().unwrap().get_value(), not_john.lock().unwrap().get_value());
-
-        let _ = rc.lock().unwrap().to_svg("0".to_string());
+        let _ = rc.lock().unwrap().to_svg("0");
         println!("{}", rc.lock().unwrap().get_value());
 
         // lift![rc, raining, not_raining];
@@ -202,7 +233,7 @@ pub fn compile(model: String) -> Vec<ReactiveCircuit> {
         // update(not_grass_long_1.clone(), 0.0);
 
         // let _ = rc.lock().unwrap().to_svg("3".to_string());
-        
+
         // println!("{}", rc.lock().unwrap().get_value());
 
         // rc = rc.drop(vec![lawn_1.clone(), lawn_2.clone(), day.clone(), not_day.clone()]);

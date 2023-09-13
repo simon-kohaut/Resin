@@ -1,9 +1,9 @@
-heads_1 <- Probability(0.6).
-heads_2 <- Probability(0.4).
+heads_1 <- P(0.5).
+heads_2 <- P(0.5).
+win_1 <- P(0.7) if heads_1.
+win_2 <- P(0.7) if heads_2.
 
-blue <- Probability(0.1).
-
-win if heads_1 and heads_2.
-win if blue.
+win if win_1.
+win if win_2.
 
 win -> target("/winning").

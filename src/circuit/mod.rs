@@ -6,6 +6,7 @@ pub use crate::circuit::reactive_circuit::{add_model, ReactiveCircuit, SharedRea
 pub mod compile;
 pub mod leaf;
 pub mod model;
+pub mod morphisms;
 pub mod reactive_circuit;
 
 #[macro_export]
@@ -14,11 +15,11 @@ macro_rules! lift {
     {
         // Lift each individual leaf node
         $(
-            $crate::circuit::reactive_circuit::lift_leaf($circuit.clone(), $leaf.clone());
+            $crate::circuit::morphisms::lift_leaf($circuit, $leaf);
         )*
 
         // Prune the resulting new circuit
-        $crate::circuit::reactive_circuit::prune(Some($circuit.clone()));
+        $crate::circuit::morphisms::prune(Some($circuit.clone()));
     }
 }
 
@@ -28,10 +29,10 @@ macro_rules! drop {
     {
         // Drop each individual leaf node
         $(
-            $crate::circuit::reactive_circuit::drop_leaf($circuit.clone(), $leaf.clone());
+            $crate::circuit::morphisms::drop_leaf($circuit, $leaf);
         )*
 
         // Prune the resulting new circuit
-        $crate::circuit::reactive_circuit::prune(Some($circuit.clone()));
+        $crate::circuit::morphisms::prune(Some($circuit.clone()));
     }
 }

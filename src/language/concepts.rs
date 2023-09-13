@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::panic;
 use std::str::FromStr;
 
+use regex::Regex;
+
 use crate::circuit::SharedLeaf;
 
 use super::super::circuit::ReactiveCircuit;
@@ -17,8 +19,9 @@ pub struct Resin {
 
 pub struct Clause {
     pub head: String,
-    pub probability: f64,
+    pub probability: Option<f64>,
     pub body: Vec<String>,
+    pub code: String,
 }
 
 pub struct Source {
@@ -59,7 +62,7 @@ impl Clause {
     pub fn to_asp(&self) -> String {
         let mut asp;
 
-        if self.probability != 1.0 {
+        if self.probability.is_some() {
             asp = format!("{{{}}}", self.head)
         } else {
             asp = format!("{}", self.head);
@@ -74,6 +77,13 @@ impl Clause {
 
         asp += ".\n";
         asp
+    }
+
+    pub fn substitute(&self, variable: String, instance: String) -> Clause {
+        let regex = Regex::new(&format!("{}", variable)).unwrap();
+        let substituted = regex.replace_all(&self.code, instance);
+
+        return substituted.parse().unwrap();
     }
 }
 
@@ -142,9 +152,9 @@ impl FromStr for Clause {
                 _ => (),
             }
 
-            let mut probability = "1.0".to_string();
+            let mut probability = None;
             match panic::catch_unwind(|| &captures["probability"]) {
-                Ok(capture) => probability = capture.to_string(),
+                Ok(capture) => probability = Some(capture.to_string().parse().unwrap()),
                 _ => (),
             }
             let _ = panic::take_hook();
@@ -156,8 +166,9 @@ impl FromStr for Clause {
 
             let clause = Clause {
                 head: captures["atom"].to_string(),
-                probability: probability.parse().unwrap(),
+                probability,
                 body: literals,
+                code: input.to_string(),
             };
 
             return Ok(clause);
