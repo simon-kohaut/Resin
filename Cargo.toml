@@ -13,8 +13,9 @@ keywords = [
 rclrs = "*"
 std_msgs = "*"
 plotly = "*"
-ndarray = "*"
+ndarray = "0.14"
 ndarray-stats = "*"
+ndarray-linalg = { version = "0.13", features = ["openblas-system"] }
 clippy = "*"
 itertools = "*"
 nom = "*"

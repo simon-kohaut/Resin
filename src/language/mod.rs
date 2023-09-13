@@ -1,4 +1,4 @@
-pub mod concepts;
+mod concepts;
 mod matching;
 
 pub use crate::language::concepts::{Clause, Resin, ResinType, Source, Target};
