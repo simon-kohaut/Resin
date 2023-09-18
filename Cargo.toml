@@ -14,12 +14,20 @@ rclrs = "*"
 std_msgs = "*"
 plotly = "*"
 ndarray = "0.14"
-ndarray-stats = "*"
+ndarray-rand = "*"
+ndarray-npy = "*"
 ndarray-linalg = { version = "0.13", features = ["openblas-system"] }
 clippy = "*"
 itertools = "*"
 nom = "*"
 regex = "*"
 lazy_static = "*"
+rand = "*"
+linfa = "0.4"
+linfa-nn = "0.5"
+linfa-clustering = "0.4"
+linfa-datasets = { version = "0.4", features = ["iris"] }
+rand_xoshiro = "*"
+approx = "*"
 clingo = { version = "0.7.2", features = ["derive"] }
 clap = { version = "4.4.1", features = ["derive"] }
