@@ -11,7 +11,6 @@ use std::{
 use crate::circuit::Model;
 use crate::circuit::SharedLeaf;
 
-#[derive(Debug)]
 pub struct ReactiveCircuit {
     pub models: Vec<Model>,
     pub parent: Option<SharedReactiveCircuit>,

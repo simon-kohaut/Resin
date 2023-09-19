@@ -3,7 +3,9 @@ pub use crate::circuit::leaf::{shared_leaf, Leaf, SharedLeaf};
 pub use crate::circuit::model::{Model, SharedModel};
 pub use crate::circuit::reactive_circuit::{add_model, ReactiveCircuit, SharedReactiveCircuit};
 
+pub mod category;
 pub mod compile;
+pub mod ipc;
 pub mod leaf;
 pub mod model;
 pub mod morphisms;

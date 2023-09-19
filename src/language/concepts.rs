@@ -6,11 +6,11 @@ use regex::Regex;
 
 use crate::circuit::SharedLeaf;
 
-use super::super::circuit::ReactiveCircuit;
+use super::super::circuit::SharedReactiveCircuit;
 use super::matching::{CLAUSE_REGEX, LITERAL_REGEX, SOURCE_REGEX, TARGET_REGEX};
 
 pub struct Resin {
-    pub circuits: Vec<ReactiveCircuit>,
+    pub circuits: Vec<SharedReactiveCircuit>,
     pub clauses: Vec<Clause>,
     pub sources: Vec<Source>,
     pub targets: Vec<Target>,

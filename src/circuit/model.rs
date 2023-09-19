@@ -7,7 +7,6 @@ use crate::circuit::SharedReactiveCircuit;
 
 pub type SharedModel = Arc<Mutex<Model>>;
 
-#[derive(Debug)]
 pub struct Model {
     pub leafs: Vec<SharedLeaf>,
     pub circuit: Option<SharedReactiveCircuit>,

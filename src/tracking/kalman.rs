@@ -1,7 +1,7 @@
 use ndarray::{array, Array1, Array2};
 use ndarray_linalg::Inverse;
 
-use super::{LinearModel, Vector, Matrix};
+use super::{LinearModel, Matrix, Vector};
 
 pub struct Kalman {
     // Gaussian estimation of state
@@ -48,7 +48,7 @@ impl Kalman {
         }
     }
 
-    pub fn predict(&mut self, input: &Vector) {
+    pub fn predict(&mut self, input: Option<&Vector>) {
         // Predict next state and prediction covariance
         self.prediction = self.model.forward(&self.estimate, input);
         self.prediction_covariance = self

@@ -6,6 +6,8 @@ use clap::Parser;
 use clingo::{control, Control, ModelType, Part, ShowType, SolveMode};
 use std::panic;
 
+use super::category::Category;
+use super::leaf::activate_channel;
 use super::SharedReactiveCircuit;
 
 #[derive(Parser, Debug)]
@@ -27,7 +29,7 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
         handle.resume().expect("Failed resume on solve handle.");
         match handle.model() {
             Ok(Some(model)) => {
-                // get model type
+                // Get model type
                 let model_type = model.model_type().unwrap();
 
                 let type_string = match model_type {
@@ -36,7 +38,7 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
                     ModelType::CautiousConsequences => "Cautious consequences",
                 };
 
-                // get running number of model
+                // Get running number of model
                 let number = model.number().unwrap();
 
                 print!("{} {}:", type_string, number);
@@ -56,15 +58,22 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
                     // If it is, add it with an initial probability of 0
                     for symbol in &atoms {
                         let name = format!("{}", symbol);
+
                         if source.name == name {
-                            let leaf: SharedLeaf;
-                            if resin.leafs.get(&name).is_none() {
-                                leaf = Leaf::new(&0.0, &0.0, &name).share();
-                                resin.leafs.insert(name, leaf.clone());
-                            } else {
-                                leaf = resin.leafs.get(&name).unwrap().clone();
+                            match resin.leafs.get(&name) {
+                                Some(leaf) => model.append(&leaf),
+                                None => {
+                                    let category = Category::new(&name);
+                                    activate_channel(&category.leafs[0], &source.channel, &false);
+                                    activate_channel(&category.leafs[1], &source.channel, &true);
+                                    resin.leafs.insert(name, category.leafs[0].clone());
+                                    resin.leafs.insert(
+                                        category.leafs[1].lock().unwrap().name.to_owned(),
+                                        category.leafs[1].clone(),
+                                    );
+                                    model.append(&category.leafs[0]);
+                                }
                             }
-                            model.append(&leaf);
                         }
                     }
 
@@ -73,14 +82,20 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
                     for symbol in &complement {
                         let name = format!("¬{}", symbol);
                         if source.name == name {
-                            let leaf: SharedLeaf;
-                            if resin.leafs.get(&name).is_none() {
-                                leaf = Leaf::new(&1.0, &0.0, &name).share();
-                                resin.leafs.insert(name, leaf.clone());
-                            } else {
-                                leaf = resin.leafs.get(&name).unwrap().clone();
+                            match resin.leafs.get(&name) {
+                                Some(leaf) => model.append(&leaf),
+                                None => {
+                                    let category = Category::new(&name);
+                                    activate_channel(&category.leafs[0], &source.channel, &false);
+                                    activate_channel(&category.leafs[1], &source.channel, &true);
+                                    resin.leafs.insert(name, category.leafs[0].clone());
+                                    resin.leafs.insert(
+                                        category.leafs[1].lock().unwrap().name.to_owned(),
+                                        category.leafs[1].clone(),
+                                    );
+                                    model.append(&category.leafs[1]);
+                                }
                             }
-                            model.append(&leaf);
                         }
                     }
                 }
@@ -152,7 +167,7 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
                 println!();
             }
             Ok(None) => {
-                // stop if there are no more models
+                resin.circuits.push(rc);
                 break;
             }
             Err(e) => {
@@ -165,7 +180,7 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
     handle.close().expect("Failed to close solve handle.");
 }
 
-pub fn compile(model: String) -> Vec<ReactiveCircuit> {
+pub fn compile(model: String) -> Resin {
     let mut resin = model.parse::<Resin>().unwrap();
 
     // Pass data to Clingo and obtain stable models
@@ -186,68 +201,10 @@ pub fn compile(model: String) -> Vec<ReactiveCircuit> {
         ctl.ground(&parts)
             .expect("Failed to ground a logic program.");
 
-        // solve
+        // Solve and build RC
         solve(ctl, rc.clone(), &mut resin);
-
-        // let not_rain = resin.leafs.get("¬rain").unwrap().clone();
-        // let rain = resin.leafs.get("rain").unwrap().clone();
-        // let not_speed = resin.leafs.get("¬speed").unwrap().clone();
-        // let speed = resin.leafs.get("speed").unwrap().clone();
-        // let not_clearance = leafs.get("¬clearance").unwrap().clone();
-        // let clearance = resin.leafs.get("clearance").unwrap().clone();
-
-        // let not_high_speed = leafs.get("¬high_speed").unwrap().clone();
-        // let high_speed = leafs.get("high_speed").unwrap().clone();
-
-        // let not_sunny = resin.leafs.get("¬sunny").unwrap().clone();
-        // let sunny = resin.leafs.get("sunny").unwrap().clone();
-        // let not_cloudy = resin.leafs.get("¬cloudy").unwrap().clone();
-        // let cloudy = resin.leafs.get("cloudy").unwrap().clone();
-        // let not_day = resin.leafs.get("¬day").unwrap().clone();
-        // let day = resin.leafs.get("day").unwrap().clone();
-        // let not_raining = resin.leafs.get("¬raining").unwrap().clone();
-        // let raining = resin.leafs.get("raining").unwrap().clone();
-        // let not_grass_long_1 = resin.leafs.get("¬grass_long(l1)").unwrap().clone();
-        // let grass_long_1 = resin.leafs.get("grass_long(l1)").unwrap().clone();
-        // let not_grass_long_2 = resin.leafs.get("¬grass_long(l2)").unwrap().clone();
-        // let grass_long_2 = resin.leafs.get("grass_long(l2)").unwrap().clone();
-        // let lawn_1 = resin.leafs.get("lawn(l1)").unwrap().clone();
-        // let lawn_2 = resin.leafs.get("lawn(l2)").unwrap().clone();
-
-        let _ = rc.lock().unwrap().to_svg("0");
-        println!("{}", rc.lock().unwrap().get_value());
-
-        // lift![rc, raining, not_raining];
-        // let _ = rc.lock().unwrap().to_svg("1".to_string());
-        // println!("{}", rc.lock().unwrap().get_value());
-
-        // lift![rc, raining, not_raining];
-        // lift![rc, cloudy, not_cloudy, sunny, not_sunny];
-        // let _ = rc.lock().unwrap().to_svg("2".to_string());
-        // println!("{}", rc.lock().unwrap().get_value());
-
-        // drop![rc, lawn_1, lawn_2];
-        // update(not_raining.clone(), 0.7);
-        // update(raining.clone(), 0.3);
-        // update(grass_long_1.clone(), 1.0);
-        // update(not_grass_long_1.clone(), 0.0);
-
-        // let _ = rc.lock().unwrap().to_svg("3".to_string());
-
-        // println!("{}", rc.lock().unwrap().get_value());
-
-        // rc = rc.drop(vec![lawn_1.clone(), lawn_2.clone(), day.clone(), not_day.clone()]);
-        // rc = rc.lift(vec![sunny.clone(), cloudy.clone(), not_sunny.clone(), not_cloudy.clone(), raining.clone(), not_raining.clone()]);
-        // lift![rc, not_speed, speed];
-        // println!("{}", rc.lock().unwrap().get_value());
-
-        // // drop![rc, rain, not_rain];
-        // update(rain.clone(), 0.2);
-
-        // println!("{}", rc.lock().unwrap().get_value());
-        // let _ = rc.lock().unwrap().to_svg("fitted_resin".to_string());
     }
 
-    // Create a Reactive Circuits for each target signal
-    return Vec::new();
+    // Return the compiled Resin program
+    return resin;
 }
