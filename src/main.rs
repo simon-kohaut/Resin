@@ -5,21 +5,52 @@ mod frequencies;
 mod language;
 mod tracking;
 
-use crate::circuit::{compile, Args};
 use crate::circuit::ipc::retreive_messages;
+use crate::circuit::{compile, Args};
+use circuit::{add_model, shared_leaf, Model, ReactiveCircuit, SharedLeaf, SharedReactiveCircuit};
 use clap::Parser;
 use frequencies::FoCEstimator;
-use tracking::{Kalman, LinearModel};
+use itertools::Itertools;
 use linfa::prelude::Records;
-use ndarray::{array, concatenate, Array2, Axis};
-use std::{fs::read_to_string, process::Output};
 use linfa::traits::Transformer;
 use linfa::Dataset;
 use linfa_clustering::Dbscan;
 use linfa_datasets::iris;
+use ndarray::{array, concatenate, Array2, Axis};
 use plotly::common::Mode;
 use plotly::{Plot, Scatter};
 use std::io::{stdin, stdout, Read, Write};
+use std::{fs::read_to_string, process::Output};
+use tracking::{Kalman, LinearModel};
+
+pub fn power_set<T: Clone>(leafs: &[T]) -> Vec<Vec<T>> {
+    let mut power_set = Vec::new();
+    for i in 0..leafs.len() + 1 {
+        for set in leafs.iter().cloned().combinations(i) {
+            power_set.push(set);
+        }
+    }
+    power_set
+}
+
+fn randomized_rc(number_leafs: i32) -> (SharedReactiveCircuit, Vec<SharedLeaf>) {
+    let mut leafs = vec![];
+    for i in 0..number_leafs {
+        let leaf = shared_leaf(0.0, 0.0, &i.to_string());
+        leafs.push(leaf);
+    }
+
+    let rc = ReactiveCircuit::empty_new().share();
+    let combinations = power_set(&leafs);
+    for combination in combinations {
+        if combination.len() == 0 {
+            continue;
+        }
+        add_model(&rc, &combination, &None);
+    }
+
+    (rc, leafs)
+}
 
 fn create_data() -> Array2<f64> {
     let mut data = vec![];
@@ -129,10 +160,20 @@ fn main() -> std::io::Result<()> {
     let model = read_to_string(args.source).unwrap();
     let resin = compile(model);
 
-    loop {
-        println!("Value of RC = {}", resin.circuits[0].lock().unwrap().get_value());
-        retreive_messages();
-    }
+    let (rc, leafs) = randomized_rc(10);
+    let _ = rc.lock().unwrap().to_svg("randomized");
+    println!("Value of RC = {:?}", rc.lock().unwrap().get_value());
+
+    lift![&rc, &leafs[0]];
+    let _ = rc.lock().unwrap().to_svg("randomized_lifted");
+    println!("Value of RC = {:?}", rc.lock().unwrap().get_value());
 
     Ok(())
+
+    // loop {
+    //     println!("Value of RC = {:?}", resin.circuits[0].lock().unwrap().get_value());
+    //     retreive_messages();
+    // }
+
+    // Ok(())
 }

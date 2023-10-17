@@ -152,8 +152,6 @@ pub fn prune(circuit: Option<SharedReactiveCircuit>) -> Option<SharedReactiveCir
         .models
         .retain(|m| m.leafs.len() > 0 || m.circuit.is_some());
 
-    circuit_guard.update();
-
     // Remove this circuit if it is empty
     if circuit_guard.models.len() == 0 {
         return None;

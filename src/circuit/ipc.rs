@@ -1,15 +1,16 @@
 use lazy_static::lazy_static;
 use rclrs::{spin_once, Context, Node, RclrsError, Subscription, QOS_PROFILE_DEFAULT};
 use std::sync::{Arc, Mutex};
-use std_msgs::msg::Float64;
 use std::time::Duration;
+use std_msgs::msg::Float64;
 
-use super::SharedLeaf;
 use super::leaf::update;
+use super::SharedLeaf;
 
 lazy_static! {
     static ref CONTEXT: Context = Context::new(vec![]).unwrap();
-    static ref NODE: Arc<Mutex<Node>> = Arc::new(Mutex::new(Node::new(&CONTEXT, "resin_ipc").unwrap()));
+    static ref NODE: Arc<Mutex<Node>> =
+        Arc::new(Mutex::new(Node::new(&CONTEXT, "resin_ipc").unwrap()));
 }
 
 pub struct IpcChannel {
@@ -31,7 +32,6 @@ impl IpcChannel {
             &format!("{}{}", prefix, channel),
             QOS_PROFILE_DEFAULT,
             move |msg: Float64| {
-                println!("Got new value {}", &msg.data);
                 if invert {
                     update(&leaf, &(1.0 - msg.data));
                 } else {

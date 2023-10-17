@@ -188,23 +188,25 @@ impl ReactiveCircuit {
     }
 
     // Write interface
-    pub fn get_value(&mut self) -> f64 {
-        if !self.valid {
-            self.update()
+    pub fn get_value(&mut self) -> (f64, usize) {
+        // If already valid, just return the value without operations
+        if self.valid {
+            return (self.value, 0);
         }
 
-        self.value
-    }
+        // Invalid RC needs to recompute its value and operations count
+        let (mut sum, mut operations_count) = self.models[0].get_value();
 
-    pub fn update(&mut self) {
-        let mut sum = 0.0;
-
-        for model in &self.models {
-            sum += model.value();
+        for model in &self.models[1..] {
+            let (model_value, model_operations) = model.get_value();
+            sum += model_value;
+            operations_count += model_operations + 1; // Account for the addition with +1
         }
 
         self.value = sum;
         self.valid = true;
+
+        (sum, operations_count)
     }
 
     pub fn invalidate(&mut self) {

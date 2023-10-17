@@ -21,19 +21,27 @@ impl Model {
     }
 
     // Read interface
-    pub fn value(&self) -> f64 {
-        let mut product = 1.0;
-
-        for leaf in &self.leafs {
-            product *= leaf.lock().unwrap().get_value();
-        }
+    pub fn get_value(&self) -> (f64, usize) {
+        let mut operations_count = if self.leafs.len() < 2 {
+            0
+        } else {
+            self.leafs.len() - 1
+        };
+        let mut product = self
+            .leafs
+            .iter()
+            .fold(1.0, |acc, leaf| leaf.lock().unwrap().get_value() * acc);
 
         match &self.circuit {
-            Some(circuit) => product *= circuit.lock().unwrap().get_value(),
+            Some(circuit) => {
+                let (circuit_value, circuit_operations) = circuit.lock().unwrap().get_value();
+                product *= circuit_value;
+                operations_count += circuit_operations;
+            }
             None => (),
         }
 
-        product
+        (product, operations_count)
     }
 
     pub fn contains(&self, leaf: &SharedLeaf) -> bool {
