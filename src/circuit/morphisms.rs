@@ -7,11 +7,13 @@ pub fn lift_leaf(circuit: &SharedReactiveCircuit, leaf: &SharedLeaf) {
     // Assume we will only visit a circuit containing this leaf if
     // it is the root circuit. Otherwise, we remove the leaf beforehand to
     // not require a reference to the parent circuit
+    let non_leaf_circuit = ReactiveCircuit::empty_new().share();
+    non_leaf_circuit.lock().unwrap().layer = circuit_guard.layer + 1;
+    non_leaf_circuit.lock().unwrap().parent = Some(circuit.clone());
     if circuit_guard.contains(&leaf) {
         // A new root with two models, one containing the relevant leaf and a circuit
         // of all models with that leaf, one with all models that do not contain the leaf
         let mut root_circuit = ReactiveCircuit::empty_new();
-        let non_leaf_circuit = ReactiveCircuit::empty_new().share();
         let leaf_circuit = ReactiveCircuit::empty_new().share();
 
         for model in &mut circuit_guard.models {
@@ -35,17 +37,16 @@ pub fn lift_leaf(circuit: &SharedReactiveCircuit, leaf: &SharedLeaf) {
         root_circuit.layer = circuit_guard.layer;
         leaf_circuit.lock().unwrap().layer = circuit_guard.layer + 1;
         leaf_circuit.lock().unwrap().parent = Some(circuit.clone());
-        non_leaf_circuit.lock().unwrap().layer = circuit_guard.layer + 1;
-        non_leaf_circuit.lock().unwrap().parent = Some(circuit.clone());
 
         // Construct the new root circuits models
         root_circuit
             .models
-            .push(Model::new(&Vec::new(), &Some(non_leaf_circuit)));
+            .push(Model::new(&Vec::new(), &Some(non_leaf_circuit.clone())));
         root_circuit
             .models
             .push(Model::new(&vec![leaf.clone()], &Some(leaf_circuit)));
         *circuit_guard = root_circuit;
+        return;
     } else {
         for model in &mut circuit_guard.models {
             if model.circuit.is_some() {
@@ -58,12 +59,12 @@ pub fn lift_leaf(circuit: &SharedReactiveCircuit, leaf: &SharedLeaf) {
                     .contains(&leaf)
                 {
                     // Build new circuit for parts that are irrelevant to leaf
-                    let mut non_leaf_circuit = ReactiveCircuit::empty_new();
-                    non_leaf_circuit.layer = circuit_layer + 1;
+                    let mut remainder_circuit = ReactiveCircuit::empty_new();
+                    remainder_circuit.layer = circuit_layer + 1;
                     add_model(
                         &model.circuit.as_ref().unwrap(),
                         &model.leafs,
-                        &Some(non_leaf_circuit.share()),
+                        &Some(remainder_circuit.share()),
                     );
 
                     // Make this model react to leaf
@@ -79,7 +80,7 @@ pub fn lift_leaf(circuit: &SharedReactiveCircuit, leaf: &SharedLeaf) {
                     let mut model_circuit_guard = model.circuit.as_mut().unwrap().lock().unwrap();
                     for inner_model in &mut model_circuit_guard.models {
                         if !inner_model.contains(&leaf) {
-                            non_leaf_circuit.models.push(inner_model.copy());
+                            remainder_circuit.models.push(inner_model.copy());
                             inner_model.empty();
                         }
                     }
@@ -90,6 +91,8 @@ pub fn lift_leaf(circuit: &SharedReactiveCircuit, leaf: &SharedLeaf) {
             }
         }
     }
+    drop(circuit_guard);
+    add_model(circuit, &vec![], &Some(non_leaf_circuit.clone()));
 }
 
 pub fn drop_leaf(circuit: &SharedReactiveCircuit, leaf: &SharedLeaf) {

@@ -16,7 +16,6 @@ lawn(l2).
 cloudy if not sunny.
 mow_grass(L) if lawn(L) and not raining and grass_long(L).
 noisy if mow_grass(L) and lawn(L).
-noisy if thunder.
 
 /* Target signals 
  * Computed via probabilistic inference in Reactive Circuit

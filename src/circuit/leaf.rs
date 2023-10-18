@@ -2,13 +2,14 @@ use std::sync::{Arc, Mutex};
 
 use super::ipc::IpcChannel;
 use super::SharedReactiveCircuit;
-use crate::frequencies::{self, FoCEstimator};
+use crate::frequencies::FoCEstimator;
 
 pub struct Leaf {
     value: f64,
     frequency: f64,
+    cluster: i32,
     foc_estimator: FoCEstimator,
-    ipc_channel: Option<IpcChannel>,
+    pub ipc_channel: Option<IpcChannel>,
     pub name: String,
     pub circuits: Vec<SharedReactiveCircuit>,
 }
@@ -19,6 +20,7 @@ pub fn shared_leaf(value: f64, frequency: f64, name: &str) -> SharedLeaf {
     Arc::new(Mutex::new(Leaf {
         value,
         frequency,
+        cluster: 0,
         foc_estimator: FoCEstimator::new(&0.0),
         ipc_channel: None,
         name: name.to_owned(),
@@ -31,6 +33,7 @@ impl Leaf {
         Self {
             value: *value,
             frequency: *frequency,
+            cluster: 0,
             foc_estimator: FoCEstimator::new(&frequency),
             ipc_channel: None,
             name: name.to_owned(),
@@ -55,12 +58,25 @@ impl Leaf {
     }
 
     pub fn set_value(&mut self, value: &f64) {
-        println!("Set new value {}", value);
         self.value = *value;
         match self.foc_estimator.update() {
             Ok(frequency) => self.frequency = frequency,
             Err(e) => panic!("{}", e),
         }
+    }
+
+    pub fn set_cluster(&mut self, cluster: &i32) -> i32 {
+        let cluster_step = self.cluster - *cluster;
+        self.cluster = *cluster;
+        cluster_step
+    }
+
+    pub fn get_cluster(&self) -> i32 {
+        self.cluster
+    }
+
+    pub fn get_frequency(&self) -> f64 {
+        self.frequency
     }
 
     pub fn remove_circuit(&mut self, circuit: &SharedReactiveCircuit) {

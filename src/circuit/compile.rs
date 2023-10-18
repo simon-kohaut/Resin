@@ -52,6 +52,20 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
 
                 let mut model = Model::new(&vec![], &None);
                 println!("");
+                println!(
+                    "Positive: {:?}",
+                    atoms
+                        .iter()
+                        .map(|symbol| symbol.name().unwrap())
+                        .collect::<Vec<&str>>()
+                );
+                println!(
+                    "Negative: {:?}",
+                    complement
+                        .iter()
+                        .map(|symbol| symbol.name().unwrap())
+                        .collect::<Vec<&str>>()
+                );
 
                 for source in &resin.sources {
                     // Check if source atom is in symbols
@@ -61,7 +75,10 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
 
                         if source.name == name {
                             match resin.leafs.get(&name) {
-                                Some(leaf) => model.append(&leaf),
+                                Some(leaf) => {
+                                    model.append(&leaf);
+                                    println!("Added source {}", &leaf.lock().unwrap().name);
+                                }
                                 None => {
                                     let category = Category::new(&name);
                                     activate_channel(&category.leafs[0], &source.channel, &false);
@@ -72,6 +89,10 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
                                         category.leafs[1].clone(),
                                     );
                                     model.append(&category.leafs[0]);
+                                    println!(
+                                        "Added source {}",
+                                        &category.leafs[0].lock().unwrap().name
+                                    );
                                 }
                             }
                         }
@@ -80,10 +101,13 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
                     // Check if source atom is in complementary symbols
                     // If it is, add it with an initial probability of 1
                     for symbol in &complement {
-                        let name = format!("¬{}", symbol);
+                        let name = format!("{}", symbol);
                         if source.name == name {
-                            match resin.leafs.get(&name) {
-                                Some(leaf) => model.append(&leaf),
+                            match resin.leafs.get(&format!("¬{}", name)) {
+                                Some(leaf) => {
+                                    model.append(&leaf);
+                                    println!("Added source {}", &leaf.lock().unwrap().name);
+                                }
                                 None => {
                                     let category = Category::new(&name);
                                     activate_channel(&category.leafs[0], &source.channel, &false);
@@ -94,6 +118,10 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
                                         category.leafs[1].clone(),
                                     );
                                     model.append(&category.leafs[1]);
+                                    println!(
+                                        "Added source {}",
+                                        &category.leafs[1].lock().unwrap().name
+                                    );
                                 }
                             }
                         }

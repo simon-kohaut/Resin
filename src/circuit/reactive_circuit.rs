@@ -8,8 +8,8 @@ use std::{
 };
 
 // Resin
-use crate::circuit::Model;
 use crate::circuit::SharedLeaf;
+use crate::{circuit::Model, frequencies};
 
 pub struct ReactiveCircuit {
     pub models: Vec<Model>,
@@ -67,28 +67,36 @@ impl ReactiveCircuit {
 
     pub fn to_svg(&self, path: &str) -> std::io::Result<()> {
         let mut dot_text = String::from_str("strict digraph {\nnode [shape=circle]\n").unwrap();
-        dot_text += &self.to_dot_file(&mut 0);
+        dot_text += &self.get_dot_text(&mut 0);
         dot_text += "}";
 
-        let dot_path = path.to_owned() + ".dot";
-        let mut f = File::create(&dot_path)?;
-        f.write_all(dot_text.as_bytes())?;
-        f.sync_all()?;
+        self.to_dot(path)?;
 
         let svg_text = Command::new("dot")
-            .args(["-Tsvg", &dot_path])
+            .args(["-Tsvg", &path])
             .output()
             .expect("Failed to run graphviz!");
 
-        let svg_path = path.to_owned() + ".svg";
-        let mut f = File::create(svg_path)?;
+        let mut f = File::create(path)?;
         f.write_all(&svg_text.stdout)?;
         f.sync_all()?;
 
         Ok(())
     }
 
-    pub fn to_dot_file(&self, index: &mut i32) -> String {
+    pub fn to_dot(&self, path: &str) -> std::io::Result<()> {
+        let mut dot_text = String::from_str("strict digraph {\nnode [shape=circle]\n").unwrap();
+        dot_text += &self.get_dot_text(&mut 0);
+        dot_text += "}";
+
+        let mut file = File::create(path)?;
+        file.write_all(dot_text.as_bytes())?;
+        file.sync_all()?;
+
+        Ok(())
+    }
+
+    pub fn get_dot_text(&self, index: &mut i32) -> String {
         let mut dot_text = String::new();
 
         let circuit_index = index.clone();
@@ -146,11 +154,15 @@ impl ReactiveCircuit {
             for leaf in &model.leafs {
                 let name = leaf.lock().unwrap().name.clone();
                 let value = leaf.lock().unwrap().get_value();
+                let frequency = leaf.lock().unwrap().get_frequency();
+                let cluster = leaf.lock().unwrap().get_cluster();
                 dot_text += &String::from_str(&format!(
-                    "\"{name}\n{value:.2}\" [{color}]\n",
+                    "\"{name}\nP = {value:.3}\nf = {frequency:.3}\nC = {cluster}\" [{color}]\n",
                     name = name,
                     color = color,
                     value = value,
+                    frequency = frequency,
+                    cluster = cluster
                 ))
                 .unwrap();
                 dot_text += &String::from_str(&format!(
@@ -176,7 +188,7 @@ impl ReactiveCircuit {
                     ))
                     .unwrap();
 
-                    dot_text += &model_circuit.lock().unwrap().to_dot_file(index);
+                    dot_text += &model_circuit.lock().unwrap().get_dot_text(index);
                 }
                 None => (),
             }
