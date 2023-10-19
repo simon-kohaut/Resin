@@ -8,24 +8,22 @@ mod tracking;
 use crate::circuit::ipc::{retreive_messages, RandomizedIpcChannel};
 use crate::circuit::{compile, Args};
 use crate::language::Resin;
-use circuit::{add_model, shared_leaf, Model, ReactiveCircuit, SharedLeaf, SharedReactiveCircuit};
+use circuit::leaf::activate_channel;
+use circuit::{shared_leaf, Model, ReactiveCircuit, SharedLeaf, SharedReactiveCircuit};
 use clap::Parser;
-use frequencies::FoCEstimator;
 use itertools::Itertools;
-use linfa::prelude::Records;
 use linfa::traits::Transformer;
 use linfa::Dataset;
 use linfa_clustering::Dbscan;
-use linfa_datasets::iris;
 use ndarray::{array, concatenate, Array2, Axis};
 use plotly::common::Mode;
-use plotly::{Plot, Scatter};
-use plotly::layout::{Layout, Legend, Axis as PAxis};
 use plotly::common::Title;
+use plotly::layout::{Axis as PAxis, Layout, Legend};
+use plotly::{Plot, Scatter};
+use rand::seq::SliceRandom;
 use std::io::{stdin, stdout, Read, Write};
+use std::time::SystemTime;
 use std::{fs::read_to_string, process::Output};
-use tracking::{Kalman, LinearModel};
-use std::time::{SystemTime};
 
 pub fn power_set<T: Clone>(leafs: &[T]) -> Vec<Vec<T>> {
     let mut power_set = Vec::new();
@@ -35,6 +33,21 @@ pub fn power_set<T: Clone>(leafs: &[T]) -> Vec<Vec<T>> {
         }
     }
     power_set
+}
+
+pub fn random_set<T: Clone>(leafs: &[T]) -> Vec<Vec<T>> {
+    let mut random_set = Vec::new();
+    for i in 0..leafs.len() + 1 {
+        for _ in 0..leafs.len() + 1 {
+            random_set.push(
+                leafs
+                    .choose_multiple(&mut rand::thread_rng(), i)
+                    .cloned()
+                    .collect(),
+            );
+        }
+    }
+    random_set
 }
 
 fn randomized_rc(number_leafs: i32) -> (SharedReactiveCircuit, Vec<SharedLeaf>) {
@@ -50,7 +63,8 @@ fn randomized_rc(number_leafs: i32) -> (SharedReactiveCircuit, Vec<SharedLeaf>) 
         if combination.len() == 0 {
             continue;
         }
-        add_model(&rc, &combination, &None);
+
+        let _ = Model::new(&combination, &None, &Some(rc.clone()));
     }
 
     (rc, leafs)
@@ -64,8 +78,7 @@ fn create_data(leafs: &[SharedLeaf]) -> Array2<f64> {
     return Array2::from_shape_vec((leafs.len(), 1), data).unwrap();
 }
 
-fn frequency_adaptation(resin: &mut Resin) {
-    let mut leafs: Vec<SharedLeaf> = resin.leafs.values().cloned().collect();
+fn frequency_adaptation(leafs: &mut [SharedLeaf], circuits: &mut [SharedReactiveCircuit]) {
     leafs.sort_by(|a, b| {
         a.lock()
             .unwrap()
@@ -101,7 +114,7 @@ fn frequency_adaptation(resin: &mut Resin) {
         }
 
         if cluster_step != 0 {
-            for circuit in &mut resin.circuits {
+            for circuit in &mut *circuits {
                 if cluster_step > 0 {
                     for _ in 0..cluster_step {
                         drop![circuit, &leafs[i]];
@@ -136,51 +149,69 @@ fn pause() {
     stdin().read(&mut [0]).unwrap();
 }
 
-fn main() -> std::io::Result<()> {
-    let args = Args::parse();
+fn randomized_study() {
+    println!("Building randomized RC.");
+    let (rc, mut leafs) = randomized_rc(3);
 
-    let model = read_to_string(args.source).unwrap();
-    let mut resin = compile(model);
+    println!("Activate randomized IPC.");
+    print!("F = {{");
+    for leaf in &leafs {
+        let channel = format!("leaf_{}", leaf.lock().unwrap().name);
+        activate_channel(&leaf, &channel, &false);
 
-    for leaf in resin.leafs.values() {
-        match &leaf.lock().unwrap().ipc_channel {
-            Some(channel) => {
-                use rand::Rng;
-                let mut rng = rand::thread_rng();
-                let new_publisher =
-                    RandomizedIpcChannel::new(&channel.topic, rng.gen_range(0.1..50.0));
-                new_publisher.unwrap().start();
-            }
-            None => (),
-        }
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        let new_publisher = RandomizedIpcChannel::new(
+            &leaf.lock().unwrap().ipc_channel.as_ref().unwrap().topic,
+            rng.gen_range(0.001..30.0),
+        );
+        print!("{}, ", new_publisher.as_ref().unwrap().frequency);
+        new_publisher.unwrap().start();
     }
+    println!("}}");
 
-    // let (rc, leafs) = randomized_rc(10);
-    // println!("Value of RC = {:?}", rc.lock().unwrap().get_value());
+    // rc.lock().unwrap().to_svg("output/original_rc.svg").unwrap();
+
     // lift![&rc, &leafs[0]];
-    // println!("Value of RC = {:?}", rc.lock().unwrap().get_value());
+    // rc.lock().unwrap().to_svg("output/lift_0.svg").unwrap();
+
+    // lift![&rc, &leafs[0]];
+    // rc.lock().unwrap().to_svg("output/lift_00.svg").unwrap();
+
+    // drop![&rc, &leafs[0]];
+    // rc.lock()
+    //     .unwrap()
+    //     .to_svg("output/lift_00_drop0.svg")
+    //     .unwrap();
+
+    // lift![&rc, &leafs[2]];
+    // rc.lock()
+    //     .unwrap()
+    //     .to_svg("output/lift_00_drop0_lift2.svg")
+    //     .unwrap();
+
+    // lift![&rc, &leafs[1]];
+    // rc.lock()
+    //     .unwrap()
+    //     .to_svg("output/lift_00_drop0_lift2_lift1.svg")
+    //     .unwrap();
 
     let clock = SystemTime::now();
+    let mut circuits = vec![rc.clone()];
     let mut operations = vec![];
     let mut times = vec![];
     loop {
         retreive_messages();
-        frequency_adaptation(&mut resin);
-        // for leaf in &resin_leafs {
-        //     print!("{}, ", leaf.lock().unwrap().get_frequency());
-        // }
-        let (value, n_ops) = resin.circuits[0].lock().unwrap().get_value();
-        // println!("{:?}", (value, n_ops));
+        frequency_adaptation(&mut leafs, &mut circuits);
+        let (value, n_ops) = rc.lock().unwrap().get_value();
         operations.push(n_ops);
-        // resin.circuits[0]
-        //     .lock()
-        //     .unwrap()
-        //     .to_svg(&format!("output/{}.svg", n_ops))?;
-        
+
         match clock.elapsed() {
             Ok(elapsed) => {
                 times.push(elapsed.as_secs_f64());
-                if elapsed.as_secs() > 5 { break; }
+                if elapsed.as_secs() >= 5 {
+                    break;
+                }
             }
             Err(e) => {
                 println!("Error {e:?}");
@@ -189,14 +220,70 @@ fn main() -> std::io::Result<()> {
         }
     }
 
+    println!("Export results.");
     let mut plot = Plot::new();
     plot.add_trace(Scatter::new(times, operations));
-    plot.set_layout(Layout::new()
-        .title(Title::new("Sales Data"))
-        .x_axis(PAxis::new().title(Title::new("Time / s")))
-        .y_axis(PAxis::new().title(Title::new("#Operations")))
+    plot.set_layout(
+        Layout::new()
+            .title(Title::new("Sales Data"))
+            .x_axis(PAxis::new().title(Title::new("Time / s")))
+            .y_axis(PAxis::new().title(Title::new("#Operations"))),
     );
     plot.write_html("output/operations_curve.html");
+
+    rc.lock().unwrap().to_svg("output/final_rc.svg").unwrap();
+}
+
+fn main() -> std::io::Result<()> {
+    randomized_study();
+
+    // let args = Args::parse();
+
+    // let model = read_to_string(args.source).unwrap();
+    // let mut resin = compile(model);
+
+    // for leaf in resin.leafs.values() {
+    //     match &leaf.lock().unwrap().ipc_channel {
+    //         Some(channel) => {
+    //             use rand::Rng;
+    //             let mut rng = rand::thread_rng();
+    //             let new_publisher =
+    //                 RandomizedIpcChannel::new(&channel.topic, rng.gen_range(0.1..50.0));
+    //             new_publisher.unwrap().start();
+    //         }
+    //         None => (),
+    //     }
+    // }
+
+    // let clock = SystemTime::now();
+    // let mut operations = vec![];
+    // let mut times = vec![];
+    // loop {
+    //     retreive_messages();
+    //     frequency_adaptation(&mut resin);
+    //     let (value, n_ops) = resin.circuits[0].lock().unwrap().get_value();
+    //     operations.push(n_ops);
+
+    //     match clock.elapsed() {
+    //         Ok(elapsed) => {
+    //             times.push(elapsed.as_secs_f64());
+    //             if elapsed.as_secs() > 5 { break; }
+    //         }
+    //         Err(e) => {
+    //             println!("Error {e:?}");
+    //             break;
+    //         }
+    //     }
+    // }
+
+    // let mut plot = Plot::new();
+    // plot.add_trace(Scatter::new(times, operations));
+    // plot.set_layout(Layout::new()
+    //     .title(Title::new("Sales Data"))
+    //     .x_axis(PAxis::new().title(Title::new("Time / s")))
+    //     .y_axis(PAxis::new().title(Title::new("#Operations")))
+    // );
+    // plot.write_html("output/operations_curve.html");
 
     Ok(())
 

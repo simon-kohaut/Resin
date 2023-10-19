@@ -50,7 +50,7 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
                     .symbols(ShowType::COMPLEMENT | ShowType::ALL)
                     .expect("Failed to retrieve complementary symbols in the model.");
 
-                let mut model = Model::new(&vec![], &None);
+                let mut model = Model::empty_new(&Some(rc.clone()));
                 println!("");
                 println!(
                     "Positive: {:?}",
@@ -76,7 +76,7 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
                         if source.name == name {
                             match resin.leafs.get(&name) {
                                 Some(leaf) => {
-                                    model.append(&leaf);
+                                    model.append(leaf);
                                     println!("Added source {}", &leaf.lock().unwrap().name);
                                 }
                                 None => {
@@ -105,7 +105,7 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
                         if source.name == name {
                             match resin.leafs.get(&format!("¬{}", name)) {
                                 Some(leaf) => {
-                                    model.append(&leaf);
+                                    model.append(leaf);
                                     println!("Added source {}", &leaf.lock().unwrap().name);
                                 }
                                 None => {
@@ -187,11 +187,7 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
                     }
                 }
 
-                rc.lock().unwrap().models.push(model);
-                for leaf in resin.leafs.values() {
-                    leaf.lock().unwrap().circuits.push(rc.clone());
-                }
-
+                rc.lock().unwrap().add_model(&model);
                 println!();
             }
             Ok(None) => {

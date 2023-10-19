@@ -19,7 +19,7 @@ pub struct IpcChannel {
 }
 
 pub struct RandomizedIpcChannel {
-    frequency: f64,
+    pub frequency: f64,
     publisher: Publisher<Float64>,
 }
 

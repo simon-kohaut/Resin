@@ -11,6 +11,8 @@ use std::{
 use crate::circuit::SharedLeaf;
 use crate::{circuit::Model, frequencies};
 
+use super::SharedModel;
+
 pub struct ReactiveCircuit {
     pub models: Vec<Model>,
     pub parent: Option<SharedReactiveCircuit>,
@@ -221,6 +223,11 @@ impl ReactiveCircuit {
         (sum, operations_count)
     }
 
+    pub fn add_model(&mut self, model: &Model) {
+        // self.invalidate();
+        self.models.push(model.copy());
+    }
+
     pub fn invalidate(&mut self) {
         self.valid = false;
         if self.parent.is_some() {
@@ -233,23 +240,15 @@ impl ReactiveCircuit {
             model.remove(leaf);
         }
     }
+
+    pub fn empty(&mut self) {
+        self.models = vec![];
+    }
 }
 
-pub fn add_model(
-    circuit: &SharedReactiveCircuit,
-    leafs: &[SharedLeaf],
-    sub_circuit: &Option<SharedReactiveCircuit>,
-) {
-    let model = Model::new(&leafs, &sub_circuit);
-    circuit.lock().unwrap().models.push(model);
-
-    for leaf in leafs {
-        leaf.lock().unwrap().circuits.push(circuit.clone());
-    }
-
-    if sub_circuit.is_some() {
-        sub_circuit.as_ref().unwrap().lock().unwrap().parent = Some(circuit.clone());
-    }
+pub fn move_model(target: &SharedReactiveCircuit, model: &mut Model) {
+    target.lock().unwrap().add_model(model);
+    model.set_parent(target);
 }
 
 impl std::fmt::Display for ReactiveCircuit {

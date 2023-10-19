@@ -5,19 +5,48 @@ use std::sync::{Arc, Mutex};
 use crate::circuit::SharedLeaf;
 use crate::circuit::SharedReactiveCircuit;
 
+use super::leaf;
+use super::ReactiveCircuit;
+
 pub type SharedModel = Arc<Mutex<Model>>;
 
 pub struct Model {
     pub leafs: Vec<SharedLeaf>,
     pub circuit: Option<SharedReactiveCircuit>,
+    pub parent: Option<SharedReactiveCircuit>,
 }
 
 impl Model {
-    pub fn new(leafs: &[SharedLeaf], circuit: &Option<SharedReactiveCircuit>) -> Self {
-        Self {
-            leafs: leafs.to_owned(),
-            circuit: circuit.clone(),
+    pub fn new(
+        leafs: &[SharedLeaf],
+        circuit: &Option<SharedReactiveCircuit>,
+        parent: &Option<SharedReactiveCircuit>,
+    ) -> Self {
+        let mut model = Model::empty_new(&None);
+
+        for leaf in leafs {
+            model.append(leaf);
         }
+
+        model.circuit = circuit.clone();
+        if parent.is_some() {
+            model.set_parent(&parent.as_ref().unwrap());
+            parent.as_ref().unwrap().lock().unwrap().add_model(&model);
+        }
+
+        model
+    }
+
+    pub fn empty_new(parent: &Option<SharedReactiveCircuit>) -> Self {
+        Self {
+            leafs: vec![],
+            circuit: None,
+            parent: parent.clone(),
+        }
+    }
+
+    pub fn share(&self) -> SharedModel {
+        Arc::new(Mutex::new(self.copy()))
     }
 
     // Read interface
@@ -37,6 +66,10 @@ impl Model {
                 let (circuit_value, circuit_operations) = circuit.lock().unwrap().get_value();
                 product *= circuit_value;
                 operations_count += circuit_operations;
+
+                if self.leafs.len() > 1 {
+                    operations_count += 1;
+                }
             }
             None => (),
         }
@@ -54,8 +87,20 @@ impl Model {
         false
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.leafs.is_empty() && self.circuit.is_none()
+    }
+
+    pub fn is_leaf(&self) -> bool {
+        self.leafs.len() == 1 && self.circuit.is_none()
+    }
+
+    pub fn is_circuit(&self) -> bool {
+        self.leafs.is_empty() && self.circuit.is_some()
+    }
+
     pub fn copy(&self) -> Model {
-        let mut copy = Model::new(&vec![], &None);
+        let mut copy = Model::new(&vec![], &None, &self.parent);
 
         for leaf in &self.leafs {
             copy.append(&leaf);
@@ -70,16 +115,76 @@ impl Model {
     }
 
     // Write interface
+    pub fn set_parent(&mut self, parent: &SharedReactiveCircuit) {
+        // Set sub-circuit parameters
+        if self.circuit.is_some() {
+            self.circuit.as_ref().unwrap().lock().unwrap().parent = Some(parent.clone());
+            self.circuit.as_ref().unwrap().lock().unwrap().layer = parent.lock().unwrap().layer + 1;
+        }
+
+        // If there was a prior parent, remove reference from leafs
+        if self.parent.is_some() {
+            for leaf in &self.leafs {
+                leaf.lock()
+                    .unwrap()
+                    .remove_circuit(&self.parent.as_ref().unwrap());
+            }
+        }
+
+        // Set new parent for all leafs
+        for leaf in &self.leafs {
+            leaf.lock().unwrap().circuits.push(parent.clone());
+        }
+    }
+
     pub fn append(&mut self, leaf: &SharedLeaf) {
         self.leafs.push(leaf.clone());
+
+        if self.parent.is_some() {
+            leaf.lock()
+                .unwrap()
+                .circuits
+                .push(self.parent.as_ref().unwrap().clone());
+        }
     }
 
     pub fn remove(&mut self, leaf: &SharedLeaf) {
         self.leafs.retain(|l| !Arc::ptr_eq(&l, &leaf));
+
+        if self.parent.is_some() {
+            leaf.lock()
+                .unwrap()
+                .remove_circuit(&self.parent.as_ref().unwrap().clone());
+        }
     }
 
     pub fn empty(&mut self) {
         self.leafs = Vec::new();
         self.circuit = None;
+    }
+
+    pub fn new_circuit(&mut self) {
+        self.circuit = Some(ReactiveCircuit::empty_new().share());
+
+        if self.parent.is_some() {
+            self.circuit.as_ref().unwrap().lock().unwrap().parent = self.parent.clone();
+            self.circuit.as_ref().unwrap().lock().unwrap().layer =
+                self.parent.as_ref().unwrap().lock().unwrap().layer + 1;
+        }
+    }
+
+    pub fn disconnect(&mut self) {
+        if self.parent.is_some() {
+            self.circuit.as_ref().unwrap().lock().unwrap().parent = None;
+            self.circuit.as_ref().unwrap().lock().unwrap().layer = 0;
+
+            for leaf in &self.leafs {
+                leaf.lock()
+                    .unwrap()
+                    .remove_circuit(&self.parent.as_ref().unwrap());
+            }
+
+            self.parent = None;
+        }
     }
 }

@@ -1,7 +1,7 @@
 pub use crate::circuit::compile::{compile, Args};
 pub use crate::circuit::leaf::{shared_leaf, Leaf, SharedLeaf};
 pub use crate::circuit::model::{Model, SharedModel};
-pub use crate::circuit::reactive_circuit::{add_model, ReactiveCircuit, SharedReactiveCircuit};
+pub use crate::circuit::reactive_circuit::{ReactiveCircuit, SharedReactiveCircuit};
 
 pub mod category;
 pub mod compile;
