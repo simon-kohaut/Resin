@@ -17,7 +17,7 @@ use linfa::Dataset;
 use linfa_clustering::Dbscan;
 use ndarray::{array, concatenate, Array2, Axis};
 use plotly::common::Mode;
-use plotly::common::Title;
+use plotly::common::{Title, AxisSide, Font};
 use plotly::layout::{Axis as PAxis, Layout, Legend};
 use plotly::{Plot, Scatter};
 use rand::seq::SliceRandom;
@@ -127,19 +127,6 @@ fn frequency_adaptation(leafs: &mut [SharedLeaf], circuits: &mut [SharedReactive
             }
         }
     }
-
-    // let mut plot = Plot::new();
-    // for leaf in leafs {
-    //     let frequency = leaf.lock().unwrap().get_frequency();
-    //     let cluster = leaf.lock().unwrap().get_cluster();
-    //     let name = leaf.lock().unwrap().name.to_owned();
-    //     plot.add_trace(
-    //         Scatter::new(vec![frequency], vec![cluster])
-    //             .name(name)
-    //             .mode(Mode::Markers),
-    //     );
-    // }
-    // plot.write_html("output/leaf_frequencies.html");
 }
 
 fn pause() {
@@ -151,7 +138,7 @@ fn pause() {
 
 fn randomized_study() {
     println!("Building randomized RC.");
-    let (rc, mut leafs) = randomized_rc(3);
+    let (rc, mut leafs) = randomized_rc(10);
 
     println!("Activate randomized IPC.");
     print!("F = {{");
@@ -163,53 +150,33 @@ fn randomized_study() {
         let mut rng = rand::thread_rng();
         let new_publisher = RandomizedIpcChannel::new(
             &leaf.lock().unwrap().ipc_channel.as_ref().unwrap().topic,
-            rng.gen_range(0.001..30.0),
+            rng.gen_range(0.1..10.0),
         );
         print!("{}, ", new_publisher.as_ref().unwrap().frequency);
         new_publisher.unwrap().start();
     }
     println!("}}");
 
-    // rc.lock().unwrap().to_svg("output/original_rc.svg").unwrap();
-
-    // lift![&rc, &leafs[0]];
-    // rc.lock().unwrap().to_svg("output/lift_0.svg").unwrap();
-
-    // lift![&rc, &leafs[0]];
-    // rc.lock().unwrap().to_svg("output/lift_00.svg").unwrap();
-
-    // drop![&rc, &leafs[0]];
-    // rc.lock()
-    //     .unwrap()
-    //     .to_svg("output/lift_00_drop0.svg")
-    //     .unwrap();
-
-    // lift![&rc, &leafs[2]];
-    // rc.lock()
-    //     .unwrap()
-    //     .to_svg("output/lift_00_drop0_lift2.svg")
-    //     .unwrap();
-
-    // lift![&rc, &leafs[1]];
-    // rc.lock()
-    //     .unwrap()
-    //     .to_svg("output/lift_00_drop0_lift2_lift1.svg")
-    //     .unwrap();
-
-    let clock = SystemTime::now();
     let mut circuits = vec![rc.clone()];
     let mut operations = vec![];
-    let mut times = vec![];
+    let mut delta_times = vec![];
+    let mut times = vec![0.0];
+    let mut max_operations = 0.0;
+    let clock = SystemTime::now();
     loop {
         retreive_messages();
         frequency_adaptation(&mut leafs, &mut circuits);
         let (value, n_ops) = rc.lock().unwrap().get_value();
-        operations.push(n_ops);
+        if operations.is_empty() {
+            max_operations = n_ops as f64;
+        }
+        operations.push(n_ops as f64 / max_operations);
 
         match clock.elapsed() {
             Ok(elapsed) => {
                 times.push(elapsed.as_secs_f64());
-                if elapsed.as_secs() >= 5 {
+                delta_times.push(times[times.len() - 1] - times[times.len() - 2]);
+                if elapsed.as_secs() >= 60 {
                     break;
                 }
             }
@@ -222,16 +189,25 @@ fn randomized_study() {
 
     println!("Export results.");
     let mut plot = Plot::new();
-    plot.add_trace(Scatter::new(times, operations));
+    plot.add_trace(Scatter::new(times.clone(), operations.clone()));
+    plot.add_trace(Scatter::new(times.clone(), delta_times.clone()).y_axis("y2"));
     plot.set_layout(
         Layout::new()
-            .title(Title::new("Sales Data"))
+            .title(Title::new("Reactive Inference"))
             .x_axis(PAxis::new().title(Title::new("Time / s")))
-            .y_axis(PAxis::new().title(Title::new("#Operations"))),
-    );
+            .y_axis(PAxis::new().title(Title::new("#Operations")))
+            .y_axis2(
+                PAxis::new()
+                .title(Title::new("Inference Time").font(Font::new().color("#ff7f0e")))
+                .tick_font(Font::new().color("#ff7f0e"))
+                .anchor("free")
+                .overlaying("y")
+                .side(AxisSide::Right)
+                .position(1.0),
+    ));
     plot.write_html("output/operations_curve.html");
 
-    rc.lock().unwrap().to_svg("output/final_rc.svg").unwrap();
+    // rc.lock().unwrap().to_svg("output/final_rc.svg").unwrap();
 }
 
 fn main() -> std::io::Result<()> {
