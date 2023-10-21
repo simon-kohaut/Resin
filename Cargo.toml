@@ -9,6 +9,12 @@ keywords = [
   "reactive circuits",
 ]
 
+[profile.dev]
+opt-level = 0
+
+[profile.release]
+opt-level = 3
+
 [dependencies]
 rclrs = "*"
 std_msgs = "*"
@@ -31,3 +37,5 @@ rand_xoshiro = "*"
 approx = "*"
 clingo = { version = "0.7.2", features = ["derive"] }
 clap = { version = "4.4.1", features = ["derive"] }
+rayon = "*"
+chashmap = "*"

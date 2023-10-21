@@ -1,4 +1,5 @@
 // Standard library
+use std::ops;
 use std::sync::{Arc, Mutex};
 
 // Resin
@@ -119,7 +120,6 @@ impl Model {
         // Set sub-circuit parameters
         if self.circuit.is_some() {
             self.circuit.as_ref().unwrap().lock().unwrap().parent = Some(parent.clone());
-            self.circuit.as_ref().unwrap().lock().unwrap().layer = parent.lock().unwrap().layer + 1;
         }
 
         // If there was a prior parent, remove reference from leafs
@@ -168,15 +168,12 @@ impl Model {
 
         if self.parent.is_some() {
             self.circuit.as_ref().unwrap().lock().unwrap().parent = self.parent.clone();
-            self.circuit.as_ref().unwrap().lock().unwrap().layer =
-                self.parent.as_ref().unwrap().lock().unwrap().layer + 1;
         }
     }
 
     pub fn disconnect(&mut self) {
         if self.parent.is_some() {
             self.circuit.as_ref().unwrap().lock().unwrap().parent = None;
-            self.circuit.as_ref().unwrap().lock().unwrap().layer = 0;
 
             for leaf in &self.leafs {
                 leaf.lock()
@@ -186,5 +183,25 @@ impl Model {
 
             self.parent = None;
         }
+    }
+}
+
+impl ops::Mul<SharedLeaf> for Model {
+    type Output = Model;
+
+    fn mul(self, _rhs: SharedLeaf) -> Model {
+        let mut multiplied = self.copy();
+        multiplied.append(&_rhs);
+        multiplied
+    }
+}
+
+impl ops::Div<SharedLeaf> for Model {
+    type Output = Model;
+
+    fn div(self, _rhs: SharedLeaf) -> Model {
+        let mut divided = self.copy();
+        divided.remove(&_rhs);
+        divided
     }
 }

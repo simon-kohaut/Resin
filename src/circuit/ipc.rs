@@ -21,10 +21,15 @@ pub struct IpcChannel {
 pub struct RandomizedIpcChannel {
     pub frequency: f64,
     publisher: Publisher<Float64>,
+    value: f64,
 }
 
 pub fn retreive_messages() {
     let _ = spin_once(&NODE.lock().unwrap(), Some(Duration::from_millis(1)));
+}
+
+pub fn shutdown() {
+    drop(&NODE);
 }
 
 impl IpcChannel {
@@ -55,7 +60,7 @@ impl IpcChannel {
 }
 
 impl RandomizedIpcChannel {
-    pub fn new(topic: &str, frequency: f64) -> Result<Self, RclrsError> {
+    pub fn new(topic: &str, frequency: f64, value: f64) -> Result<Self, RclrsError> {
         let publisher = NODE
             .lock()
             .unwrap()
@@ -64,14 +69,19 @@ impl RandomizedIpcChannel {
         Ok(Self {
             frequency,
             publisher,
+            value,
         })
     }
 
     pub fn start(self) {
         std::thread::spawn(move || -> Result<(), rclrs::RclrsError> {
             loop {
+                if !CONTEXT.ok() {
+                    return Ok(());
+                }
+
                 std::thread::sleep(Duration::from_secs_f64(1.0 / self.frequency));
-                self.publisher.publish(Float64 { data: 0.0 })?;
+                self.publisher.publish(Float64 { data: self.value })?;
             }
         });
     }

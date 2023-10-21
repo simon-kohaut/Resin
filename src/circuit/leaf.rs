@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use super::ipc::IpcChannel;
+use super::Model;
 use super::SharedReactiveCircuit;
 use crate::frequencies::FoCEstimator;
 
@@ -59,10 +60,7 @@ impl Leaf {
 
     pub fn set_value(&mut self, value: &f64) {
         self.value = *value;
-        match self.foc_estimator.update() {
-            Ok(frequency) => self.frequency = frequency,
-            Err(e) => panic!("{}", e),
-        }
+        self.frequency = self.foc_estimator.update();
     }
 
     pub fn set_cluster(&mut self, cluster: &i32) -> i32 {
@@ -86,8 +84,7 @@ impl Leaf {
 
 pub fn update(leaf: &SharedLeaf, value: &f64) {
     leaf.lock().unwrap().set_value(value);
-    let circuits = leaf.lock().unwrap().circuits.clone();
-    for circuit in circuits {
+    for circuit in &leaf.lock().unwrap().circuits {
         circuit.lock().unwrap().invalidate();
     }
 }
@@ -95,4 +92,15 @@ pub fn update(leaf: &SharedLeaf, value: &f64) {
 pub fn activate_channel(leaf: &SharedLeaf, channel: &str, invert: &bool) {
     let channel = IpcChannel::new(leaf.clone(), channel.to_owned(), invert.to_owned()).unwrap();
     leaf.lock().unwrap().ipc_channel = Some(channel);
+}
+
+pub fn move_leafs(drain: &mut Model, source: &mut Model) {
+    for leaf in &mut source.leafs {
+        if source.parent.is_some() {
+            leaf.lock()
+                .unwrap()
+                .remove_circuit(source.parent.as_ref().unwrap());
+        }
+        drain.append(&leaf);
+    }
 }

@@ -2,21 +2,19 @@
 use std::{
     fs::File,
     io::prelude::*,
+    ops,
     process::Command,
     str::FromStr,
     sync::{Arc, Mutex},
 };
 
 // Resin
+use crate::circuit::Model;
 use crate::circuit::SharedLeaf;
-use crate::{circuit::Model, frequencies};
-
-use super::SharedModel;
 
 pub struct ReactiveCircuit {
     pub models: Vec<Model>,
     pub parent: Option<SharedReactiveCircuit>,
-    pub layer: i32,
     value: f64,
     valid: bool,
 }
@@ -24,11 +22,10 @@ pub struct ReactiveCircuit {
 pub type SharedReactiveCircuit = Arc<Mutex<ReactiveCircuit>>;
 
 impl ReactiveCircuit {
-    pub fn new(models: Vec<Model>, parent: Option<SharedReactiveCircuit>, layer: i32) -> Self {
+    pub fn new(models: Vec<Model>, parent: Option<SharedReactiveCircuit>) -> Self {
         Self {
             models,
             parent,
-            layer,
             value: 0.0,
             valid: false,
         }
@@ -38,7 +35,6 @@ impl ReactiveCircuit {
         Self {
             models: Vec::new(),
             parent: None,
-            layer: 0,
             value: 0.0,
             valid: false,
         }
@@ -63,7 +59,6 @@ impl ReactiveCircuit {
         for model in &self.models {
             copy.models.push(model.copy());
         }
-        copy.layer = self.layer;
         copy
     }
 
@@ -110,9 +105,8 @@ impl ReactiveCircuit {
         };
 
         dot_text += &String::from_str(&format!(
-            "rc{index} [shape=square, label=\"RC{index} - {layer}\n{value:.2}\", {color}]\n",
+            "rc{index} [shape=square, label=\"RC{index}\n{value:.2}\", {color}]\n",
             index = circuit_index,
-            layer = self.layer,
             value = self.value,
             color = color
         ))
@@ -224,14 +218,15 @@ impl ReactiveCircuit {
     }
 
     pub fn add_model(&mut self, model: &Model) {
-        // self.invalidate();
         self.models.push(model.copy());
     }
 
     pub fn invalidate(&mut self) {
-        self.valid = false;
-        if self.parent.is_some() {
-            self.parent.as_mut().unwrap().lock().unwrap().invalidate();
+        if self.valid {
+            self.valid = false;
+            if self.parent.is_some() {
+                self.parent.as_mut().unwrap().lock().unwrap().invalidate();
+            }
         }
     }
 
@@ -246,9 +241,16 @@ impl ReactiveCircuit {
     }
 }
 
+pub fn get_root(circuit: &SharedReactiveCircuit) -> SharedReactiveCircuit {
+    match &circuit.lock().unwrap().parent {
+        Some(parent) => get_root(&parent),
+        None => circuit.clone(),
+    }
+}
+
 pub fn move_model(target: &SharedReactiveCircuit, model: &mut Model) {
-    target.lock().unwrap().add_model(model);
-    model.set_parent(target);
+    Model::new(&model.leafs, &model.circuit, &Some(target.clone()));
+    model.empty();
 }
 
 impl std::fmt::Display for ReactiveCircuit {
@@ -285,5 +287,15 @@ impl std::fmt::Display for ReactiveCircuit {
             }
         }
         Ok(())
+    }
+}
+
+impl ops::Add<Model> for ReactiveCircuit {
+    type Output = ReactiveCircuit;
+
+    fn add(self, _rhs: Model) -> ReactiveCircuit {
+        let mut added = self.copy();
+        added.add_model(&_rhs);
+        added
     }
 }

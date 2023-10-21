@@ -10,31 +10,40 @@ pub mod leaf;
 pub mod model;
 pub mod morphisms;
 pub mod reactive_circuit;
+pub mod view;
 
 #[macro_export]
 macro_rules! lift {
-    ($circuit:expr, $($leaf:expr),+) =>
-    {
+    ($lifted_circuit:expr, $circuit:expr, $leaf:expr) => {
         // Lift each individual leaf node
-        $(
-            $crate::circuit::morphisms::lift_leaf($circuit, $leaf);
-        )*
+        if $circuit.lock().unwrap().contains($leaf) {
+            println!("Construct root");
+            let root = ReactiveCircuit::empty_new().share();
+            println!("Construct model");
+            let _ = Model::new(&vec![], &Some($circuit.clone()), &Some(root.clone()));
+            println!("Lift root");
+            $crate::circuit::morphisms::lift_leaf(&root, $leaf);
+        } else {
+            let circuits = $crate::circuit::morphisms::search_leaf_ahead($circuit, $leaf);
+            $crate::circuit::morphisms::parallel_lift_leaf(circuits, $leaf);
+        }
 
         // Prune the resulting new circuit
-        $crate::circuit::morphisms::prune(Some($circuit.clone()));
-    }
+        $lifted_circuit = $crate::circuit::morphisms::prune(Some(
+            crate::circuit::reactive_circuit::get_root(&$circuit),
+        ))
+        .unwrap();
+    };
 }
 
 #[macro_export]
 macro_rules! drop {
-    ($circuit:expr, $($leaf:expr),+) =>
-    {
+    ($dropped_circuit:expr, $circuit:expr, $leaf:expr) => {
         // Drop each individual leaf node
-        $(
-            $crate::circuit::morphisms::drop_leaf($circuit, $leaf);
-        )*
+        let circuits = $crate::circuit::morphisms::search_leaf($circuit, $leaf);
+        $crate::circuit::morphisms::parallel_drop_leaf(circuits, $leaf);
 
         // Prune the resulting new circuit
-        $crate::circuit::morphisms::prune(Some($circuit.clone()));
-    }
+        $dropped_circuit = $crate::circuit::morphisms::prune(Some($circuit.clone())).unwrap();
+    };
 }
