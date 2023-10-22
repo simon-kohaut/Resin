@@ -10,7 +10,10 @@ pub mod leaf;
 pub mod model;
 pub mod morphisms;
 pub mod reactive_circuit;
-pub mod view;
+pub mod rc;
+pub mod add;
+pub mod mul;
+pub mod memory;
 
 #[macro_export]
 macro_rules! lift {

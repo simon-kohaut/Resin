@@ -16,6 +16,7 @@ pub struct Leaf {
 }
 
 pub type SharedLeaf = Arc<Mutex<Leaf>>;
+pub type Foliage = Arc<Mutex<Vec<Leaf>>>;
 
 pub fn shared_leaf(value: f64, frequency: f64, name: &str) -> SharedLeaf {
     Arc::new(Mutex::new(Leaf {
