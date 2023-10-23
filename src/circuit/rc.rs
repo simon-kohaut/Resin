@@ -1,11 +1,10 @@
-use std::sync::Arc;
 use chashmap::CHashMap;
+use std::sync::Arc;
 
-use super::leaf::Foliage;
 use super::add::Add;
-use super::mul::Mul;
+use super::leaf::Foliage;
 use super::memory::{Memory, MemoryCell};
-
+use super::mul::{Mul, Collection};
 
 pub struct RC {
     pub scope: Vec<usize>,
@@ -13,33 +12,38 @@ pub struct RC {
     pub foliage: Foliage,
 }
 
-
 impl RC {
     // ============================= //
     // ========  CONSTRUCT  ======== //
     pub fn new(foliage: Foliage) -> Self {
+        // Initialize new memory
+        let memory = Arc::new(CHashMap::new());
+
         // We create two initial memory cells
         // - The 0th cell contains the RC value
         // - The 1st cell contains a const 1 for terminal products
         let cell_0 = MemoryCell {
             storage: 0.0,
             valid: true,
-            add: Some(Add::empty_new()),
+            add: Some(Add::empty_new(foliage.clone(), memory.clone())),
+            foliage: foliage.clone(),
+            memory: memory.clone(),
         };
         let cell_1 = MemoryCell {
             storage: 1.0,
             valid: true,
             add: None,
+            foliage: foliage.clone(),
+            memory: memory.clone(),
         };
 
-        let map = CHashMap::new();
-        map.insert_new(0, cell_0);
-        map.insert_new(1, cell_1);
+        memory.insert_new(0, cell_0);
+        memory.insert_new(1, cell_1);
 
         Self {
             scope: vec![],
-            memory: Arc::new(map),
-            foliage: foliage.clone(),
+            memory,
+            foliage,
         }
     }
 
@@ -49,6 +53,27 @@ impl RC {
         // Obtain memorized value
         let cell = &mut self.memory.get_mut(&0).unwrap();
         cell.value()
+    }
+
+    pub fn flat(&self) -> RC {
+        let flat_rc = RC::new(self.foliage.clone());
+        flat_rc.memory.get_mut(&0).unwrap().add =
+            self.memory.get_mut(&0).unwrap().flat(&flat_rc.memory);
+
+        flat_rc
+    }
+
+    pub fn is_flat(&self) -> bool {
+        self.memory.get(&0).unwrap().is_flat()
+    }
+
+    pub fn is_equal(&self, other: &RC) -> bool {
+        Arc::ptr_eq(&self.foliage, &other.foliage)
+            && self
+                .memory
+                .get(&0)
+                .unwrap()
+                .is_equal(&other.memory.get(&0).unwrap())
     }
 
     // =============================== //
@@ -64,11 +89,15 @@ impl RC {
     }
 
     pub fn collect(&mut self, index: usize) {
-        unimplemented!()
-        // if self.scope.contains(&index) {
-        //     let cell = &mut self.memory.lock().unwrap()[0];
-        //     cell.collect(index);
-        // }
+        let cell = &mut self.memory.get_mut(&0).unwrap();
+        match cell.collect(index) {
+            Some(Collection::Apply(collection)) => {
+                let mut add = Add::empty_new(self.foliage.clone(), self.memory.clone());
+                add._apply_collection(index, collection);
+            }
+            Some(Collection::Forward(_)) => panic!("RC got Forward collection!"),
+            None => ()
+        }
     }
 
     pub fn disperse(&mut self, index: usize) {
@@ -78,7 +107,6 @@ impl RC {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -90,7 +118,10 @@ mod tests {
     #[test]
     fn test_rc() {
         // Create foliage and basic memory layour
-        let foliage = Arc::new(Mutex::new(vec![Leaf::new(&0.5, &0.0, "a"), Leaf::new(&0.5, &0.0, "b")]));
+        let foliage = Arc::new(Mutex::new(vec![
+            Leaf::new(&0.5, &0.0, "a"),
+            Leaf::new(&0.5, &0.0, "b"),
+        ]));
         let mut rc = RC::new(foliage.clone());
 
         // Empty RC should return 0
@@ -114,5 +145,4 @@ mod tests {
         // rc.collect(0);
         // assert_eq!(value_before, rc.value());
     }
-
 }

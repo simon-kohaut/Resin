@@ -3,17 +3,17 @@ pub use crate::circuit::leaf::{shared_leaf, Leaf, SharedLeaf};
 pub use crate::circuit::model::{Model, SharedModel};
 pub use crate::circuit::reactive_circuit::{ReactiveCircuit, SharedReactiveCircuit};
 
+pub mod add;
 pub mod category;
 pub mod compile;
 pub mod ipc;
 pub mod leaf;
+pub mod memory;
 pub mod model;
 pub mod morphisms;
-pub mod reactive_circuit;
-pub mod rc;
-pub mod add;
 pub mod mul;
-pub mod memory;
+pub mod rc;
+pub mod reactive_circuit;
 
 #[macro_export]
 macro_rules! lift {
