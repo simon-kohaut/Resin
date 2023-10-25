@@ -3,6 +3,7 @@ use crate::tracking::LinearModel;
 use ndarray::array;
 use std::time::Instant;
 
+#[derive(Clone)]
 pub struct FoCEstimator {
     kalman: Kalman,
     clock: Instant,

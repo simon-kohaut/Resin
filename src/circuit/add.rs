@@ -1,8 +1,8 @@
 use std::ops;
 
 use super::leaf::Foliage;
-use super::memory::Memory;
 use super::mul::Collection;
+use super::mul::MarkedMul;
 use super::mul::Mul;
 
 #[derive(Clone)]
@@ -10,41 +10,33 @@ pub struct Add {
     pub scope: Vec<usize>,
     pub products: Vec<Mul>,
     pub foliage: Foliage,
-    pub memory: Memory,
 }
 
 impl Add {
     // ============================= //
     // ========  CONSTRUCT  ======== //
-    pub fn new(scope: Vec<usize>, products: Vec<Mul>, foliage: Foliage, memory: Memory) -> Self {
+    pub fn new(scope: Vec<usize>, products: Vec<Mul>, foliage: Foliage) -> Self {
         Self {
             scope,
             products,
             foliage,
-            memory,
         }
     }
 
-    pub fn empty_new(foliage: Foliage, memory: Memory) -> Self {
+    pub fn empty_new(foliage: Foliage) -> Self {
         Self {
             scope: vec![],
             products: vec![],
             foliage,
-            memory,
         }
     }
 
-    pub fn from_index_matrix(
-        index_matrix: Vec<Vec<usize>>,
-        foliage: Foliage,
-        memory: Memory,
-    ) -> Self {
+    pub fn from_index_matrix(index_matrix: Vec<Vec<usize>>, foliage: Foliage) -> Self {
         // Fill new Add structure with products and scope
-        let mut add = Add::empty_new(foliage.clone(), memory.clone());
+        let mut add = Add::empty_new(foliage.clone());
         for leaf_indices in index_matrix {
             add.scope.append(&mut leaf_indices.to_owned());
-            add.products
-                .push(Mul::new(leaf_indices, foliage.clone(), memory.clone()));
+            add.products.push(Mul::new(leaf_indices, foliage.clone()));
         }
 
         // Correct scope to only contain the unique elements
@@ -55,8 +47,8 @@ impl Add {
     }
 
     pub fn from_mul(mul: Mul) -> Add {
-        let mut add = Add::empty_new(mul.foliage.clone(), mul.memory.clone());
-        add.products.push(mul);
+        let mut add = Add::empty_new(mul.foliage.clone());
+        add.add_mul(mul);
         add
     }
 
@@ -67,23 +59,8 @@ impl Add {
         self.products.iter().fold(0.0, |acc, mul| acc + mul.value())
     }
 
-    pub fn flat(&self, memory: &Memory) -> Add {
-        let flattened_products: Vec<Mul> = self
-            .products
-            .iter()
-            .map(|mul| mul.flat(memory))
-            .flatten()
-            .collect();
-        let mut flat_add = Add::empty_new(self.foliage.clone(), memory.clone());
-        for mul in flattened_products {
-            flat_add.add_mul(mul);
-        }
-
-        flat_add
-    }
-
     pub fn is_flat(&self) -> bool {
-        self.products.iter().all(|mul| mul.is_flat())
+        !self.products.iter().any(|mul| !mul.is_flat())
     }
 
     pub fn is_equal(&self, other: &Add) -> bool {
@@ -112,6 +89,25 @@ impl Add {
         true
     }
 
+    pub fn get_dot_text(&self, index: Option<usize>) -> (String, usize) {
+        let mut dot_text = String::new();
+        let index = if index.is_some() { index.unwrap() } else { 0 };
+
+        dot_text += &format!("s_{index} [label=\"+\"]\n");
+
+        let mut last = index;
+        let mut sub_text;
+        let mut next = index + 1;
+        for mul in &self.products {
+            dot_text += &format!("s_{index} -> p_{next}\n");
+            (sub_text, last) = mul.get_dot_text(Some(next));
+            dot_text += &sub_text;
+            next = last + 1;
+        }
+
+        (dot_text, last)
+    }
+
     // =============================== //
     // ===========  WRITE  =========== //
     pub fn add_mul(&mut self, mul: Mul) {
@@ -124,139 +120,103 @@ impl Add {
         self.products.push(mul);
     }
 
+    pub fn mul_index(&mut self, index: usize) {
+        match self.scope.binary_search(&index) {
+            Ok(_) => (),
+            Err(position) => self.scope.insert(position, index),
+        }
+
+        self.products
+            .iter_mut()
+            .for_each(|mul| mul.mul_index(index));
+    }
+
     pub fn remove(&mut self, index: usize) {
-        let position = self.scope.iter().position(|i| &index != i);
-        match position {
-            Some(i) => {
-                self.scope.swap_remove(i);
-                let _ = self
-                    .products
-                    .iter_mut()
-                    .filter(|mul| mul.scope.contains(&index))
-                    .for_each(|mul| mul.remove(index));
-            }
-            None => (),
+        if self.scope.contains(&index) {
+            self.scope.retain(|i| *i != index);
+            let _ = self.products.iter_mut().for_each(|mul| mul.remove(index));
         }
     }
 
     pub fn collect(&mut self, index: usize) -> Option<Collection> {
-        let mut is_apply = false;
-        let mut is_forward = false;
-        let mut collection = vec![];
+        let mut forwards = vec![];
+        let mut applies = vec![];
         let mut to_remove = vec![];
+
+        let active = self.products.iter().any(|mul| mul.factors.contains(&index));
         for i in 0..self.products.len() {
-            match self.products[i].collect(index) {
+            match self.products[i].collect(index, active) {
                 Some(Collection::Apply(mut muls)) => {
-                    collection.append(&mut muls);
-                    is_apply = true;
+                    applies.push((muls, self.products[i].factors.clone()));
+                    to_remove.push(i);
                 }
                 Some(Collection::Forward(mut muls)) => {
-                    collection.append(&mut muls);
+                    forwards.append(&mut muls);
                     to_remove.push(i);
-                    is_forward = true;
                 }
-                None => continue
+                None => continue,
             }
         }
 
         // Sanity check that leafs are all on single layer
-        if is_apply && is_forward {
+        if !applies.is_empty() && !forwards.is_empty() {
             panic!("A leaf is distributed over multiple layers!");
         }
 
         // Remove products that have generated a Forward
-        to_remove.iter().for_each(|i| { self.products.swap_remove(*i); });
+        to_remove.reverse();
+        to_remove.iter().for_each(|i| {
+            self.products.remove(*i);
+        });
 
         // Pass gathered collections up
-        if collection.is_empty() {
+        if !applies.is_empty() {
+            self._apply_collection(index, applies);
             None
-        } else if is_apply {
-            self._apply_collection(index, collection);
-            None
+        } else if !forwards.is_empty() {
+            Some(Collection::Forward(forwards))
         } else {
-            Some(Collection::Forward(collection))
+            None
         }
     }
 
-    pub fn _apply_collection(&mut self, index: usize, collection: Vec<Mul>) {
-        for mul in &collection {
-            if mul.scope.is_empty() {
-                self.add_mul(Mul::new(vec![index], self.foliage.clone(), self.memory.clone()));
-            } else {
-                self.add_mul(Add::from_mul(mul.clone()) * index);
+    pub fn _apply_collection(&mut self, index: usize, applies: Vec<(Vec<MarkedMul>, Vec<usize>)>) {
+        for (marked_muls, mut prefix) in applies {
+            let mut in_scope_add = Add::empty_new(self.foliage.clone());
+            let mut out_of_scope_add = Add::empty_new(self.foliage.clone());
+
+            for marked_mul in marked_muls {
+                match marked_mul {
+                    MarkedMul::Singleton => {
+                        let mut factors = vec![index];
+                        factors.append(&mut prefix);
+                        self.add_mul(Mul::new(factors, self.foliage.clone()));
+                    }
+                    MarkedMul::InScope(mul) => in_scope_add.add_mul(mul.clone()),
+                    MarkedMul::OutOfScope(mul) => out_of_scope_add.add_mul(mul.clone()),
+                }
+            }
+
+            if !in_scope_add.products.is_empty() {
+                let mut factors = vec![index];
+                factors.append(&mut prefix);
+                let mut leaf_mul = Mul::new(factors, self.foliage.clone());
+                leaf_mul.mul_add(in_scope_add);
+                for i in &prefix {
+                    leaf_mul.mul_index(*i);
+                }
+                self.add_mul(leaf_mul);
+            }
+
+            if !out_of_scope_add.products.is_empty() {
+                let mut factors = vec![];
+                factors.append(&mut prefix);
+                let mut empty_mul = Mul::new(factors, self.foliage.clone());
+                empty_mul.mul_add(out_of_scope_add);
+                self.add_mul(empty_mul);
             }
         }
     }
-
-    // pub fn collect(&mut self, index: usize) -> Vec<Mul> {
-    //     // Newly constructed Mul structures
-    //     let mut collected_muls = vec![];
-
-    //     // We found all relevant Mul objects
-    //     let mut collected = vec![];
-    //     let mut to_be_removed = vec![];
-    //     for (i, product) in self.products.iter().enumerate() {
-    //         // Continue if leaf is not in this product
-    //         if !product.leaf_indices.contains(&index) {
-    //             continue;
-    //         }
-
-    //         // Collect this product and its index
-    //         collected.push(product);
-    //         to_be_removed.push(i);
-    //     }
-
-    //     // Leaf is in scope but we need to go deeper
-    //     if collected.is_empty() {
-    //         for (i, mul) in self.products.iter().enumerate() {
-    //             let replacements = vec![]
-    //         }
-    //         for new_mul in self.products.iter_mut().map(|mul| mul.collect(index)).collect() {
-    //             self.add(new_mul);
-    //         }
-    //     }
-    //     // We found the leaf in Mul instances
-    //     else {
-    //         for product in &mut collected {
-    //             // Setup everything for new circuit structure underneath cell
-    //             // let scope = product.scope.clone();
-
-    //             // This is only the leaf itself
-    //             if product.scope.len() == 1 {
-    //                 collected_muls.push(**product);
-    //                 continue;
-    //             }
-
-    //             // Remove leaf from product
-    //             product.remove(index);
-
-    //             let storage = product.value();
-    //             let leaf_indices = vec![index];
-
-    //             // Ensure that we are the only ones to access memory and foliage here
-    //             let mut memory_guard = product.memory.lock().unwrap();
-    //             let memory_index = memory_guard.len();
-
-    //             // Setup a new Mul
-    //             collected_muls.push(**product);
-    //             let add = Some(Add::new(
-    //                 product.scope.clone(),
-    //                 vec![product.clone()],
-    //             ));
-    //             let cell = MemoryCell {
-    //                 storage,
-    //                 valid: true,
-    //                 add,
-    //             };
-
-    //             memory_guard.push(cell);
-    //         }
-    //     }
-
-    //     to_be_removed.iter().map(|i| self.products.swap_remove(*i));
-
-    //     collected_muls
-    // }
 
     pub fn disperse(&mut self, index: usize) {
         let _ = self
@@ -267,13 +227,12 @@ impl Add {
     }
 }
 
-
 impl ops::Mul<usize> for Add {
     type Output = Mul;
 
     fn mul(self, index: usize) -> Mul {
-        let mut mul = Mul::empty_new(self.foliage.clone(), self.memory.clone());
-        
+        let mut mul = Mul::empty_new(self.foliage.clone());
+
         mul.mul_add(self.clone());
         mul.mul_index(index);
 
@@ -285,10 +244,15 @@ impl ops::Add<Add> for Add {
     type Output = Add;
 
     fn add(self, other: Add) -> Add {
-        let mut add = Add::empty_new(self.foliage.clone(), self.memory.clone());
-        
-        self.products.iter().for_each(|mul| add.add_mul(mul.clone()));
-        other.products.iter().for_each(|mul| add.add_mul(mul.clone()));
+        let mut add = Add::empty_new(self.foliage.clone());
+
+        self.products
+            .iter()
+            .for_each(|mul| add.add_mul(mul.clone()));
+        other
+            .products
+            .iter()
+            .for_each(|mul| add.add_mul(mul.clone()));
 
         add
     }
@@ -297,28 +261,26 @@ impl ops::Add<Add> for Add {
 #[cfg(test)]
 mod tests {
 
-    use std::sync::{Arc, Mutex};
-
     use super::*;
-    use crate::circuit::leaf::Leaf;
     use crate::circuit::rc::RC;
 
     #[test]
     fn test_add() {
-        // Create foliage and basic memory layour
-        let foliage = Arc::new(Mutex::new(vec![
-            Leaf::new(&0.5, &0.0, "a"),
-            Leaf::new(&0.5, &0.0, "b"),
-        ]));
-        let rc = RC::new(foliage.clone());
+        // Create basic RC
+        let mut rc = RC::new();
+        rc.grow(0.5, "a");
+        rc.grow(0.5, "b");
 
         // Empty adder should return 0
-        let mut add = Add::empty_new(rc.foliage.clone(), rc.memory.clone());
+        let mut add = Add::empty_new(rc.foliage.clone());
         assert_eq!(add.value(), 0.0);
 
         // Add over single mul should return result of mul
-        let mul = Mul::new(vec![0, 1], foliage.clone(), rc.memory.clone());
+        let mul = Mul::new(vec![0, 1], rc.foliage.clone());
         add.add_mul(mul.clone());
         assert_eq!(mul.value(), add.value());
+
+        // Scope of add needs to be all leafs and sorted
+        assert_eq!(add.scope, vec![0, 1]);
     }
 }

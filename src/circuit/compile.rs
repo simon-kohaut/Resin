@@ -1,14 +1,13 @@
-use crate::circuit::leaf::Leaf;
-use crate::circuit::ReactiveCircuit;
-use crate::circuit::{shared_leaf, Model, SharedLeaf};
+use crate::circuit::mul::Mul;
+use crate::circuit::rc::RC;
 use crate::language::Resin;
 use clap::Parser;
 use clingo::{control, Control, ModelType, Part, ShowType, SolveMode};
+use rand::seq::index;
 use std::panic;
 
 use super::category::Category;
 use super::leaf::activate_channel;
-use super::SharedReactiveCircuit;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -18,7 +17,7 @@ pub struct Args {
     pub source: String,
 }
 
-fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
+fn solve(ctl: Control, rc: &mut RC, resin: &mut Resin) {
     // get a solve handle
     let mut handle = ctl
         .solve(SolveMode::YIELD, &[])
@@ -28,9 +27,9 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
     loop {
         handle.resume().expect("Failed resume on solve handle.");
         match handle.model() {
-            Ok(Some(model)) => {
+            Ok(Some(stable_model)) => {
                 // Get model type
-                let model_type = model.model_type().unwrap();
+                let model_type = stable_model.model_type().unwrap();
 
                 let type_string = match model_type {
                     ModelType::StableModel => "Stable model",
@@ -39,18 +38,18 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
                 };
 
                 // Get running number of model
-                let number = model.number().unwrap();
+                let number = stable_model.number().unwrap();
 
                 print!("{} {}:", type_string, number);
-                let atoms = model
+                let atoms = stable_model
                     .symbols(ShowType::ATOMS)
                     .expect("Failed to retrieve positive symbols in the model.");
 
-                let complement = model
+                let complement = stable_model
                     .symbols(ShowType::COMPLEMENT | ShowType::ALL)
                     .expect("Failed to retrieve complementary symbols in the model.");
 
-                let mut model = Model::empty_new(&Some(rc.clone()));
+                let mut mul = Mul::empty_new(rc.foliage.clone());
                 println!("");
                 println!(
                     "Positive: {:?}",
@@ -72,27 +71,42 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
                     // If it is, add it with an initial probability of 0
                     for symbol in &atoms {
                         let name = format!("{}", symbol);
-
                         if source.name == name {
-                            match resin.leafs.get(&name) {
-                                Some(leaf) => {
-                                    model.append(leaf);
-                                    println!("Added source {}", &leaf.lock().unwrap().name);
+                            match rc
+                                .foliage
+                                .clone()
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .position(|leaf| leaf.name == name)
+                            {
+                                Some(index) => {
+                                    mul.mul_index(index);
+                                    println!(
+                                        "Added source {}",
+                                        &rc.foliage.lock().unwrap()[index].name
+                                    );
                                 }
                                 None => {
                                     let category = Category::new(&name);
-                                    activate_channel(&category.leafs[0], &source.channel, &false);
-                                    activate_channel(&category.leafs[1], &source.channel, &true);
-                                    resin.leafs.insert(name, category.leafs[0].clone());
-                                    resin.leafs.insert(
-                                        category.leafs[1].lock().unwrap().name.to_owned(),
-                                        category.leafs[1].clone(),
+                                    let index = rc.foliage.lock().unwrap().len();
+                                    activate_channel(
+                                        rc.foliage.clone(),
+                                        index,
+                                        &source.channel,
+                                        &false,
                                     );
-                                    model.append(&category.leafs[0]);
-                                    println!(
-                                        "Added source {}",
-                                        &category.leafs[0].lock().unwrap().name
+                                    activate_channel(
+                                        rc.foliage.clone(),
+                                        index + 1,
+                                        &source.channel,
+                                        &true,
                                     );
+                                    rc.grow(category.leafs[0].get_value(), &category.leafs[0].name);
+                                    rc.grow(category.leafs[1].get_value(), &category.leafs[1].name);
+                                    mul.mul_index(index);
+
+                                    println!("Added source {}", &category.leafs[0].name);
                                 }
                             }
                         }
@@ -103,25 +117,41 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
                     for symbol in &complement {
                         let name = format!("{}", symbol);
                         if source.name == name {
-                            match resin.leafs.get(&format!("¬{}", name)) {
-                                Some(leaf) => {
-                                    model.append(leaf);
-                                    println!("Added source {}", &leaf.lock().unwrap().name);
+                            match rc
+                                .foliage
+                                .clone()
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .position(|leaf| leaf.name == name)
+                            {
+                                Some(index) => {
+                                    mul.mul_index(index);
+                                    println!(
+                                        "Added source {}",
+                                        &rc.foliage.lock().unwrap()[index].name
+                                    );
                                 }
                                 None => {
                                     let category = Category::new(&name);
-                                    activate_channel(&category.leafs[0], &source.channel, &false);
-                                    activate_channel(&category.leafs[1], &source.channel, &true);
-                                    resin.leafs.insert(name, category.leafs[0].clone());
-                                    resin.leafs.insert(
-                                        category.leafs[1].lock().unwrap().name.to_owned(),
-                                        category.leafs[1].clone(),
+                                    let index = rc.foliage.lock().unwrap().len();
+                                    activate_channel(
+                                        rc.foliage.clone(),
+                                        index,
+                                        &source.channel,
+                                        &false,
                                     );
-                                    model.append(&category.leafs[1]);
-                                    println!(
-                                        "Added source {}",
-                                        &category.leafs[1].lock().unwrap().name
+                                    activate_channel(
+                                        rc.foliage.clone(),
+                                        index + 1,
+                                        &source.channel,
+                                        &true,
                                     );
+                                    rc.grow(category.leafs[0].get_value(), &category.leafs[0].name);
+                                    rc.grow(category.leafs[1].get_value(), &category.leafs[1].name);
+                                    mul.mul_index(index + 1);
+
+                                    println!("Added source {}", &category.leafs[1].name);
                                 }
                             }
                         }
@@ -153,15 +183,21 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
                             }
 
                             if conditions_met {
-                                let leaf: SharedLeaf;
-                                if resin.leafs.get(&node_name).is_none() {
-                                    leaf =
-                                        shared_leaf(clause.probability.unwrap(), 0.0, &node_name);
-                                    resin.leafs.insert(node_name.clone(), leaf.clone());
-                                } else {
-                                    leaf = resin.leafs.get(&node_name).unwrap().clone();
+                                let index;
+                                match rc
+                                    .foliage
+                                    .clone()
+                                    .lock()
+                                    .unwrap()
+                                    .iter()
+                                    .position(|leaf| leaf.name == node_name)
+                                {
+                                    Some(position) => index = position,
+                                    None => {
+                                        index = rc.grow(clause.probability.unwrap(), &node_name)
+                                    }
                                 }
-                                model.append(&leaf);
+                                mul.mul_index(index);
                                 println!("Added {} = {}", node_name, clause.probability.unwrap());
                             }
                         }
@@ -173,25 +209,30 @@ fn solve(ctl: Control, rc: SharedReactiveCircuit, resin: &mut Resin) {
                         let name = format!("¬{}", symbol);
                         let node_name = format!("P({} | {})", name, clause.body.join(", "));
                         if clause.head == name[2..] {
-                            let leaf: SharedLeaf;
-                            if resin.leafs.get(&node_name).is_none() {
-                                leaf =
-                                    shared_leaf(1.0 - clause.probability.unwrap(), 0.0, &node_name);
-                                resin.leafs.insert(node_name.clone(), leaf.clone());
-                            } else {
-                                leaf = resin.leafs.get(&node_name).unwrap().clone();
+                            let index;
+                            match rc
+                                .foliage
+                                .clone()
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .position(|leaf| leaf.name == node_name)
+                            {
+                                Some(position) => index = position,
+                                None => {
+                                    index = rc.grow(1.0 - clause.probability.unwrap(), &node_name)
+                                }
                             }
-                            model.append(&leaf);
+                            mul.mul_index(index);
                             println!("Added {} = {}", node_name, clause.probability.unwrap());
                         }
                     }
                 }
 
-                rc.lock().unwrap().add_model(&model);
+                rc.add(mul);
                 println!();
             }
             Ok(None) => {
-                resin.circuits.push(rc);
                 break;
             }
             Err(e) => {
@@ -209,7 +250,7 @@ pub fn compile(model: String) -> Resin {
 
     // Pass data to Clingo and obtain stable models
     for target_index in 0..resin.targets.len() {
-        let rc = ReactiveCircuit::empty_new().share();
+        let mut rc = RC::new();
 
         let program = resin.to_asp(target_index);
         println!("\n{}\n", &program);
@@ -226,7 +267,8 @@ pub fn compile(model: String) -> Resin {
             .expect("Failed to ground a logic program.");
 
         // Solve and build RC
-        solve(ctl, rc.clone(), &mut resin);
+        solve(ctl, &mut rc, &mut resin);
+        resin.circuits.push(rc);
     }
 
     // Return the compiled Resin program

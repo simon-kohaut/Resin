@@ -6,12 +6,10 @@ mod language;
 mod tracking;
 
 use crate::circuit::ipc::{retreive_messages, RandomizedIpcChannel};
-use crate::circuit::reactive_circuit::get_root;
+use crate::circuit::Mul;
 use crate::circuit::{compile, Args};
-use crate::language::Resin;
 use circuit::leaf::activate_channel;
-use circuit::morphisms::prune;
-use circuit::{shared_leaf, Model, ReactiveCircuit, SharedLeaf, SharedReactiveCircuit};
+use circuit::RC;
 use clap::Parser;
 use itertools::Itertools;
 use linfa::prelude::SingleTargetRegression;
@@ -55,35 +53,30 @@ pub fn random_set<T: Clone>(leafs: &[T]) -> Vec<Vec<T>> {
     random_set
 }
 
-fn randomized_rc(number_leafs: i32) -> (SharedReactiveCircuit, Vec<SharedLeaf>) {
-    let mut leafs = vec![];
+fn randomized_rc(number_leafs: usize) -> RC {
+    let mut rc = RC::new();
     for i in 0..number_leafs {
-        let leaf = shared_leaf(0.0, 0.0, &i.to_string());
-        leafs.push(leaf);
+        rc.grow(0.0, &i.to_string());
     }
 
-    let rc = ReactiveCircuit::empty_new().share();
-    let combinations = power_set(&leafs);
+    let combinations = power_set(&(0..number_leafs).collect_vec());
     for combination in combinations {
         if combination.len() == 0 {
             continue;
         }
 
-        let _ = Model::new(&combination, &None, &Some(rc.clone()));
+        rc.add(Mul::new(combination, rc.foliage.clone()));
     }
 
-    (rc, leafs)
+    rc
 }
 
-fn frequency_adaptation(
-    leafs: Vec<SharedLeaf>,
-    circuits: Vec<SharedReactiveCircuit>,
-) -> Vec<SharedReactiveCircuit> {
-    let mut frequencies: Vec<f64> = leafs
+fn frequency_adaptation(rc: &mut RC) {
+    let mut foliage_guard = rc.foliage.lock().unwrap().clone();
+    let frequencies: Vec<f64> = foliage_guard
         .iter()
-        .map(|leaf| leaf.lock().unwrap().get_frequency())
+        .map(|leaf| leaf.get_frequency())
         .collect();
-    frequencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let dataset = Dataset::new(
         Array2::from_shape_vec((frequencies.len(), 1), frequencies).unwrap(),
         array![0.0],
@@ -95,86 +88,61 @@ fn frequency_adaptation(
     let mut previous_cluster = 0;
     let mut cluster_step;
 
-    let mut adapted_circuits = vec![];
-    for i in 0..clusters.records.shape()[0] {
-        match clusters.targets[i] {
+    for index in 0..clusters.records.shape()[0] {
+        match clusters.targets[index] {
             Some(cluster) => {
                 if cluster == previous_cluster {
-                    cluster_step = leafs[i].lock().unwrap().set_cluster(&cluster_counter);
+                    cluster_step = foliage_guard[index].set_cluster(&cluster_counter);
                 } else {
                     previous_cluster = cluster;
                     cluster_counter += 1;
-                    cluster_step = leafs[i].lock().unwrap().set_cluster(&cluster_counter);
+                    cluster_step = foliage_guard[index].set_cluster(&cluster_counter);
                 }
             }
             None => {
                 previous_cluster = usize::MAX;
                 cluster_counter += 1;
-                cluster_step = leafs[i].lock().unwrap().set_cluster(&cluster_counter);
+                cluster_step = foliage_guard[index].set_cluster(&cluster_counter);
             }
         }
 
         if cluster_step != 0 {
-            for circuit in circuits.iter().cloned() {
-                adapted_circuits.push(ReactiveCircuit::empty_new().share());
-                if cluster_step > 0 {
-                    for _ in 0..cluster_step {
-                        let clock = Instant::now();
-                        println!("Drop {} took {}s", i, clock.elapsed().as_secs_f64());
-                        drop![adapted_circuits[0], &circuit.clone(), &leafs[i]];
-                        let _ = circuit.lock().unwrap().to_svg(&format!(
-                            "output/drop_{}_{}.svg",
-                            i,
-                            clock.elapsed().as_secs_f64()
-                        ));
-                        println!("New value = {:?}", circuit.lock().unwrap().get_value());
-                    }
-                } else {
-                    for _ in 0..-cluster_step {
-                        let clock = Instant::now();
-                        println!("Lift {} took {}s", i, clock.elapsed().as_secs_f64());
-                        lift![adapted_circuits[0], &circuit.clone(), &leafs[i]];
-                        let _ = circuit.lock().unwrap().to_svg(&format!(
-                            "output/lift_{}_{}.svg",
-                            i,
-                            clock.elapsed().as_secs_f64()
-                        ));
-                        println!("New value = {:?}", circuit.lock().unwrap().get_value());
-                    }
+            if cluster_step > 0 {
+                for _ in 0..cluster_step {
+                    rc.disperse(index);
+                }
+            } else {
+                for _ in 0..-cluster_step {
+                    rc.collect(index);
                 }
             }
         }
     }
-
-    adapted_circuits
 }
 
 fn randomized_study() {
     println!("Building randomized RC.");
-    let (rc, leafs) = randomized_rc(5);
+    let number_leafs = 5;
+    let mut rc = randomized_rc(number_leafs);
 
-    rc.lock().unwrap().to_svg("output/original.svg").unwrap();
-
-    // lift![rc, &rc, &leafs[0]];
-    // rc.lock().unwrap().to_svg("output/lift_0.svg");
-
-    // lift![rc, &rc, &leafs[0]];
-    // rc.lock().unwrap().to_svg("output/lift_00.svg");
-
-    // exit(0);
+    rc.to_svg("output/original.svg").unwrap();
 
     println!("Activate randomized IPC.");
     print!("F = {{");
     let mut true_frequencies = vec![];
-    for leaf in &leafs {
-        let channel = format!("leaf_{}", leaf.lock().unwrap().name);
-        activate_channel(&leaf, &channel, &false);
+    for index in 0..number_leafs {
+        let channel = format!("leaf_{}", rc.foliage.lock().unwrap()[index].name);
+        activate_channel(rc.foliage.clone(), index, &channel, &false);
 
         use rand::Rng;
         let mut rng = rand::thread_rng();
         true_frequencies.push(rng.gen_range(0.1..10.0));
         let new_publisher = RandomizedIpcChannel::new(
-            &leaf.lock().unwrap().ipc_channel.as_ref().unwrap().topic,
+            &rc.foliage.lock().unwrap()[index]
+                .ipc_channel
+                .as_ref()
+                .unwrap()
+                .topic,
             true_frequencies[true_frequencies.len() - 1],
             rng.gen_range(0.1..1.0),
         );
@@ -196,7 +164,6 @@ fn randomized_study() {
     let mut inference_timestamps = vec![];
     let mut adaptation_times = vec![];
     let mut adaptation_timestamps = vec![];
-    let mut circuits = vec![rc.clone()];
 
     let experiment_time = 25;
 
@@ -208,7 +175,7 @@ fn randomized_study() {
             adaptation_clock = Instant::now();
             adaptation_timestamps.push(runtime_clock.elapsed().as_secs_f64());
             let before = Instant::now();
-            circuits = frequency_adaptation(leafs.clone(), circuits);
+            frequency_adaptation(&mut rc);
             adaptation_times.push(before.elapsed().as_secs_f64());
             println!(
                 "#Adaptations in {}s",
@@ -217,7 +184,8 @@ fn randomized_study() {
         }
 
         let before = Instant::now();
-        let (value, n_ops) = circuits[0].lock().unwrap().get_value();
+        let n_ops = 0;
+        let value = rc.value();
         if n_ops > 0 {
             inference_times.push(before.elapsed().as_secs_f64());
             inference_timestamps.push(runtime_clock.elapsed().as_secs_f64());
@@ -232,9 +200,12 @@ fn randomized_study() {
             operations.push(n_ops);
             operation_ratios.push(n_ops as f64 / max_operations);
 
-            let frequencies: Vec<f64> = leafs
+            let frequencies: Vec<f64> = rc
+                .foliage
+                .lock()
+                .unwrap()
                 .iter()
-                .map(|leaf| leaf.lock().unwrap().get_frequency())
+                .map(|leaf| leaf.get_frequency())
                 .collect();
 
             mse.push(
@@ -248,6 +219,8 @@ fn randomized_study() {
             break;
         }
     }
+
+    rc.to_svg("output/final_rc.svg");
 
     println!("Evaluate sliding inference time.");
     let window_size = 10;
@@ -349,12 +322,6 @@ fn randomized_study() {
             ),
     );
     plot.write_html("output/time.html");
-
-    circuits[0]
-        .lock()
-        .unwrap()
-        .to_svg("output/final_rc.svg")
-        .unwrap();
 }
 
 fn main() -> std::io::Result<()> {

@@ -1,31 +1,34 @@
 use core::panic;
 use std::ops;
+use std::sync::{Arc, Mutex};
 
-use super::leaf::Foliage;
 use super::add::Add;
-use super::memory::{Memory, MemoryCell};
+use super::leaf::Foliage;
+use super::memory::Memory;
 
 #[derive(Clone)]
 pub struct Mul {
     pub scope: Vec<usize>,
     pub factors: Vec<usize>,
-    pub memory_index: usize,
     pub foliage: Foliage,
-    pub memory: Memory,
+    pub memory: Option<Arc<Mutex<Memory>>>,
 }
 
 pub enum Collection {
-    Forward(Vec<Mul>),
-    Apply(Vec<Mul>),
+    Forward(Vec<MarkedMul>),
+    Apply(Vec<MarkedMul>),
+}
+
+pub enum MarkedMul {
+    Singleton,
+    InScope(Mul),
+    OutOfScope(Mul),
 }
 
 impl Mul {
     // ============================= //
     // ========  CONSTRUCT  ======== //
-    pub fn new(mut factors: Vec<usize>, foliage: Foliage, memory: Memory) -> Self {
-        // Point at const. 1.0
-        let memory_index = 1;
-
+    pub fn new(mut factors: Vec<usize>, foliage: Foliage) -> Self {
         // Ensure sorted indices
         factors.sort();
 
@@ -36,19 +39,17 @@ impl Mul {
         Self {
             scope,
             factors,
-            memory_index,
             foliage,
-            memory,
+            memory: None,
         }
     }
 
-    pub fn empty_new(foliage: Foliage, memory: Memory) -> Self {
+    pub fn empty_new(foliage: Foliage) -> Self {
         Self {
             scope: vec![],
             factors: vec![],
-            memory_index: 1,
             foliage,
-            memory,
+            memory: None,
         }
     }
 
@@ -59,45 +60,53 @@ impl Mul {
         let foliage_guard = self.foliage.lock().unwrap();
         let leafs = self.factors.iter().map(|index| &foliage_guard[*index]);
 
-        // Obtain memorized value
-        let cell = &mut self.memory.get_mut(&self.memory_index).unwrap();
-        let cell_value = cell.value();
-        drop(cell);
-
         // Compute overall product
-        let product = leafs.fold(cell_value, |acc, leaf| acc * leaf.get_value());
+        let product = leafs.fold(self.memory_value(), |acc, leaf| acc * leaf.get_value());
         product
     }
 
-    pub fn flat(&self, memory: &Memory) -> Vec<Mul> {
-        if self.is_flat() {
-            vec![self.clone()]
-        } else {
-            let flat_add = self.memory.get(&self.memory_index).unwrap().flat(memory);
-            match flat_add {
-                Some(flat_add) => {
-                    let mut flat_muls = vec![];
-                    for mul in flat_add.products {
-                        flat_muls.push(mul.factors.iter().fold(self.clone(), |mut acc, i| {
-                            acc.mul_index(*i);
-                            acc
-                        }));
-                    }
-
-                    flat_muls
-                }
-                None => vec![self.clone()],
-            }
+    pub fn memory_value(&self) -> f64 {
+        match &self.memory {
+            Some(memory) => memory.lock().unwrap().value(),
+            None => 1.0,
         }
     }
 
     pub fn is_flat(&self) -> bool {
-        // This is only flat if it points at the const. 1.0 cell
-        self.memory_index == 1
+        match self.memory {
+            Some(_) => false,
+            None => true,
+        }
     }
 
     pub fn is_equal(&self, other: &Mul) -> bool {
         self.scope == other.scope && self.factors == other.factors
+    }
+
+    pub fn get_dot_text(&self, index: Option<usize>) -> (String, usize) {
+        let mut dot_text = String::new();
+        let index = if index.is_some() { index.unwrap() } else { 0 };
+
+        dot_text += &format!("p_{index} [label=\"&times;\"]\n",);
+        for factor in &self.factors {
+            let foliage_guard = self.foliage.lock().unwrap();
+            let name = foliage_guard[*factor].name.to_owned();
+            dot_text += &format!("p_{index} -> {name}\n");
+        }
+
+        let mut last = index;
+        let sub_text;
+        match &self.memory {
+            Some(memory) => {
+                let next = index + 1;
+                dot_text += &format!("p_{index} -> m_{next}\n");
+                (sub_text, last) = memory.lock().unwrap().get_dot_text(Some(next));
+                dot_text += &sub_text;
+            }
+            None => (),
+        }
+
+        (dot_text, last)
     }
 
     // =============================== //
@@ -110,83 +119,92 @@ impl Mul {
         }
 
         // Extend factors
-        let position = self.factors.binary_search(&index).unwrap();
+        let position;
+        match self.factors.binary_search(&index) {
+            Ok(i) => position = i,
+            Err(i) => position = i,
+        }
         self.factors.insert(position, index);
     }
 
     pub fn mul_add(&mut self, add: Add) {
-        let cell = MemoryCell {
-            storage: 0.0,
-            valid: false,
-            add: Some(add),
-            foliage: self.foliage.clone(),
-            memory: self.memory.clone(),
-        };
-        self.memory_index = self.memory.len();
-        self.memory.insert_new(self.memory_index, cell);
+        self.scope.append(&mut add.scope.clone());
+        self.scope.sort();
+        self.scope.dedup();
+
+        self.memory = Some(Arc::new(Mutex::new(Memory::new(
+            -1.0,
+            false,
+            Some(add),
+            self.foliage.clone(),
+        ))));
     }
 
     pub fn remove(&mut self, index: usize) {
-        self.scope.retain(|i| &index != i);
-        self.factors.retain(|i| &index != i);
-        let cell = &mut self.memory.get_mut(&self.memory_index).unwrap();
-        cell.remove(index);
+        if self.scope.contains(&index) {
+            self.scope.retain(|i| &index != i);
+            self.factors.retain(|i| &index != i);
+
+            match &self.memory {
+                Some(memory) => memory.lock().unwrap().remove(index),
+                None => (),
+            }
+        }
     }
 
-    pub fn collect(&mut self, index: usize) -> Option<Collection> {
+    pub fn collect(&mut self, index: usize, active: bool) -> Option<Collection> {
         // This mul directly factors over the leaf
-        if self.factors.contains(&index) {
-            self.remove(index);
-            Some(Collection::Forward(vec![self.clone()]))
+        if active {
+            if self.factors == vec![index] && self.memory.is_none() {
+                self.remove(index);
+                Some(Collection::Forward(vec![MarkedMul::Singleton]))
+            } else if self.factors.contains(&index) {
+                self.remove(index);
+                Some(Collection::Forward(vec![MarkedMul::InScope(self.clone())]))
+            } else {
+                Some(Collection::Forward(vec![MarkedMul::OutOfScope(
+                    self.clone(),
+                )]))
+            }
         } else {
-            match self
-                .memory
-                .get_mut(&self.memory_index)
-                .unwrap()
-                .collect(index)
-            {
-                Some(Collection::Forward(_)) => {
-                    panic!("MemoryCells should only return Collection::Apply!")
-                }
-                Some(Collection::Apply(muls)) => Some(Collection::Apply(muls)),
+            match &self.memory {
+                Some(memory) => match memory.lock().unwrap().collect(index) {
+                    Some(Collection::Forward(_)) => {
+                        panic!("MemoryCells should only return Collection::Apply!")
+                    }
+                    Some(Collection::Apply(muls)) => Some(Collection::Apply(muls)),
+                    None => None,
+                },
                 None => None,
             }
         }
     }
 
     pub fn disperse(&mut self, index: usize) {
-        let position = self.factors.iter().position(|i| &index == i);
-        match position {
-            Some(i) => {
-                // Remove from foliage reference
-                self.factors.swap_remove(i);
+        if self.factors.contains(&index) {
+            self.factors.retain(|i| *i != index);
 
-                // If this is pointing at const. 1, we need to create a new memory cell
-                // and the structures underneath
-                if self.memory_index == 1 {
-                    // Ensure that we are the only ones to access memory and foliage here
-                    let foliage_guard = self.foliage.lock().unwrap();
-
-                    // Setup everything for new circuit structure underneath cell
-                    let storage = foliage_guard[index].get_value();
-                    let scope = vec![index];
+            match &self.memory {
+                Some(memory) => memory.lock().unwrap().mul_index(index),
+                None => {
                     let factors = vec![index];
-
-                    // Setup single add over single mul of leaf and const 1
-                    let products =
-                        vec![Mul::new(factors, self.foliage.clone(), self.memory.clone())];
-                    // self.memory.lock().unwrap()[memory_index].add = Some(Add::new(scope, products));
-                } else {
-                    // Else we can just forward the dispersion to the next cell
-                    let cell = &mut self.memory.get_mut(&self.memory_index).unwrap();
-                    cell.disperse(index);
+                    let inner_add = Add::from_mul(Mul::new(factors, self.foliage.clone()));
+                    self.memory = Some(Arc::new(Mutex::new(Memory::new(
+                        -1.0,
+                        false,
+                        Some(inner_add),
+                        self.foliage.clone(),
+                    ))));
                 }
             }
-            None => (),
+        } else {
+            match &self.memory {
+                Some(memory) => memory.lock().unwrap().disperse(index),
+                None => (),
+            }
         }
     }
 }
-
 
 impl ops::Mul<usize> for Mul {
     type Output = Mul;
@@ -202,28 +220,25 @@ impl ops::Mul<usize> for Mul {
 mod tests {
 
     use super::*;
-    use crate::circuit::leaf::Leaf;
     use crate::circuit::rc::RC;
-    use std::sync::{Arc, Mutex};
 
     #[test]
     fn test_mul() {
-        // Create foliage and basic memory layour
-        let foliage = Arc::new(Mutex::new(vec![
-            Leaf::new(&0.5, &0.0, "a"),
-            Leaf::new(&0.5, &0.0, "b"),
-        ]));
-        let rc = RC::new(foliage.clone());
+        // Create basic RC
+        let mut rc = RC::new();
+        rc.grow(0.5, "a");
+        rc.grow(0.5, "b");
 
         // Mul should have value 0.5 * 0.5 = 0.25
-        let mut mul = Mul::new(vec![0, 1], foliage.clone(), rc.memory.clone());
+        let mut mul = Mul::new(vec![0, 1], rc.foliage.clone());
         assert_eq!(mul.value(), 0.25);
 
-        // Mul should point at cell 1 with value 1.0
-        assert_eq!(mul.memory_index, 1);
+        // Scope of mul needs to be all leafs and sorted
+        assert_eq!(mul.scope, vec![0, 1]);
 
         // We should be able to removeide and multiply with leaf indices
         mul.remove(0);
         assert_eq!(mul.value(), 0.5);
+        assert_eq!(mul.scope, vec![1]);
     }
 }

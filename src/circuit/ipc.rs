@@ -4,8 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std_msgs::msg::Float64;
 
-use super::leaf::update;
-use super::SharedLeaf;
+use super::leaf::{update, Foliage};
 
 lazy_static! {
     static ref CONTEXT: Context = Context::new(vec![]).unwrap();
@@ -13,6 +12,7 @@ lazy_static! {
         Arc::new(Mutex::new(Node::new(&CONTEXT, "resin_ipc").unwrap()));
 }
 
+#[derive(Clone)]
 pub struct IpcChannel {
     pub topic: String,
     subscription: Arc<Subscription<Float64>>,
@@ -33,7 +33,12 @@ pub fn shutdown() {
 }
 
 impl IpcChannel {
-    pub fn new(leaf: SharedLeaf, channel: String, invert: bool) -> Result<Self, RclrsError> {
+    pub fn new(
+        foliage: Foliage,
+        index: usize,
+        channel: String,
+        invert: bool,
+    ) -> Result<Self, RclrsError> {
         let mut prefix = "";
         // TODO: Remove prefix, only send on one topic but invert for negated leaf
         if invert {
@@ -45,9 +50,9 @@ impl IpcChannel {
             QOS_PROFILE_DEFAULT,
             move |msg: Float64| {
                 if invert {
-                    update(&leaf, &(1.0 - msg.data));
+                    update(foliage.clone(), index, &(1.0 - msg.data));
                 } else {
-                    update(&leaf, &msg.data);
+                    update(foliage.clone(), index, &msg.data);
                 }
             },
         )?;

@@ -1,8 +1,8 @@
-use ndarray::{array, Array1, Array2};
 use ndarray_linalg::Inverse;
 
 use super::{LinearModel, Matrix, Vector};
 
+#[derive(Clone)]
 pub struct Kalman {
     // Gaussian estimation of state
     pub prediction: Vector,

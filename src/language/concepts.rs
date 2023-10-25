@@ -1,20 +1,18 @@
-use std::collections::HashMap;
+use regex::Regex;
 use std::panic;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 
-use regex::Regex;
+use crate::circuit::{leaf::Foliage, rc::RC};
 
-use crate::circuit::SharedLeaf;
-
-use super::super::circuit::SharedReactiveCircuit;
 use super::matching::{CLAUSE_REGEX, LITERAL_REGEX, SOURCE_REGEX, TARGET_REGEX};
 
 pub struct Resin {
-    pub circuits: Vec<SharedReactiveCircuit>,
+    pub circuits: Vec<RC>,
     pub clauses: Vec<Clause>,
     pub sources: Vec<Source>,
     pub targets: Vec<Target>,
-    pub leafs: HashMap<String, SharedLeaf>,
+    pub foliage: Foliage,
 }
 
 pub struct Clause {
@@ -110,7 +108,7 @@ impl FromStr for Resin {
             clauses: vec![],
             sources: vec![],
             targets: vec![],
-            leafs: HashMap::new(),
+            foliage: Arc::new(Mutex::new(vec![])),
         };
 
         // Parse Resin source line by line into appropriate data structures

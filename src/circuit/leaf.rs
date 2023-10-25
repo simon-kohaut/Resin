@@ -1,10 +1,12 @@
 use std::sync::{Arc, Mutex};
 
-use super::ipc::IpcChannel;
-use super::Model;
-use super::SharedReactiveCircuit;
+use super::{
+    ipc::IpcChannel,
+    memory::{self, Memory},
+};
 use crate::frequencies::FoCEstimator;
 
+#[derive(Clone)]
 pub struct Leaf {
     value: f64,
     frequency: f64,
@@ -12,23 +14,10 @@ pub struct Leaf {
     foc_estimator: FoCEstimator,
     pub ipc_channel: Option<IpcChannel>,
     pub name: String,
-    pub circuits: Vec<SharedReactiveCircuit>,
+    memory: Vec<Arc<Mutex<Memory>>>,
 }
 
-pub type SharedLeaf = Arc<Mutex<Leaf>>;
 pub type Foliage = Arc<Mutex<Vec<Leaf>>>;
-
-pub fn shared_leaf(value: f64, frequency: f64, name: &str) -> SharedLeaf {
-    Arc::new(Mutex::new(Leaf {
-        value,
-        frequency,
-        cluster: 0,
-        foc_estimator: FoCEstimator::new(&0.0),
-        ipc_channel: None,
-        name: name.to_owned(),
-        circuits: vec![],
-    }))
-}
 
 impl Leaf {
     pub fn new(value: &f64, frequency: &f64, name: &str) -> Self {
@@ -39,20 +28,8 @@ impl Leaf {
             foc_estimator: FoCEstimator::new(&frequency),
             ipc_channel: None,
             name: name.to_owned(),
-            circuits: vec![],
+            memory: vec![],
         }
-    }
-
-    pub fn share(&self) -> SharedLeaf {
-        Arc::new(Mutex::new(self.copy()))
-    }
-
-    pub fn copy(&self) -> Leaf {
-        let mut copy = Leaf::new(&self.value, &self.frequency, &self.name);
-        for circuit in &self.circuits {
-            copy.circuits.push(circuit.clone());
-        }
-        copy
     }
 
     pub fn get_value(&self) -> f64 {
@@ -78,30 +55,30 @@ impl Leaf {
         self.frequency
     }
 
-    pub fn remove_circuit(&mut self, circuit: &SharedReactiveCircuit) {
-        self.circuits.retain(|c| !Arc::ptr_eq(c, &circuit))
+    pub fn add_dependency(&mut self, memory: Arc<Mutex<Memory>>) {
+        self.memory.push(memory);
+    }
+
+    pub fn remove_dependency(&mut self, memory: Arc<Mutex<Memory>>) {
+        self.memory.retain(|m| Arc::ptr_eq(m, &memory));
     }
 }
 
-pub fn update(leaf: &SharedLeaf, value: &f64) {
-    leaf.lock().unwrap().set_value(value);
-    for circuit in &leaf.lock().unwrap().circuits {
-        circuit.lock().unwrap().invalidate();
+pub fn update(foliage: Foliage, index: usize, value: &f64) {
+    let mut foliage_guard = foliage.lock().unwrap();
+    foliage_guard[index].set_value(value);
+    for memory in &foliage_guard[index].memory {
+        memory.lock().unwrap().invalidate();
     }
 }
 
-pub fn activate_channel(leaf: &SharedLeaf, channel: &str, invert: &bool) {
-    let channel = IpcChannel::new(leaf.clone(), channel.to_owned(), invert.to_owned()).unwrap();
-    leaf.lock().unwrap().ipc_channel = Some(channel);
-}
-
-pub fn move_leafs(drain: &mut Model, source: &mut Model) {
-    for leaf in &mut source.leafs {
-        if source.parent.is_some() {
-            leaf.lock()
-                .unwrap()
-                .remove_circuit(source.parent.as_ref().unwrap());
-        }
-        drain.append(&leaf);
-    }
+pub fn activate_channel(foliage: Foliage, index: usize, channel: &str, invert: &bool) {
+    let channel = IpcChannel::new(
+        foliage.clone(),
+        index,
+        channel.to_owned(),
+        invert.to_owned(),
+    )
+    .unwrap();
+    foliage.lock().unwrap()[index].ipc_channel = Some(channel);
 }
