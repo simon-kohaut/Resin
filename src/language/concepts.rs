@@ -63,10 +63,10 @@ impl Clause {
         if self.probability.is_some() {
             asp = format!("{{{}}}", self.head)
         } else {
-            asp = format!("{}", self.head);
+            asp = self.head.to_string();
         }
 
-        if self.body.len() > 0 {
+        if !self.body.is_empty() {
             asp += &format!(" :- {}", self.body[0]);
             for literal in &self.body[1..] {
                 asp += &format!(", {}", literal);
@@ -78,10 +78,10 @@ impl Clause {
     }
 
     pub fn substitute(&self, variable: String, instance: String) -> Clause {
-        let regex = Regex::new(&format!("{}", variable)).unwrap();
+        let regex = Regex::new(&variable).unwrap();
         let substituted = regex.replace_all(&self.code, instance);
 
-        return substituted.parse().unwrap();
+        substituted.parse().unwrap()
     }
 }
 
@@ -169,9 +169,9 @@ impl FromStr for Clause {
                 code: input.to_string(),
             };
 
-            return Ok(clause);
+            Ok(clause)
         } else {
-            return Err(());
+            Err(())
         }
     }
 }
@@ -189,9 +189,9 @@ impl FromStr for Source {
                 message_type: captures["dtype"].to_string().parse().unwrap(),
             };
 
-            return Ok(source);
+            Ok(source)
         } else {
-            return Err(());
+            Err(())
         }
     }
 }
@@ -209,9 +209,9 @@ impl FromStr for Target {
                 message_type: ResinType::Probability,
             };
 
-            return Ok(target);
+            Ok(target)
         } else {
-            return Err(());
+            Err(())
         }
     }
 }

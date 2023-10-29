@@ -30,7 +30,6 @@ lazy_static! {
         ATOM_PATTERN, TOPIC_PATTERN
     ))
     .unwrap();
-    pub static ref VARIABLE_LIST_REGEX: Regex =
-        Regex::new(&format!("{}", VARIABLE_LIST_PATTERN)).unwrap();
-    pub static ref VARIABLE_REGEX: Regex = Regex::new(&format!("{}", VARIABLE_PATTERN)).unwrap();
+    pub static ref VARIABLE_LIST_REGEX: Regex = Regex::new(VARIABLE_LIST_PATTERN).unwrap();
+    pub static ref VARIABLE_REGEX: Regex = Regex::new(VARIABLE_PATTERN).unwrap();
 }

@@ -1,9 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering::Release;
+use std::sync::{atomic::AtomicBool, Arc, Mutex};
 
-use super::{
-    ipc::IpcChannel,
-    memory::{self, Memory},
-};
+use super::{ipc::IpcChannel, memory::Memory};
 use crate::frequencies::FoCEstimator;
 
 #[derive(Clone)]
@@ -14,7 +12,7 @@ pub struct Leaf {
     foc_estimator: FoCEstimator,
     pub ipc_channel: Option<IpcChannel>,
     pub name: String,
-    memory: Vec<Arc<Mutex<Memory>>>,
+    valid_flags: Vec<Arc<AtomicBool>>,
 }
 
 pub type Foliage = Arc<Mutex<Vec<Leaf>>>;
@@ -25,10 +23,10 @@ impl Leaf {
             value: *value,
             frequency: *frequency,
             cluster: 0,
-            foc_estimator: FoCEstimator::new(&frequency),
+            foc_estimator: FoCEstimator::new(frequency),
             ipc_channel: None,
             name: name.to_owned(),
-            memory: vec![],
+            valid_flags: vec![],
         }
     }
 
@@ -38,7 +36,7 @@ impl Leaf {
 
     pub fn set_value(&mut self, value: &f64) {
         self.value = *value;
-        self.frequency = self.foc_estimator.update();
+        self.frequency = self.foc_estimator.update(*value);
     }
 
     pub fn set_cluster(&mut self, cluster: &i32) -> i32 {
@@ -55,20 +53,32 @@ impl Leaf {
         self.frequency
     }
 
-    pub fn add_dependency(&mut self, memory: Arc<Mutex<Memory>>) {
-        self.memory.push(memory);
+    pub fn add_dependency(&mut self, flag: Arc<AtomicBool>) {
+        match self
+            .valid_flags
+            .iter()
+            .position(|arc| Arc::ptr_eq(&arc, &flag))
+        {
+            Some(_) => (),
+            None => self.valid_flags.push(flag),
+        }
     }
 
-    pub fn remove_dependency(&mut self, memory: Arc<Mutex<Memory>>) {
-        self.memory.retain(|m| Arc::ptr_eq(m, &memory));
+    pub fn clear_dependencies(&mut self) {
+        self.valid_flags = vec![];
+    }
+
+    pub fn remove_dependency(&mut self, flag: Arc<AtomicBool>) {
+        self.valid_flags.retain(|m| Arc::ptr_eq(m, &flag));
     }
 }
 
 pub fn update(foliage: Foliage, index: usize, value: &f64) {
     let mut foliage_guard = foliage.lock().unwrap();
     foliage_guard[index].set_value(value);
-    for memory in &foliage_guard[index].memory {
-        memory.lock().unwrap().invalidate();
+
+    for flag in &foliage_guard[index].valid_flags {
+        flag.store(false, Release);
     }
 }
 

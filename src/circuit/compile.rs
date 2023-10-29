@@ -3,7 +3,7 @@ use crate::circuit::rc::RC;
 use crate::language::Resin;
 use clap::Parser;
 use clingo::{control, Control, ModelType, Part, ShowType, SolveMode};
-use rand::seq::index;
+
 use std::panic;
 
 use super::category::Category;
@@ -49,8 +49,8 @@ fn solve(ctl: Control, rc: &mut RC, resin: &mut Resin) {
                     .symbols(ShowType::COMPLEMENT | ShowType::ALL)
                     .expect("Failed to retrieve complementary symbols in the model.");
 
-                let mut mul = Mul::empty_new(rc.foliage.clone());
-                println!("");
+                let mut mul = Mul::empty_new();
+                println!();
                 println!(
                     "Positive: {:?}",
                     atoms
@@ -268,9 +268,10 @@ pub fn compile(model: String) -> Resin {
 
         // Solve and build RC
         solve(ctl, &mut rc, &mut resin);
+        rc.update_dependencies();
         resin.circuits.push(rc);
     }
 
     // Return the compiled Resin program
-    return resin;
+    resin
 }

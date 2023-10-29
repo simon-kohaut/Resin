@@ -14,6 +14,9 @@ opt-level = 0
 
 [profile.release]
 opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
 
 [dependencies]
 rclrs = "*"
@@ -39,3 +42,4 @@ clingo = { version = "0.7.2", features = ["derive"] }
 clap = { version = "4.4.1", features = ["derive"] }
 rayon = "*"
 chashmap = "*"
+atomic_float = "*"
