@@ -81,7 +81,7 @@ fn solve(ctl: Control, rc: &mut RC, resin: &mut Resin) {
                                 .position(|leaf| leaf.name == name)
                             {
                                 Some(index) => {
-                                    mul.mul_index(index);
+                                    mul.mul_index(index as u16);
                                     println!(
                                         "Added source {}",
                                         &rc.foliage.lock().unwrap()[index].name
@@ -104,7 +104,7 @@ fn solve(ctl: Control, rc: &mut RC, resin: &mut Resin) {
                                     );
                                     rc.grow(category.leafs[0].get_value(), &category.leafs[0].name);
                                     rc.grow(category.leafs[1].get_value(), &category.leafs[1].name);
-                                    mul.mul_index(index);
+                                    mul.mul_index(index as u16);
 
                                     println!("Added source {}", &category.leafs[0].name);
                                 }
@@ -126,7 +126,7 @@ fn solve(ctl: Control, rc: &mut RC, resin: &mut Resin) {
                                 .position(|leaf| leaf.name == name)
                             {
                                 Some(index) => {
-                                    mul.mul_index(index);
+                                    mul.mul_index(index as u16);
                                     println!(
                                         "Added source {}",
                                         &rc.foliage.lock().unwrap()[index].name
@@ -149,7 +149,7 @@ fn solve(ctl: Control, rc: &mut RC, resin: &mut Resin) {
                                     );
                                     rc.grow(category.leafs[0].get_value(), &category.leafs[0].name);
                                     rc.grow(category.leafs[1].get_value(), &category.leafs[1].name);
-                                    mul.mul_index(index + 1);
+                                    mul.mul_index(index as u16 + 1);
 
                                     println!("Added source {}", &category.leafs[1].name);
                                 }
@@ -197,7 +197,7 @@ fn solve(ctl: Control, rc: &mut RC, resin: &mut Resin) {
                                         index = rc.grow(clause.probability.unwrap(), &node_name)
                                     }
                                 }
-                                mul.mul_index(index);
+                                mul.mul_index(index as u16);
                                 println!("Added {} = {}", node_name, clause.probability.unwrap());
                             }
                         }
@@ -223,7 +223,7 @@ fn solve(ctl: Control, rc: &mut RC, resin: &mut Resin) {
                                     index = rc.grow(1.0 - clause.probability.unwrap(), &node_name)
                                 }
                             }
-                            mul.mul_index(index);
+                            mul.mul_index(index as u16);
                             println!("Added {} = {}", node_name, clause.probability.unwrap());
                         }
                     }

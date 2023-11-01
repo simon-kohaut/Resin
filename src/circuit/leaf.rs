@@ -1,7 +1,7 @@
 use std::sync::atomic::Ordering::Release;
 use std::sync::{atomic::AtomicBool, Arc, Mutex};
 
-use super::{ipc::IpcChannel, memory::Memory};
+use super::ipc::IpcChannel;
 use crate::frequencies::FoCEstimator;
 
 #[derive(Clone)]
@@ -54,14 +54,7 @@ impl Leaf {
     }
 
     pub fn add_dependency(&mut self, flag: Arc<AtomicBool>) {
-        match self
-            .valid_flags
-            .iter()
-            .position(|arc| Arc::ptr_eq(&arc, &flag))
-        {
-            Some(_) => (),
-            None => self.valid_flags.push(flag),
-        }
+        self.valid_flags.push(flag);
     }
 
     pub fn clear_dependencies(&mut self) {
@@ -69,7 +62,7 @@ impl Leaf {
     }
 
     pub fn remove_dependency(&mut self, flag: Arc<AtomicBool>) {
-        self.valid_flags.retain(|m| Arc::ptr_eq(m, &flag));
+        self.valid_flags.retain(|m| !Arc::ptr_eq(m, &flag));
     }
 }
 

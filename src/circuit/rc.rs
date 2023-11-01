@@ -45,10 +45,22 @@ impl RC {
 
         let mut foliage_guard = self.foliage.lock().unwrap();
         for index in &self.memory.add.scope {
-            foliage_guard[*index].add_dependency(self.memory.valid.clone());
+            foliage_guard[*index as usize].add_dependency(self.memory.valid.clone());
         }
 
         self.memory.update_dependencies(&mut foliage_guard);
+    }
+
+    pub fn count_adds(&self) -> usize {
+        self.memory.count_adds()
+    }
+
+    pub fn count_muls(&self) -> usize {
+        self.memory.count_muls()
+    }
+
+    pub fn layers(&self) -> usize {
+        self.memory.layers()
     }
 
     pub fn get_dot_text(&self) -> String {
@@ -111,22 +123,32 @@ impl RC {
     //     memory_guard.remove(index);
     // }
 
-    pub fn collect(&mut self, index: usize) {
-        match self.memory.collect(index) {
+    pub fn collect(&mut self, index: u16, repeat: usize) {
+        match self.memory.collect(index, repeat) {
             Some(Collection::Apply(collection)) => {
                 let mut add = Add::empty_new();
                 add._apply_collection(index, vec![(collection, BTreeSet::new())]);
                 self.memory.add = add;
+
+                if repeat > 0 {
+                    println!("Collect {index} another {repeat} - 1 times in rc");
+                    self.collect(index, repeat - 1);
+                }
             }
-            Some(Collection::Forward(_)) => panic!("RC got Forward collection!"),
+            Some(Collection::Forward(_)) => {
+                panic!("RC got Collection::Forward, which should never happen!")
+            }
             None => (),
         }
     }
 
-    pub fn disperse(&mut self, index: usize) {
-        self.memory.disperse(index);
+    pub fn disperse(&mut self, index: u16, repeat: usize) {
+        let value = self.foliage.lock().unwrap()[index as usize].get_value();
+        self.memory.disperse(index, repeat, value);
+        self.prune();
+    }
 
-        // Check if this layer is no longer useful
+    pub fn prune(&mut self) {
         if self
             .memory
             .add
@@ -136,18 +158,30 @@ impl RC {
         {
             let mut merged_add = Add::empty_new();
             for mul in &self.memory.add.products {
-                match &mul.memory {
-                    Some(memory) => memory
+                if mul.memory.is_some() {
+                    mul.memory
+                        .as_ref()
+                        .unwrap()
                         .add
                         .products
                         .iter()
-                        .for_each(|mul| merged_add.add_mul(mul.clone())),
-                    None => (),
+                        .for_each(|mul| merged_add.add_mul(mul.clone()));
                 }
             }
 
             self.memory.add = merged_add;
         }
+    }
+
+    pub fn deploy(&self) -> Vec<Memory> {
+        let mut memories = vec![self.memory.clone()];
+        memories.append(&mut self.memory.deploy());
+
+        memories
+    }
+
+    pub fn empty_scope(&mut self) {
+        self.memory.empty_scope();
     }
 }
 
@@ -179,14 +213,14 @@ mod tests {
 
         // Dispersing should not change the value
         let value_before = rc.value();
-        rc.disperse(0);
+        rc.disperse(0, 0);
         assert_eq!(value_before, rc.value());
 
         // The root add should still have both leafs in scope
         assert_eq!(rc.memory.add.scope, BTreeSet::from_iter(vec![0, 1]));
 
         // Collecting should not change the value
-        rc.collect(0);
+        rc.collect(0, 0);
         assert_eq!(value_before, rc.value());
 
         // The root add should still have both leafs in scope
@@ -212,20 +246,32 @@ mod tests {
         assert!(rc.is_flat());
 
         // It should no longer be flat after collect/disperse are applied
-        rc.collect(1);
+        rc.collect(1, 0);
         assert!(!rc.is_flat());
+        assert_eq!(rc.layers(), 2);
 
         // Disperse after collect for the same leaf should make it flat again
-        rc.disperse(1);
+        rc.disperse(1, 0);
+        rc.to_svg("output/0.svg");
         assert!(rc.is_flat());
+        assert_eq!(rc.layers(), 1);
 
         // Any balanced combination of collect and disperse should get us back to a flat RC
-        rc.collect(2);
-        rc.disperse(3);
-        rc.collect(1);
-        rc.collect(3);
-        rc.disperse(1);
-        rc.disperse(2);
+        rc.collect(2, 2);
+        rc.to_svg("output/1.svg");
+        assert_eq!(rc.layers(), 4);
+        rc.disperse(3, 0);
+        assert_eq!(rc.layers(), 5);
+        rc.to_svg("output/2.svg");
+        rc.collect(1, 3);
+        rc.to_svg("output/3.svg");
+        assert_eq!(rc.layers(), 6);
+        rc.disperse(1, 3);
+        rc.to_svg("output/4.svg");
+        rc.collect(3, 0);
+        rc.to_svg("output/5.svg");
+        rc.disperse(2, 2);
+        rc.to_svg("output/6.svg");
         assert!(rc.is_flat());
     }
 
@@ -248,7 +294,7 @@ mod tests {
         assert!(rc.is_flat());
 
         // It should no longer be flat after collect/disperse are applied
-        rc.collect(1);
+        rc.collect(1, 0);
         assert!(!rc.is_flat());
 
         // There should be 3 multiplications with that leaf in scope
@@ -260,7 +306,7 @@ mod tests {
                 .filter(|mul| mul.scope.contains(&1))
                 .collect::<Vec<_>>()
                 .len(),
-            3
+            2
         );
     }
 
@@ -283,7 +329,7 @@ mod tests {
         assert!(rc.is_flat());
 
         // It should no longer be flat after collect/disperse are applied
-        rc.disperse(1);
+        rc.disperse(1, 0);
         assert!(!rc.is_flat());
 
         // There should be 3 multiplications with that leaf in scope
@@ -320,7 +366,7 @@ mod tests {
         rc.to_svg("output/dot_test_1.svg");
         assert_eq!(rc.get_dot_text(), expected_text);
 
-        rc.disperse(1);
+        rc.disperse(1, 0);
         expected_text = "\
             m_0 [shape=rect, label=\"Memory\n0.00 | false\"]\n\
             m_0 -> s_1\n\
@@ -339,7 +385,7 @@ mod tests {
         rc.to_svg("output/dot_test_2.svg");
         assert_eq!(rc.get_dot_text(), expected_text);
 
-        rc.collect(1);
+        rc.collect(1, 0);
         expected_text = "\
             m_0 [shape=rect, label=\"Memory\n0.00 | false\"]\n\
             m_0 -> s_1\n\

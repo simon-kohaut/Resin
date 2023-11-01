@@ -3,14 +3,17 @@ use std::collections::BTreeSet;
 use std::ops;
 use std::sync::MutexGuard;
 
+use rayon::iter::ParallelIterator;
+use rayon::prelude::*;
+
 use super::add::Add;
 use super::leaf::Leaf;
 use super::memory::Memory;
 
 #[derive(Clone)]
 pub struct Mul {
-    pub scope: BTreeSet<usize>,
-    pub factors: BTreeSet<usize>,
+    pub scope: BTreeSet<u16>,
+    pub factors: BTreeSet<u16>,
     pub memory: Option<Memory>,
 }
 
@@ -28,7 +31,7 @@ pub enum MarkedMul {
 impl Mul {
     // ============================= //
     // ========  CONSTRUCT  ======== //
-    pub fn new(factors: Vec<usize>) -> Self {
+    pub fn new(factors: Vec<u16>) -> Self {
         // Ensure sorted indices
         let factors = BTreeSet::from_iter(factors);
 
@@ -53,59 +56,29 @@ impl Mul {
     // ============================== //
     // ===========  READ  =========== //
     pub fn value(&mut self, foliage_guard: &MutexGuard<Vec<Leaf>>) -> f64 {
-        // Obtain all relevant leafs
-        let leafs: Vec<&Leaf> = self
-            .factors
-            .iter()
-            .map(|index| &foliage_guard[*index])
-            .collect();
-
-        // Compute overall product
-        leafs
-            .iter()
-            .fold(self.memory_value(&foliage_guard), |acc, leaf| {
-                acc * leaf.get_value()
-            })
+        let value = if self.memory.is_some() { self.memory.as_mut().unwrap().value(&foliage_guard) } else { 1.0 };
+        self.factors
+            .par_iter()
+            .map(|index| foliage_guard[*index as usize].get_value())
+            .product::<f64>() * value
     }
 
     pub fn counted_value(&mut self, foliage_guard: &MutexGuard<Vec<Leaf>>) -> (f64, usize) {
-        // Obtain all relevant leafs
-        let leafs: Vec<&Leaf> = self
-            .factors
-            .iter()
-            .map(|index| &foliage_guard[*index])
-            .collect();
+        let (mut value, mut count) = if self.memory.is_some() { self.memory.as_mut().unwrap().counted_value(&foliage_guard) } else { (1.0, 0) };
+        value *= self.factors
+            .par_iter()
+            .map(|index| foliage_guard[*index as usize].get_value())
+            .product::<f64>();
 
-        // Compute overall product
-        leafs.iter().fold(
-            self.memory_counted_value(&foliage_guard),
-            |mut acc, leaf| {
-                acc.0 *= leaf.get_value();
-                acc.1 += 1;
-                acc
-            },
-        )
-    }
+        count += self.factors.len();
 
-    pub fn memory_value(&mut self, foliage_guard: &MutexGuard<Vec<Leaf>>) -> f64 {
-        match &mut self.memory {
-            Some(memory) => memory.value(&foliage_guard),
-            None => 1.0,
-        }
-    }
+        assert_ne!(value, f64::INFINITY);
 
-    pub fn memory_counted_value(&mut self, foliage_guard: &MutexGuard<Vec<Leaf>>) -> (f64, usize) {
-        match &mut self.memory {
-            Some(memory) => memory.counted_value(&foliage_guard),
-            None => (1.0, 0),
-        }
+        (value, count)
     }
 
     pub fn is_flat(&self) -> bool {
-        match self.memory {
-            Some(_) => false,
-            None => true,
-        }
+        self.memory.is_none()
     }
 
     pub fn is_equal(&self, other: &Mul) -> bool {
@@ -113,42 +86,62 @@ impl Mul {
     }
 
     pub fn update_dependencies(&self, foliage_guard: &mut MutexGuard<Vec<Leaf>>) {
-        match &self.memory {
-            Some(memory) => {
-                for index in &memory.add.scope {
-                    foliage_guard[*index].add_dependency(memory.valid.clone());
-                }
+        if self.memory.is_some() {
+            let memory = self.memory.as_ref().unwrap();
 
-                memory.update_dependencies(foliage_guard);
+            for index in &memory.add.scope {
+                foliage_guard[*index as usize].add_dependency(memory.valid.clone());
             }
-            None => (),
+    
+            memory.update_dependencies(foliage_guard);
+        }
+    }
+
+    pub fn count_adds(&self) -> usize {
+        match &self.memory {
+            Some(memory) => memory.count_adds(),
+            None => 0
+        }
+    }
+
+    pub fn count_muls(&self) -> usize {
+        match &self.memory {
+            Some(memory) => memory.count_muls(),
+            None => 0
+        }
+    }
+
+    pub fn layers(&self) -> usize {
+        match &self.memory {
+            Some(memory) => 1 + memory.layers(),
+            None => 1
         }
     }
 
     pub fn get_dot_text(
         &self,
-        index: Option<usize>,
+        index: Option<u16>,
         foliage_guard: &MutexGuard<Vec<Leaf>>,
-    ) -> (String, usize) {
+    ) -> (String, u16) {
         let mut dot_text = String::new();
         let index = if index.is_some() { index.unwrap() } else { 0 };
 
-        dot_text += &format!("p_{index} [label=\"&times;\"]\n");
+        let scope = &self.scope;
+        dot_text += &format!("p_{index} [label=\"&times;\n{scope:?}\"]\n");
         for factor in &self.factors {
-            let name = foliage_guard[*factor].name.to_owned();
+            let name = foliage_guard[*factor as usize].name.to_owned();
             dot_text += &format!("p_{index} -> {name}\n");
         }
 
         let mut last = index;
         let sub_text;
-        match &self.memory {
-            Some(memory) => {
-                let next = index + 1;
-                dot_text += &format!("p_{index} -> m_{next}\n");
-                (sub_text, last) = memory.get_dot_text(Some(next), foliage_guard);
-                dot_text += &sub_text;
-            }
-            None => (),
+        if self.memory.is_some() {
+            let memory = self.memory.as_ref().unwrap();
+            let next = index + 1;
+
+            dot_text += &format!("p_{index} -> m_{next}\n");
+            (sub_text, last) = memory.get_dot_text(Some(next), foliage_guard);
+            dot_text += &sub_text;
         }
 
         (dot_text, last)
@@ -156,7 +149,7 @@ impl Mul {
 
     // =============================== //
     // ===========  WRITE  =========== //
-    pub fn mul_index(&mut self, index: usize) {
+    pub fn mul_index(&mut self, index: u16) {
         self.scope.insert(index);
         self.factors.insert(index);
     }
@@ -166,12 +159,12 @@ impl Mul {
         self.memory = Some(Memory::new(-1.0, false, Some(add)));
     }
 
-    pub fn remove(&mut self, index: usize) {
+    pub fn remove(&mut self, index: u16) {
         self.scope.remove(&index);
         self.factors.remove(&index);
     }
 
-    pub fn collect(&mut self, index: usize, active: bool) -> Option<Collection> {
+    pub fn collect(&mut self, index: u16, active: bool, repeat: usize) -> Option<Collection> {
         // This mul directly factors over the leaf
         if active {
             if self.factors.contains(&index) {
@@ -187,43 +180,62 @@ impl Mul {
                     self.clone(),
                 )]))
             }
-        } else {
-            match &mut self.memory {
-                Some(memory) => match memory.collect(index) {
-                    Some(Collection::Forward(_)) => {
-                        panic!("MemoryCells should only return Collection::Apply!")
-                    }
-                    Some(Collection::Apply(muls)) => Some(Collection::Apply(muls)),
-                    None => None,
-                },
+        } else if self.memory.is_some() {
+            match self.memory.as_mut().unwrap().collect(index, repeat) {
+                Some(Collection::Forward(_)) => {
+                    panic!("MemoryCells should only return Collection::Apply!")
+                }
+                Some(Collection::Apply(muls)) => Some(Collection::Apply(muls)),
                 None => None,
             }
+        } else {
+            None
         }
     }
 
-    pub fn disperse(&mut self, index: usize) {
+    pub fn disperse(&mut self, index: u16, repeat: usize, value: f64) {
         if self.factors.remove(&index) {
             match &mut self.memory {
-                Some(memory) => memory.mul_index(index),
+                Some(memory) => memory.mul_index(index, value),
                 None => {
                     let factors = vec![index];
                     let inner_add = Add::from_mul(Mul::new(factors));
-                    self.memory = Some(Memory::new(-1.0, false, Some(inner_add)));
+                    self.memory = Some(Memory::new(value, true, Some(inner_add)));
                 }
             }
-        } else {
-            match &mut self.memory {
-                Some(memory) => memory.disperse(index),
-                None => (),
+
+            if repeat > 0 {
+                self.memory.as_mut().unwrap().disperse(index, repeat - 1, value);
             }
+        } else if self.memory.is_some() {
+            self.memory.as_mut().unwrap().disperse(index, repeat, value);
+        }
+    }
+
+    pub fn deploy(&self) -> Vec<Memory> {
+        match &self.memory {
+            Some(memory) => {
+                let mut memories = vec![memory.clone()];
+                memories.append(&mut memory.deploy());
+
+                memories
+            }
+            None => vec![]
+        }
+    }
+
+    pub fn empty_scope(&mut self) {
+        self.scope.clear();
+        if self.memory.is_some() {
+            self.memory.as_mut().unwrap().empty_scope();
         }
     }
 }
 
-impl ops::Mul<usize> for Mul {
+impl ops::Mul<u16> for Mul {
     type Output = Mul;
 
-    fn mul(self, index: usize) -> Mul {
+    fn mul(self, index: u16) -> Mul {
         let mut mul = self;
         mul.mul_index(index);
         mul

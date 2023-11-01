@@ -4,7 +4,7 @@ use rclrs::{
     QOS_PROFILE_DEFAULT,
 };
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std_msgs::msg::Float64;
 
 use super::leaf::{update, Foliage};
@@ -49,7 +49,7 @@ impl IpcChannel {
         }
 
         let mut profile = QOS_PROFILE_DEFAULT;
-        profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
+        // profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
 
         let subscription = NODE.lock().unwrap().create_subscription(
             &format!("{}{}", prefix, channel),
@@ -73,7 +73,7 @@ impl IpcChannel {
 impl RandomizedIpcChannel {
     pub fn new(topic: &str, frequency: f64, value: f64) -> Result<Self, RclrsError> {
         let mut profile = QOS_PROFILE_DEFAULT;
-        profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
+        // profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
 
         let publisher = NODE.lock().unwrap().create_publisher(topic, profile)?;
 
@@ -87,14 +87,10 @@ impl RandomizedIpcChannel {
     pub fn start(self) {
         std::thread::spawn(move || -> Result<(), rclrs::RclrsError> {
             loop {
-                if !CONTEXT.ok() {
-                    return Ok(());
-                }
-
-                std::thread::sleep(Duration::from_secs_f64(1.0 / self.frequency));
                 self.publisher.publish(Float64 {
                     data: 1.0 / self.frequency,
                 })?;
+                std::thread::sleep(Duration::from_secs_f64(1.0 / self.frequency));
             }
         });
     }

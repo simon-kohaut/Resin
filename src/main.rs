@@ -5,13 +5,12 @@ mod frequencies;
 mod language;
 mod tracking;
 
-use std::io::{stdout, Write};
-
 use crate::circuit::ipc::{retreive_messages, RandomizedIpcChannel};
 use crate::circuit::Leaf;
 use crate::circuit::Mul;
 
-use circuit::leaf::activate_channel;
+use atomic_float::AtomicF64;
+use circuit::leaf::{activate_channel, Foliage};
 use circuit::RC;
 
 use itertools::Itertools;
@@ -23,9 +22,16 @@ use ndarray::{array, Array1, Array2};
 
 use plotly::common::{AxisSide, Font, Title};
 use plotly::layout::{Axis as PAxis, Layout};
-use plotly::{Plot, Scatter};
-use rand::seq::{index, SliceRandom};
+use plotly::{Plot, Scatter, Bar};
+use rand::seq::SliceRandom;
+use rand::Rng;
+use rand_distr::{Distribution, SkewNormal};
+use rayon::prelude::{IntoParallelRefMutIterator, ParallelIterator};
 
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering::{Acquire, Release};
+use std::thread::JoinHandle;
 use std::time::Instant;
 use std::vec;
 
@@ -39,17 +45,18 @@ pub fn power_set<T: Clone>(leafs: &[T]) -> Vec<Vec<T>> {
     power_set
 }
 
-pub fn random_set<T: Clone>(leafs: &[T]) -> Vec<Vec<T>> {
+pub fn random_set(number_leafs: usize, number_sets: usize) -> Vec<Vec<usize>> {
     let mut random_set = Vec::new();
-    for i in 0..leafs.len() + 1 {
-        for _ in 0..leafs.len() + 1 {
-            random_set.push(
-                leafs
-                    .choose_multiple(&mut rand::thread_rng(), i)
-                    .cloned()
-                    .collect(),
-            );
-        }
+
+    let mut rng = rand::thread_rng();
+    for _ in 0..number_sets {
+        random_set.push(
+            (0..number_leafs)
+                .collect_vec()
+                .choose_multiple(&mut rng, number_leafs / 2)
+                .cloned()
+                .collect(),
+        );
     }
     random_set
 }
@@ -60,13 +67,14 @@ fn randomized_rc(number_leafs: usize) -> RC {
         rc.grow(0.0, &i.to_string());
     }
 
-    let combinations = power_set(&(0..number_leafs).collect_vec());
+    // let combinations = power_set(&(0..number_leafs).collect_vec());
+    let combinations = random_set(number_leafs, 100);
     for combination in combinations {
         if combination.is_empty() {
             continue;
         }
 
-        rc.add(Mul::new(combination));
+        rc.add(Mul::new(combination.iter().map(|&e| e as u16).collect()));
     }
 
     rc.update_dependencies();
@@ -88,97 +96,130 @@ fn frequency_adaptation(rc: &mut RC) {
         }
     }
 
-    let mut frequencies: Vec<f64> = indexed_frequencies_pairs
+    let frequencies: Vec<f64> = indexed_frequencies_pairs
         .iter()
         .map(|(_, leaf)| leaf.get_frequency())
         .collect();
 
-    let dataset = Dataset::new(
-        Array2::from_shape_vec((frequencies.len(), 1), frequencies).unwrap(),
-        array![0.0],
-    );
+    // let dataset = Dataset::new(
+    //     Array2::from_shape_vec((frequencies.len(), 1), frequencies).unwrap(),
+    //     array![0.0],
+    // );
 
-    let clusters = Dbscan::params(2).tolerance(0.5).transform(dataset);
+    // let clusters = Dbscan::params(2).tolerance(0.02).transform(dataset);
 
-    let mut cluster_counter = 0;
-    let mut previous_cluster = 0;
+    // let mut cluster_counter = 0;
+    // let mut previous_cluster = 0;
     let mut cluster_steps = vec![];
 
+    // let mut foliage_guard = rc.foliage.lock().unwrap();
+    // for index in 0..clusters.records.shape()[0] {
+    //     match clusters.targets[index] {
+    //         Some(cluster) => {
+    //             if cluster == previous_cluster {
+    //                 cluster_steps.push(
+    //                     foliage_guard[indexed_frequencies_pairs[index].0]
+    //                         .set_cluster(&cluster_counter),
+    //                 );
+    //             } else {
+    //                 previous_cluster = cluster;
+    //                 cluster_counter += 1;
+    //                 cluster_steps.push(
+    //                     foliage_guard[indexed_frequencies_pairs[index].0]
+    //                         .set_cluster(&cluster_counter),
+    //                 );
+    //             }
+    //         }
+    //         None => {
+    //             previous_cluster = usize::MAX;
+    //             cluster_counter += 1;
+    //             cluster_steps.push(
+    //                 foliage_guard[indexed_frequencies_pairs[index].0].set_cluster(&cluster_counter),
+    //             );
+    //         }
+    //     }
+    // }
+    // drop(foliage_guard);
+
     let mut foliage_guard = rc.foliage.lock().unwrap();
-    for index in 0..clusters.records.shape()[0] {
-        match clusters.targets[index] {
-            Some(cluster) => {
-                if cluster == previous_cluster {
-                    cluster_steps.push(
-                        foliage_guard[indexed_frequencies_pairs[index].0]
-                            .set_cluster(&cluster_counter),
-                    );
-                } else {
-                    previous_cluster = cluster;
-                    cluster_counter += 1;
-                    cluster_steps.push(
-                        foliage_guard[indexed_frequencies_pairs[index].0]
-                            .set_cluster(&cluster_counter),
-                    );
-                }
-            }
-            None => {
-                previous_cluster = usize::MAX;
-                cluster_counter += 1;
+    let boundaries = vec![0.01, 0.1, 1.0, 10.0, 100.0];
+    for (index, frequency) in frequencies.iter().enumerate() {
+        for (cluster, boundary) in boundaries.iter().enumerate() {
+            if *frequency <= *boundary {
                 cluster_steps.push(
-                    foliage_guard[indexed_frequencies_pairs[index].0].set_cluster(&cluster_counter),
+                    foliage_guard[indexed_frequencies_pairs[index].0]
+                        .set_cluster(&(cluster as i32)),
                 );
+                break;
             }
         }
     }
-    println!("Clusters {:?}", clusters.targets);
-    println!("Cluster steps {:?}", cluster_steps);
     drop(foliage_guard);
 
     if cluster_steps.iter().all(|step| *step == 0) {
         return;
     }
 
+    let min_cluster = cluster_steps.iter().min().unwrap().clone();
+    for step in &mut cluster_steps {
+        *step -= min_cluster;
+    }
+
+    // println!("Clusters {:?}", clusters.targets);
+    println!("Cluster steps {:?}", cluster_steps);
+
     rc.clear_dependencies();
     for (index, cluster_step) in cluster_steps.iter().enumerate() {
         if cluster_step != &0 {
             if cluster_step > &0 {
-                for _ in 0..*cluster_step {
-                    rc.disperse(indexed_frequencies_pairs[index].0);
-                }
+                rc.disperse(
+                    indexed_frequencies_pairs[index].0 as u16,
+                    *cluster_step as usize - 1,
+                );
             } else {
-                for _ in 0..-*cluster_step {
-                    rc.collect(indexed_frequencies_pairs[index].0);
-                }
+                rc.collect(
+                    indexed_frequencies_pairs[index].0 as u16,
+                    -*cluster_step as usize - 1,
+                );
             }
+        }
+        if index % 100 == 0 {
+            println!("Done {index}");
         }
     }
     rc.update_dependencies();
+    rc.empty_scope();
 }
 
-pub fn message_loop() {
-    std::thread::spawn(move || -> Result<(), rclrs::RclrsError> {
-        loop {
-            retreive_messages();
-        }
-    });
-}
+// pub fn message_loop(foliage: Foliage, ok: AtomicBool) -> JoinHandle<Result<(), rclrs::RclrsError>> {
+//     std::thread::spawn(move || -> Result<(), rclrs::RclrsError> {
+//         while ok.load(Acquire) {
+//             let foliage_guard = foliage.lock().unwrap();
+//             retreive_messages();
+//             drop(foliage_guard);
+//         }
+//     })
+// }
 
 fn randomized_study() {
     println!("Building randomized RC.");
-    let number_leafs = 5;
+    let experiment_time = 20;
+    let number_leafs = 100;
     let mut rc = randomized_rc(number_leafs);
 
     println!("Activate randomized IPC.");
-    print!("F = {{");
+    let distribution = SkewNormal::new(0.1, 3.0, -1.0).unwrap();
     let mut true_frequencies = vec![];
     for index in 0..number_leafs {
         let channel = format!("leaf_{}", rc.foliage.lock().unwrap()[index].name);
         activate_channel(rc.foliage.clone(), index, &channel, &false);
 
-        use rand::Rng;
         let mut rng = rand::thread_rng();
-        true_frequencies.push(rng.gen_range(0.001..5.0));
+        let mut frequency = distribution.sample(&mut rng);
+        if frequency < 0.001 {
+            frequency = 0.001;
+        }
+        true_frequencies.push(frequency as f64);
         let new_publisher = RandomizedIpcChannel::new(
             &rc.foliage.lock().unwrap()[index]
                 .ipc_channel
@@ -188,11 +229,12 @@ fn randomized_study() {
             true_frequencies[true_frequencies.len() - 1],
             rng.gen_range(0.1..1.0),
         );
-        print!("{}, ", new_publisher.as_ref().unwrap().frequency);
         new_publisher.unwrap().start();
     }
+    let mut sorted_frequencies = true_frequencies.clone();
+    sorted_frequencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    println!("F = {:?}", sorted_frequencies);
     let true_frequencies_array = Array1::from(true_frequencies);
-    println!("}}");
 
     let mut operations = vec![];
     let mut operation_ratios = vec![];
@@ -205,15 +247,25 @@ fn randomized_study() {
     let mut adaptation_times = vec![];
     let mut adaptation_timestamps = vec![];
 
-    let experiment_time = 10;
+    println!("Loop original for {}s.", experiment_time);
+    // let _ = message_loop(rc.foliage.clone());
 
-    println!("Loop for {}s.", experiment_time);
-    message_loop();
     let runtime_clock = Instant::now();
     loop {
+        retreive_messages();
+
         let before = Instant::now();
         let (value, n_ops) = rc.counted_value();
-        inference_times.push(before.elapsed().as_secs_f64());
+        let elapsed = before.elapsed().as_secs_f64();
+
+        if n_ops == 0 {
+            continue;
+        }
+
+        // let value = rc.value();
+
+        // println!("Inference took {elapsed}s");
+        inference_times.push(elapsed);
         inference_timestamps.push(runtime_clock.elapsed().as_secs_f64());
 
         values.push(value);
@@ -251,59 +303,81 @@ fn randomized_study() {
         adaptation_times[adaptation_times.len() - 1]
     );
 
+    // println!("Loop adapted for {}s.", experiment_time);
+    // let runtime_clock = Instant::now();
+    // loop {
+    //     retreive_messages();
+
+    //     let before = Instant::now();
+    //     let (value, n_ops) = rc.counted_value();
+    //     let elapsed = before.elapsed().as_secs_f64();
+
+    //     // if n_ops == 0 {
+    //     //     continue;
+    //     // }
+    //     // println!("Inference took {elapsed}s");
+    //     inference_times.push(elapsed);
+    //     inference_timestamps.push(runtime_clock.elapsed().as_secs_f64() + experiment_time as f64);
+
+    //     values.push(value);
+    //     if operations.is_empty() {
+    //         max_operations = n_ops as f64;
+    //     }
+    //     operations.push(n_ops);
+    //     operation_ratios.push(n_ops as f64 / max_operations);
+
+    //     if runtime_clock.elapsed().as_secs() >= experiment_time {
+    //         break;
+    //     }
+    // }
+
+    let mut deploy = rc.deploy();
+    deploy.reverse();
+    println!("Loop deployed for {experiment_time}s.");
     let runtime_clock = Instant::now();
     loop {
+        retreive_messages();
+
         let before = Instant::now();
-        let (value, n_ops) = rc.counted_value();
-        inference_times.push(before.elapsed().as_secs_f64());
-        inference_timestamps.push(runtime_clock.elapsed().as_secs_f64() + experiment_time as f64);
+        let foliage_guard = rc.foliage.lock().unwrap();
+        let n_ops = deploy.par_iter_mut().fold(|| 0, |acc, memory| acc + memory.counted_value(&foliage_guard).1).sum::<usize>();
+        let value= deploy[0].value(&foliage_guard);
+        drop(foliage_guard);
+        let elapsed = before.elapsed().as_secs_f64();
+
+        if n_ops == 0 {
+            continue;
+        }
 
         values.push(value);
+
         if operations.is_empty() {
             max_operations = n_ops as f64;
         }
         operations.push(n_ops);
         operation_ratios.push(n_ops as f64 / max_operations);
 
-        let frequencies: Vec<f64> = rc
-            .foliage
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|leaf| leaf.get_frequency())
-            .collect();
-
-        mse.push(
-            Array1::from(frequencies)
-                .mean_squared_error(&true_frequencies_array)
-                .unwrap(),
-        );
+        inference_times.push(elapsed);
+        inference_timestamps.push(runtime_clock.elapsed().as_secs_f64() + experiment_time as f64);
 
         if runtime_clock.elapsed().as_secs() >= experiment_time {
             break;
         }
     }
 
-    println!("Evaluate sliding inference time.");
-    let window_size = 1000;
-    let sliding_times: Vec<f64> = inference_times
+    let window_size = 30;
+    let averaged_inference_times: Vec<f64> = inference_times
         .windows(window_size)
-        .map(|window| window.iter().sum::<f64>() / window.len() as f64)
-        .collect();
-    let sliding_ratios: Vec<f64> = operation_ratios
-        .windows(window_size)
-        .map(|window| window.iter().sum::<f64>() / window.len() as f64)
+        .map(|w| w.iter().sum::<f64>() / w.len() as f64)
         .collect();
 
     println!("Export results.");
     let mut plot = Plot::new();
     plot.add_trace(
-        Scatter::new(inference_timestamps[window_size..].to_vec(), sliding_ratios)
-            .name("Operations Ratio"),
+        Scatter::new(inference_timestamps.to_vec(), operation_ratios).name("Operations Ratio"),
     );
     plot.add_trace(
         Scatter::new(inference_timestamps.clone(), values.clone())
-            .y_axis("y2")
             .name("Value"),
     );
     plot.set_layout(
@@ -316,23 +390,17 @@ fn randomized_study() {
             )
             .y_axis(
                 PAxis::new()
-                    .title(Title::new("Avg. Operations Ratio"))
+                    .title(Title::new("Operations Ratio"))
                     .range(vec![0, 1]),
             )
-            .y_axis2(
-                PAxis::new()
-                    .title(Title::new("RC Value").font(Font::new().color("#ff7f0e")))
-                    .tick_font(Font::new().color("#ff7f0e"))
-                    .anchor("free")
-                    .overlaying("y")
-                    .side(AxisSide::Right)
-                    .position(1.0),
-            ),
     );
     plot.write_html("output/operations.html");
 
     let mut plot = Plot::new();
-    plot.add_trace(Scatter::new(inference_timestamps.clone(), mse.clone()));
+    plot.add_trace(
+        Scatter::new(inference_timestamps.clone(), values.clone())
+            .name("Value"),
+    );
     plot.set_layout(
         Layout::new()
             .title(Title::new("Reactive Inference"))
@@ -341,19 +409,37 @@ fn randomized_study() {
                     .title(Title::new("Time / s"))
                     .range(vec![0, 2 * experiment_time]),
             )
-            .y_axis(PAxis::new().title(Title::new("MSE of Estimated FoC"))),
+            .y_axis(
+                PAxis::new()
+                    .title(Title::new("RC Value"))
+                    .range(vec![0, 1]),
+            )
     );
-    plot.write_html("output/mse.html");
+    plot.write_html("output/values.html");
+    // let mut plot = Plot::new();
+    // plot.add_trace(Scatter::new(inference_timestamps.clone(), mse.clone()));
+    // plot.set_layout(
+    //     Layout::new()
+    //         .title(Title::new("Reactive Inference"))
+    //         .x_axis(
+    //             PAxis::new()
+    //                 .title(Title::new("Time / s"))
+    //                 .range(vec![0, 2 * experiment_time]),
+    //         )
+    //         .y_axis(PAxis::new().title(Title::new("MSE of Estimated FoC"))),
+    // );
+    // plot.write_html("output/mse.html");
 
     plot = Plot::new();
     plot.add_trace(
-        Scatter::new(inference_timestamps[window_size..].to_vec(), sliding_times)
-            .name("Avg. Inference"),
+        Scatter::new(inference_timestamps.to_vec(), inference_times).name("Inference Time"),
     );
     plot.add_trace(
-        Scatter::new(adaptation_timestamps.clone(), adaptation_times.clone())
-            .name("Adaptation")
-            .y_axis("y2"),
+        Scatter::new(
+            inference_timestamps[window_size / 2..].to_vec(),
+            averaged_inference_times.clone(),
+        )
+        .name("Avg. Inference Time"),
     );
     plot.set_layout(
         Layout::new()
@@ -364,20 +450,12 @@ fn randomized_study() {
                     .range(vec![0, 2 * experiment_time]),
             )
             .y_axis(PAxis::new().title(Title::new("Inference Time / s")))
-            .y_axis2(
-                PAxis::new()
-                    .title(
-                        Title::new("Frequency Adaptation Time / s")
-                            .font(Font::new().color("#ff7f0e")),
-                    )
-                    .tick_font(Font::new().color("#ff7f0e"))
-                    .anchor("free")
-                    .overlaying("y")
-                    .side(AxisSide::Right)
-                    .position(1.0),
-            ),
     );
     plot.write_html("output/time.html");
+
+    // plot = Plot::new();
+    // plot.add_trace(Bar::new(vec![0, 1], vec![sum_inference_before, sum_inference_after]));
+    // plot.write_html("output/oaverall_time.html");
 }
 
 fn main() -> std::io::Result<()> {

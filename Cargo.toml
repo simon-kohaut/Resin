@@ -9,6 +9,9 @@ keywords = [
   "reactive circuits",
 ]
 
+[build]
+rustflags = ["-C", "target-cpu=native"]
+
 [profile.dev]
 opt-level = 0
 
@@ -17,6 +20,7 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 panic = "abort"
+debug = true
 
 [dependencies]
 rclrs = "*"
@@ -43,3 +47,4 @@ clap = { version = "4.4.1", features = ["derive"] }
 rayon = "*"
 chashmap = "*"
 atomic_float = "*"
+rand_distr = "*"

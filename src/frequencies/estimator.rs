@@ -37,6 +37,7 @@ impl FoCEstimator {
         self.kalman.update(&array![elapsed]);
         self.clock = Instant::now();
 
-        1.0 / self.kalman.estimate[0]
+        // 1.0 / self.kalman.estimate[0]
+        1.0 / elapsed
     }
 }
