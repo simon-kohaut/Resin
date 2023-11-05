@@ -56,23 +56,31 @@ impl Mul {
     // ============================== //
     // ===========  READ  =========== //
     pub fn value(&mut self, foliage_guard: &MutexGuard<Vec<Leaf>>) -> f64 {
-        let value = if self.memory.is_some() { self.memory.as_mut().unwrap().value(&foliage_guard) } else { 1.0 };
+        let value = if self.memory.is_some() {
+            self.memory.as_mut().unwrap().value(&foliage_guard)
+        } else {
+            1.0
+        };
         self.factors
-            .par_iter()
+            .iter()
             .map(|index| foliage_guard[*index as usize].get_value())
-            .product::<f64>() * value
+            .product::<f64>()
+            * value
     }
 
     pub fn counted_value(&mut self, foliage_guard: &MutexGuard<Vec<Leaf>>) -> (f64, usize) {
-        let (mut value, mut count) = if self.memory.is_some() { self.memory.as_mut().unwrap().counted_value(&foliage_guard) } else { (1.0, 0) };
-        value *= self.factors
-            .par_iter()
+        let (mut value, mut count) = if self.memory.is_some() {
+            self.memory.as_mut().unwrap().counted_value(&foliage_guard)
+        } else {
+            (1.0, 0)
+        };
+        value *= self
+            .factors
+            .iter()
             .map(|index| foliage_guard[*index as usize].get_value())
             .product::<f64>();
 
         count += self.factors.len();
-
-        assert_ne!(value, f64::INFINITY);
 
         (value, count)
     }
@@ -92,7 +100,7 @@ impl Mul {
             for index in &memory.add.scope {
                 foliage_guard[*index as usize].add_dependency(memory.valid.clone());
             }
-    
+
             memory.update_dependencies(foliage_guard);
         }
     }
@@ -100,21 +108,21 @@ impl Mul {
     pub fn count_adds(&self) -> usize {
         match &self.memory {
             Some(memory) => memory.count_adds(),
-            None => 0
+            None => 0,
         }
     }
 
     pub fn count_muls(&self) -> usize {
         match &self.memory {
             Some(memory) => memory.count_muls(),
-            None => 0
+            None => 0,
         }
     }
 
     pub fn layers(&self) -> usize {
         match &self.memory {
             Some(memory) => 1 + memory.layers(),
-            None => 1
+            None => 1,
         }
     }
 
@@ -205,7 +213,10 @@ impl Mul {
             }
 
             if repeat > 0 {
-                self.memory.as_mut().unwrap().disperse(index, repeat - 1, value);
+                self.memory
+                    .as_mut()
+                    .unwrap()
+                    .disperse(index, repeat - 1, value);
             }
         } else if self.memory.is_some() {
             self.memory.as_mut().unwrap().disperse(index, repeat, value);
@@ -220,7 +231,7 @@ impl Mul {
 
                 memories
             }
-            None => vec![]
+            None => vec![],
         }
     }
 

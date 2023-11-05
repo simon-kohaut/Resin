@@ -28,7 +28,7 @@ pub struct RandomizedIpcChannel {
 }
 
 pub fn retreive_messages() {
-    let _ = spin_once(&NODE.lock().unwrap(), Some(Duration::from_millis(1)));
+    let _ = spin_once(&NODE.lock().unwrap(), Some(Duration::from_millis(1000)));
 }
 
 pub fn shutdown() {
@@ -49,7 +49,7 @@ impl IpcChannel {
         }
 
         let mut profile = QOS_PROFILE_DEFAULT;
-        // profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
+        profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
 
         let subscription = NODE.lock().unwrap().create_subscription(
             &format!("{}{}", prefix, channel),
@@ -73,7 +73,7 @@ impl IpcChannel {
 impl RandomizedIpcChannel {
     pub fn new(topic: &str, frequency: f64, value: f64) -> Result<Self, RclrsError> {
         let mut profile = QOS_PROFILE_DEFAULT;
-        // profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
+        profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
 
         let publisher = NODE.lock().unwrap().create_publisher(topic, profile)?;
 

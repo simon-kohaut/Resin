@@ -66,12 +66,11 @@ impl Add {
     #[inline(always)]
     pub fn counted_value(&mut self, foliage_guard: &MutexGuard<Vec<Leaf>>) -> (f64, usize) {
         // Accumulate sum over inner products
-        let (value, mut count) = self.products
+        let (value, mut count) = self
+            .products
             .iter_mut()
             .map(|mul| mul.counted_value(&foliage_guard))
-            .reduce(|acc, (value, count)| 
-                (acc.0 + value, acc.1 + count)
-            )
+            .reduce(|acc, (value, count)| (acc.0 + value, acc.1 + count))
             .unwrap_or_else(|| (0.0, 0));
 
         if self.products.len() >= 2 {
@@ -121,18 +120,25 @@ impl Add {
         if self.products.is_empty() {
             0
         } else {
-            1 + self.products.iter().fold(0, |acc, mul| acc + mul.count_adds())
+            1 + self
+                .products
+                .iter()
+                .fold(0, |acc, mul| acc + mul.count_adds())
         }
     }
 
     pub fn count_muls(&self) -> usize {
-        self.products.len() + self.products.iter().fold(0, |acc, mul| acc + mul.count_muls())
+        self.products.len()
+            + self
+                .products
+                .iter()
+                .fold(0, |acc, mul| acc + mul.count_muls())
     }
 
     pub fn layers(&self) -> usize {
         self.products.iter().map(|mul| mul.layers()).max().unwrap()
     }
- 
+
     pub fn get_dot_text(
         &self,
         index: Option<u16>,
@@ -168,7 +174,7 @@ impl Add {
                     own.scope.extend(mul.scope);
                     return;
                 }
-            }                
+            }
         }
 
         self.products.push(mul);
@@ -252,11 +258,7 @@ impl Add {
         }
     }
 
-    pub fn _apply_collection(
-        &mut self,
-        index: u16,
-        applies: Vec<(Vec<MarkedMul>, BTreeSet<u16>)>,
-    ) {
+    pub fn _apply_collection(&mut self, index: u16, applies: Vec<(Vec<MarkedMul>, BTreeSet<u16>)>) {
         for (marked_muls, prefix) in applies {
             for marked_mul in marked_muls {
                 self.add_marked(marked_mul, index);

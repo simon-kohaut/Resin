@@ -1,7 +1,7 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Acquire;
-use std::sync::atomic::Ordering::Release;
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::Ordering::Release;
 use std::sync::{Arc, MutexGuard};
 
 use atomic_float::AtomicF64;
@@ -49,8 +49,14 @@ impl Memory {
                 combined.add(mul.clone());
             }
 
-            combined.storage.store(lhs_memory.storage.load(Acquire) + rhs_memory.storage.load(Acquire), Release);
-            combined.valid.store(lhs_memory.valid.load(Acquire) && rhs_memory.valid.load(Acquire), Release);
+            combined.storage.store(
+                lhs_memory.storage.load(Acquire) + rhs_memory.storage.load(Acquire),
+                Release,
+            );
+            combined.valid.store(
+                lhs_memory.valid.load(Acquire) && rhs_memory.valid.load(Acquire),
+                Release,
+            );
 
             Some(combined)
         }
@@ -156,7 +162,8 @@ impl Memory {
     }
 
     pub fn mul_index(&mut self, index: u16, value: f64) {
-        self.storage.store(value * self.storage.load(Acquire), Release);
+        self.storage
+            .store(value * self.storage.load(Acquire), Release);
         self.add.mul_index(index);
     }
 

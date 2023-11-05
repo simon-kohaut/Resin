@@ -2,6 +2,7 @@ pub use crate::circuit::add::Add;
 pub use crate::circuit::compile::{compile, Args};
 pub use crate::circuit::leaf::Leaf;
 pub use crate::circuit::mul::Mul;
+pub use crate::circuit::polynomial::Polynomial;
 pub use crate::circuit::rc::RC;
 
 pub mod add;
@@ -11,6 +12,7 @@ pub mod ipc;
 pub mod leaf;
 pub mod memory;
 pub mod mul;
+pub mod polynomial;
 pub mod rc;
 
 // #[macro_export]
