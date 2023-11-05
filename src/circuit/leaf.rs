@@ -61,8 +61,8 @@ impl Leaf {
         self.valid_flags = vec![];
     }
 
-    pub fn remove_dependency(&mut self, flag: Arc<AtomicBool>) {
-        self.valid_flags.retain(|m| !Arc::ptr_eq(m, &flag));
+    pub fn remove_dependency(&mut self, flag: &Arc<AtomicBool>) {
+        self.valid_flags.retain(|m| !Arc::ptr_eq(m, flag));
     }
 }
 
