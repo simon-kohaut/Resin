@@ -4,7 +4,7 @@ use rclrs::{
     QOS_PROFILE_DEFAULT,
 };
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std_msgs::msg::Float64;
 
 use super::leaf::{update, Foliage};
@@ -28,7 +28,7 @@ pub struct RandomizedIpcChannel {
 }
 
 pub fn retreive_messages() {
-    let _ = spin_once(&NODE.lock().unwrap(), Some(Duration::from_millis(1000)));
+    let _ = spin_once(&NODE.lock().unwrap(), Some(Duration::from_millis(0)));
 }
 
 pub fn shutdown() {
@@ -88,7 +88,7 @@ impl RandomizedIpcChannel {
         std::thread::spawn(move || -> Result<(), rclrs::RclrsError> {
             loop {
                 self.publisher.publish(Float64 {
-                    data: 1.0 / self.frequency,
+                    data: self.value,
                 })?;
                 std::thread::sleep(Duration::from_secs_f64(1.0 / self.frequency));
             }

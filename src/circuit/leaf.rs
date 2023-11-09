@@ -36,7 +36,7 @@ impl Leaf {
 
     pub fn set_value(&mut self, value: &f64) {
         self.value = *value;
-        self.frequency = self.foc_estimator.update(*value);
+        // self.frequency = self.foc_estimator.update(*value);
     }
 
     pub fn set_cluster(&mut self, cluster: &i32) -> i32 {
@@ -51,6 +51,10 @@ impl Leaf {
 
     pub fn get_frequency(&self) -> f64 {
         self.frequency
+    }
+
+    pub fn set_frequency(&mut self, frequency: &f64) {
+        self.frequency = *frequency;
     }
 
     pub fn add_dependency(&mut self, flag: Arc<AtomicBool>) {
