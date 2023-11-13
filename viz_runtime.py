@@ -14,4 +14,3 @@ plot.tick_params(labelsize=15)
 plot.legend(title="Mean FoC", fontsize=15)
 
 plot.get_figure().savefig("output/time_plot.pdf", bbox_inches='tight')
-

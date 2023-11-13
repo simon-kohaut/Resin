@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering::Release;
 use std::sync::{atomic::AtomicBool, Arc, Mutex};
 
 use super::ipc::IpcChannel;
-use crate::frequencies::FoCEstimator;
+use crate::channels::FoCEstimator;
 
 #[derive(Clone)]
 pub struct Leaf {

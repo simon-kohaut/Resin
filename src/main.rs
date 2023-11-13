@@ -1,39 +1,39 @@
 #![allow(dead_code)]
 
 mod circuit;
-mod frequencies;
+mod channels;
 mod language;
 mod tracking;
 
 use crate::circuit::ipc::{retreive_messages, RandomizedIpcChannel};
 use crate::circuit::Leaf;
-use crate::circuit::Mul;
-use crate::circuit::ReactiveCircuit;
 
-use atomic_float::AtomicF64;
+use crate::circuit::ReactiveCircuit;
+use crate::channels::clustering::frequency_adaptation;
+
+
 use circuit::leaf::{activate_channel, Foliage};
-use circuit::RC;
+
 
 use itertools::Itertools;
-use linfa::prelude::SingleTargetRegression;
-use linfa::traits::Transformer;
-use linfa::Dataset;
-use linfa_clustering::Dbscan;
-use ndarray::{array, Array1, Array2};
 
-use nom::number;
-use plotly::common::{AxisSide, Font, Title};
-use plotly::layout::{Axis as PAxis, Layout};
-use plotly::{Bar, Plot, Scatter};
+
+
+
+
+
+
+
+
+
 use rand::seq::SliceRandom;
-use rand::Rng;
 use rand_distr::{Distribution, SkewNormal};
 use rayon::prelude::{IntoParallelRefMutIterator, ParallelIterator};
 
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering::{Acquire, Release};
+
+
 use std::sync::{Arc, Mutex};
-use std::thread::{JoinHandle, Thread};
+
 use std::time::Instant;
 use std::vec;
 
@@ -41,8 +41,6 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
-
-use cpu_time::ThreadTime;
 
 
 pub fn power_set<T: Clone>(leafs: &[T]) -> Vec<Vec<T>> {
@@ -91,116 +89,116 @@ fn randomized_rc(number_leafs: u16, number_models: usize) -> (ReactiveCircuit, F
     (rc, foliage)
 }
 
-fn frequency_adaptation(rc: &mut ReactiveCircuit, foliage: &mut Foliage) {
-    let mut indexed_frequencies_pairs: Vec<(usize, Leaf)> = vec![];
-    for (i, leaf) in foliage.lock().unwrap().iter().enumerate() {
-        let position = indexed_frequencies_pairs.binary_search_by(|pair| {
-            pair.1
-                .get_frequency()
-                .partial_cmp(&leaf.get_frequency())
-                .unwrap()
-        });
-        match position {
-            Ok(position) => indexed_frequencies_pairs.insert(position, (i, leaf.clone())),
-            Err(position) => indexed_frequencies_pairs.insert(position, (i, leaf.clone())),
-        }
-    }
+// fn frequency_adaptation(rc: &mut ReactiveCircuit, foliage: &mut Foliage) {
+//     let mut indexed_frequencies_pairs: Vec<(usize, Leaf)> = vec![];
+//     for (i, leaf) in foliage.lock().unwrap().iter().enumerate() {
+//         let position = indexed_frequencies_pairs.binary_search_by(|pair| {
+//             pair.1
+//                 .get_frequency()
+//                 .partial_cmp(&leaf.get_frequency())
+//                 .unwrap()
+//         });
+//         match position {
+//             Ok(position) => indexed_frequencies_pairs.insert(position, (i, leaf.clone())),
+//             Err(position) => indexed_frequencies_pairs.insert(position, (i, leaf.clone())),
+//         }
+//     }
 
-    let frequencies: Vec<f64> = indexed_frequencies_pairs
-        .iter()
-        .map(|(_, leaf)| leaf.get_frequency())
-        .collect();
+//     let frequencies: Vec<f64> = indexed_frequencies_pairs
+//         .iter()
+//         .map(|(_, leaf)| leaf.get_frequency())
+//         .collect();
 
-    // let dataset = Dataset::new(
-    //     Array2::from_shape_vec((frequencies.len(), 1), frequencies).unwrap(),
-    //     array![0.0],
-    // );
+//     // let dataset = Dataset::new(
+//     //     Array2::from_shape_vec((frequencies.len(), 1), frequencies).unwrap(),
+//     //     array![0.0],
+//     // );
 
-    // let clusters = Dbscan::params(2).tolerance(0.02).transform(dataset);
+//     // let clusters = Dbscan::params(2).tolerance(0.02).transform(dataset);
 
-    // let mut cluster_counter = 0;
-    // let mut previous_cluster = 0;
-    let mut cluster_steps = vec![];
+//     // let mut cluster_counter = 0;
+//     // let mut previous_cluster = 0;
+//     let mut cluster_steps = vec![];
 
-    // let mut foliage_guard = rc.foliage.lock().unwrap();
-    // for index in 0..clusters.records.shape()[0] {
-    //     match clusters.targets[index] {
-    //         Some(cluster) => {
-    //             if cluster == previous_cluster {
-    //                 cluster_steps.push(
-    //                     foliage_guard[indexed_frequencies_pairs[index].0]
-    //                         .set_cluster(&cluster_counter),
-    //                 );
-    //             } else {
-    //                 previous_cluster = cluster;
-    //                 cluster_counter += 1;
-    //                 cluster_steps.push(
-    //                     foliage_guard[indexed_frequencies_pairs[index].0]
-    //                         .set_cluster(&cluster_counter),
-    //                 );
-    //             }
-    //         }
-    //         None => {
-    //             previous_cluster = usize::MAX;
-    //             cluster_counter += 1;
-    //             cluster_steps.push(
-    //                 foliage_guard[indexed_frequencies_pairs[index].0].set_cluster(&cluster_counter),
-    //             );
-    //         }
-    //     }
-    // }
-    // drop(foliage_guard);
+//     // let mut foliage_guard = rc.foliage.lock().unwrap();
+//     // for index in 0..clusters.records.shape()[0] {
+//     //     match clusters.targets[index] {
+//     //         Some(cluster) => {
+//     //             if cluster == previous_cluster {
+//     //                 cluster_steps.push(
+//     //                     foliage_guard[indexed_frequencies_pairs[index].0]
+//     //                         .set_cluster(&cluster_counter),
+//     //                 );
+//     //             } else {
+//     //                 previous_cluster = cluster;
+//     //                 cluster_counter += 1;
+//     //                 cluster_steps.push(
+//     //                     foliage_guard[indexed_frequencies_pairs[index].0]
+//     //                         .set_cluster(&cluster_counter),
+//     //                 );
+//     //             }
+//     //         }
+//     //         None => {
+//     //             previous_cluster = usize::MAX;
+//     //             cluster_counter += 1;
+//     //             cluster_steps.push(
+//     //                 foliage_guard[indexed_frequencies_pairs[index].0].set_cluster(&cluster_counter),
+//     //             );
+//     //         }
+//     //     }
+//     // }
+//     // drop(foliage_guard);
 
-    let mut foliage_guard = foliage.lock().unwrap();
-    let boundaries = vec![0.01, 0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 3.0, 10.0, 100.0];
-    for (index, frequency) in frequencies.iter().enumerate() {
-        for (cluster, boundary) in boundaries.iter().enumerate() {
-            if *frequency <= *boundary {
-                cluster_steps.push(
-                    foliage_guard[indexed_frequencies_pairs[index].0]
-                        .set_cluster(&(cluster as i32)),
-                );
-                break;
-            }
-        }
-    }
-    drop(foliage_guard);
+//     let mut foliage_guard = foliage.lock().unwrap();
+//     let boundaries = vec![0.01, 0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 3.0, 10.0, 100.0];
+//     for (index, frequency) in frequencies.iter().enumerate() {
+//         for (cluster, boundary) in boundaries.iter().enumerate() {
+//             if *frequency <= *boundary {
+//                 cluster_steps.push(
+//                     foliage_guard[indexed_frequencies_pairs[index].0]
+//                         .set_cluster(&(cluster as i32)),
+//                 );
+//                 break;
+//             }
+//         }
+//     }
+//     drop(foliage_guard);
 
-    if cluster_steps.iter().all(|step| *step == 0) {
-        return;
-    }
+//     if cluster_steps.iter().all(|step| *step == 0) {
+//         return;
+//     }
 
-    let min_cluster = cluster_steps.iter().min().unwrap().clone();
-    for step in &mut cluster_steps {
-        *step -= min_cluster;
-    }
+//     let min_cluster = cluster_steps.iter().min().unwrap().clone();
+//     for step in &mut cluster_steps {
+//         *step -= min_cluster;
+//     }
 
-    // println!("Clusters {:?}", clusters.targets);
-    println!("Cluster steps {:?}", cluster_steps);
+//     // println!("Clusters {:?}", clusters.targets);
+//     println!("Cluster steps {:?}", cluster_steps);
 
-    for (index, cluster_step) in cluster_steps.iter().enumerate() {
-        if cluster_step != &0 {
-            if cluster_step > &0 {
-                rc.drop(
-                    indexed_frequencies_pairs[index].0 as u16,
-                    // *cluster_step as usize - 1,
-                );
-            } else {
-                panic!("Not implemented!");
-                // rc.collect(
-                //     indexed_frequencies_pairs[index].0 as u16,
-                //     -*cluster_step as usize - 1,
-                // );
-            }
-        }
-        if index % 100 == 0 {
-            println!("Done {index}");
-        }
-    }
-    rc.clear_dependencies(&mut foliage.lock().unwrap());
-    rc.set_dependencies(&mut foliage.lock().unwrap());
-    // rc.empty_scope();
-}
+//     for (index, cluster_step) in cluster_steps.iter().enumerate() {
+//         if cluster_step != &0 {
+//             if cluster_step > &0 {
+//                 rc.drop(
+//                     indexed_frequencies_pairs[index].0 as u16,
+//                     // *cluster_step as usize - 1,
+//                 );
+//             } else {
+//                 panic!("Not implemented!");
+//                 // rc.collect(
+//                 //     indexed_frequencies_pairs[index].0 as u16,
+//                 //     -*cluster_step as usize - 1,
+//                 // );
+//             }
+//         }
+//         if index % 100 == 0 {
+//             println!("Done {index}");
+//         }
+//     }
+//     rc.clear_dependencies(&mut foliage.lock().unwrap());
+//     rc.set_dependencies(&mut foliage.lock().unwrap());
+//     // rc.empty_scope();
+// }
 
 // pub fn message_loop(foliage: Foliage, ok: AtomicBool) -> JoinHandle<Result<(), rclrs::RclrsError>> {
 //     std::thread::spawn(move || -> Result<(), rclrs::RclrsError> {
@@ -218,6 +216,7 @@ fn randomized_study() {
     let number_inferences = 1000;
     let scale = 1.0;
     let shape = 0.0;
+    let boundaries = vec![0.01, 0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 3.0, 10.0, 100.0];
 
     for location in vec![2.0] {
         println!("Building randomized RC.");
@@ -276,7 +275,7 @@ fn randomized_study() {
         }
 
         let before = Instant::now();
-        frequency_adaptation(&mut rc, &mut foliage);
+        frequency_adaptation(&mut rc, &mut foliage, &boundaries);
         adaptation_times.push(before.elapsed().as_secs_f64());
         println!(
             "#Adaptations in {}s",

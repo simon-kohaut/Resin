@@ -3,12 +3,12 @@ use std::panic;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use crate::circuit::{leaf::Foliage, rc::RC};
+use crate::circuit::{leaf::Foliage, reactive::ReactiveCircuit};
 
 use super::matching::{CLAUSE_REGEX, LITERAL_REGEX, SOURCE_REGEX, TARGET_REGEX};
 
 pub struct Resin {
-    pub circuits: Vec<RC>,
+    pub circuits: Vec<ReactiveCircuit>,
     pub clauses: Vec<Clause>,
     pub sources: Vec<Source>,
     pub targets: Vec<Target>,

@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 use std::ops;
 use std::sync::MutexGuard;
 
-use rayon::iter::IndexedParallelIterator;
 use rayon::prelude::*;
 
 use super::leaf::Leaf;

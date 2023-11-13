@@ -3,9 +3,6 @@ use std::collections::BTreeSet;
 use std::ops;
 use std::sync::MutexGuard;
 
-use rayon::iter::ParallelIterator;
-use rayon::prelude::*;
-
 use super::add::Add;
 use super::leaf::Leaf;
 use super::memory::Memory;
