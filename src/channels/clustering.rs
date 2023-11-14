@@ -2,6 +2,21 @@ use crate::circuit::reactive::ReactiveCircuit;
 use crate::circuit::leaf::{Leaf, Foliage};
 
 
+pub fn binning(frequencies: &[f64], boundaries: &[f64]) -> Vec<usize> {
+    let mut labels = vec![];
+    for frequency in frequencies {
+        for (cluster, boundary) in boundaries.iter().enumerate() {
+            if frequency <= boundary {
+                labels.push(cluster);
+                break;
+            }
+        }
+    }
+
+    labels
+}
+
+
 pub fn frequency_adaptation(rc: &mut ReactiveCircuit, foliage: &mut Foliage, boundaries: &[f64]) {
     let mut indexed_frequencies_pairs: Vec<(usize, Leaf)> = vec![];
     for (i, leaf) in foliage.lock().unwrap().iter().enumerate() {

@@ -48,14 +48,12 @@ impl Kalman {
         }
     }
 
-    pub fn predict(&mut self, input: Option<&Vector>) {
+    pub fn predict(&mut self, dt: f64, input: Option<&Vector>) {
         // Predict next state and prediction covariance
-        self.prediction = self.model.forward(&self.estimate, input);
-        self.prediction_covariance = self
-            .model
-            .forward_model
+        self.prediction = self.model.forward(&self.estimate, dt, input);
+        self.prediction_covariance = (self.model.forward_model)(dt)
             .dot(&self.estimate_covariance)
-            .dot(&self.model.forward_model.t())
+            .dot(&(self.model.forward_model)(dt).t())
             + &self.process_noise;
     }
 
@@ -80,7 +78,7 @@ impl Kalman {
         self.estimate_covariance = &self.prediction_covariance
             - &self
                 .kalman_gain
-                .dot(&self.residual_covariance)
-                .dot(&self.kalman_gain.t());
+                .dot(&self.model.output_model)
+                .dot(&self.prediction_covariance);
     }
 }

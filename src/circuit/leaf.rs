@@ -1,7 +1,7 @@
 use std::sync::atomic::Ordering::Release;
 use std::sync::{atomic::AtomicBool, Arc, Mutex};
 
-use super::ipc::IpcChannel;
+use crate::channels::ipc::IpcReader;
 use crate::channels::FoCEstimator;
 
 #[derive(Clone)]
@@ -10,7 +10,7 @@ pub struct Leaf {
     frequency: f64,
     cluster: i32,
     foc_estimator: FoCEstimator,
-    pub ipc_channel: Option<IpcChannel>,
+    pub ipc_channel: Option<IpcReader>,
     pub name: String,
     valid_flags: Vec<Arc<AtomicBool>>,
 }
@@ -80,7 +80,7 @@ pub fn update(foliage: Foliage, index: usize, value: &f64) {
 }
 
 pub fn activate_channel(foliage: Foliage, index: usize, channel: &str, invert: &bool) {
-    let channel = IpcChannel::new(
+    let channel = IpcReader::new(
         foliage.clone(),
         index,
         channel.to_owned(),

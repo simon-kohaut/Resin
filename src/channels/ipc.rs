@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std_msgs::msg::Float64;
 
-use super::leaf::{update, Foliage};
+use crate::circuit::leaf::{update, Foliage};
 
 lazy_static! {
     static ref CONTEXT: Context = Context::new(vec![]).unwrap();
@@ -16,12 +16,12 @@ lazy_static! {
 }
 
 #[derive(Clone)]
-pub struct IpcChannel {
+pub struct IpcReader {
     pub topic: String,
     subscription: Arc<Subscription<Float64>>,
 }
 
-pub struct RandomizedIpcChannel {
+pub struct IpcWriter {
     pub frequency: f64,
     publisher: Publisher<Float64>,
     value: f64,
@@ -35,7 +35,7 @@ pub fn shutdown() {
     drop(&NODE);
 }
 
-impl IpcChannel {
+impl IpcReader {
     pub fn new(
         foliage: Foliage,
         index: usize,
@@ -70,7 +70,7 @@ impl IpcChannel {
     }
 }
 
-impl RandomizedIpcChannel {
+impl IpcWriter {
     pub fn new(topic: &str, frequency: f64, value: f64) -> Result<Self, RclrsError> {
         let mut profile = QOS_PROFILE_DEFAULT;
         profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };

@@ -5,38 +5,20 @@ mod channels;
 mod language;
 mod tracking;
 
-use crate::circuit::ipc::{retreive_messages, RandomizedIpcChannel};
+use crate::channels::ipc::{retreive_messages, IpcWriter};
 use crate::circuit::Leaf;
-
 use crate::circuit::ReactiveCircuit;
 use crate::channels::clustering::frequency_adaptation;
 
-
 use circuit::leaf::{activate_channel, Foliage};
-
-
 use itertools::Itertools;
-
-
-
-
-
-
-
-
-
-
 use rand::seq::SliceRandom;
 use rand_distr::{Distribution, SkewNormal};
 use rayon::prelude::{IntoParallelRefMutIterator, ParallelIterator};
 
-
-
 use std::sync::{Arc, Mutex};
-
 use std::time::Instant;
 use std::vec;
-
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -233,7 +215,7 @@ fn randomized_study() {
                 *frequency = 0.001;
             }
 
-            let new_publisher = RandomizedIpcChannel::new(
+            let new_publisher = IpcWriter::new(
                 &foliage.lock().unwrap()[index as usize]
                     .ipc_channel
                     .as_ref()
