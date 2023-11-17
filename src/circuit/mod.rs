@@ -1,4 +1,4 @@
-pub use crate::circuit::leaf::Leaf;
+pub use crate::circuit::leaf::{update, Foliage, Leaf};
 pub use crate::circuit::reactive::ReactiveCircuit;
 
 pub mod category;

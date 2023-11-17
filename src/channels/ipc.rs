@@ -1,19 +1,10 @@
-use lazy_static::lazy_static;
-use rclrs::{
-    spin_once, Context, Node, Publisher, QoSHistoryPolicy, RclrsError, Subscription,
-    QOS_PROFILE_DEFAULT,
-};
-use std::sync::{Arc, Mutex};
+use rclrs::{Node, Publisher, QoSHistoryPolicy, RclrsError, Subscription, QOS_PROFILE_DEFAULT};
+use std::sync::Arc;
 use std::time::Duration;
 use std_msgs::msg::Float64;
 
 use crate::circuit::leaf::{update, Foliage};
-
-lazy_static! {
-    static ref CONTEXT: Context = Context::new(vec![]).unwrap();
-    static ref NODE: Arc<Mutex<Node>> =
-        Arc::new(Mutex::new(Node::new(&CONTEXT, "resin_ipc").unwrap()));
-}
+use crate::circuit::reactive::RcQueue;
 
 #[derive(Clone)]
 pub struct IpcReader {
@@ -23,23 +14,17 @@ pub struct IpcReader {
 
 pub struct IpcWriter {
     pub frequency: f64,
-    publisher: Publisher<Float64>,
+    publisher: Arc<Publisher<Float64>>,
     value: f64,
-}
-
-pub fn retreive_messages() {
-    let _ = spin_once(&NODE.lock().unwrap(), Some(Duration::from_millis(0)));
-}
-
-pub fn shutdown() {
-    drop(&NODE);
 }
 
 impl IpcReader {
     pub fn new(
+        node: &mut Node,
         foliage: Foliage,
-        index: usize,
-        channel: String,
+        rc_queue: RcQueue,
+        index: u16,
+        channel: &str,
         invert: bool,
     ) -> Result<Self, RclrsError> {
         let mut prefix = "";
@@ -51,15 +36,13 @@ impl IpcReader {
         let mut profile = QOS_PROFILE_DEFAULT;
         profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
 
-        let subscription = NODE.lock().unwrap().create_subscription(
+        let subscription = node.create_subscription(
             &format!("{}{}", prefix, channel),
             profile,
             move |msg: Float64| {
-                if invert {
-                    update(foliage.clone(), index, &(1.0 - msg.data));
-                } else {
-                    update(foliage.clone(), index, &msg.data);
-                }
+                let value = if invert { 1.0 - msg.data } else { msg.data };
+
+                update(&foliage, &rc_queue, index, value);
             },
         )?;
 
@@ -71,11 +54,11 @@ impl IpcReader {
 }
 
 impl IpcWriter {
-    pub fn new(topic: &str, frequency: f64, value: f64) -> Result<Self, RclrsError> {
+    pub fn new(node: &Node, topic: &str, frequency: f64, value: f64) -> Result<Self, RclrsError> {
         let mut profile = QOS_PROFILE_DEFAULT;
         profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
 
-        let publisher = NODE.lock().unwrap().create_publisher(topic, profile)?;
+        let publisher = Arc::new(node.create_publisher(topic, profile)?);
 
         Ok(Self {
             frequency,
@@ -84,14 +67,17 @@ impl IpcWriter {
         })
     }
 
-    pub fn start(self) {
-        std::thread::spawn(move || -> Result<(), rclrs::RclrsError> {
-            loop {
-                self.publisher.publish(Float64 {
-                    data: self.value,
-                })?;
-                std::thread::sleep(Duration::from_secs_f64(1.0 / self.frequency));
+    pub fn start(&self) {
+        let thread_publisher = self.publisher.clone();
+        let thread_value = self.value;
+        let thread_frequency = self.frequency;
+
+        std::thread::spawn(move || loop {
+            match thread_publisher.publish(Float64 { data: thread_value }) {
+                Ok(_) => (),
+                Err(_) => break,
             }
+            std::thread::sleep(Duration::from_secs_f64(1.0 / thread_frequency));
         });
     }
 }

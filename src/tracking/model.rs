@@ -8,7 +8,11 @@ pub struct LinearModel {
 }
 
 impl LinearModel {
-    pub fn new(forward_model: fn(f64) -> Matrix, input_model: &Matrix, output_model: &Matrix) -> Self {
+    pub fn new(
+        forward_model: fn(f64) -> Matrix,
+        input_model: &Matrix,
+        output_model: &Matrix,
+    ) -> Self {
         Self {
             forward_model,
             input_model: input_model.clone(),

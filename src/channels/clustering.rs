@@ -1,6 +1,5 @@
+use crate::circuit::leaf::{Foliage, Leaf};
 use crate::circuit::reactive::ReactiveCircuit;
-use crate::circuit::leaf::{Leaf, Foliage};
-
 
 pub fn binning(frequencies: &[f64], boundaries: &[f64]) -> Vec<usize> {
     let mut labels = vec![];
@@ -15,7 +14,6 @@ pub fn binning(frequencies: &[f64], boundaries: &[f64]) -> Vec<usize> {
 
     labels
 }
-
 
 pub fn frequency_adaptation(rc: &mut ReactiveCircuit, foliage: &mut Foliage, boundaries: &[f64]) {
     let mut indexed_frequencies_pairs: Vec<(usize, Leaf)> = vec![];
@@ -64,14 +62,20 @@ pub fn frequency_adaptation(rc: &mut ReactiveCircuit, foliage: &mut Foliage, bou
     for (index, cluster_step) in cluster_steps.iter().enumerate() {
         if cluster_step != &0 {
             if cluster_step > &0 {
-                rc.drop(
-                    indexed_frequencies_pairs[index].0 as u16,
-                );
+                rc.drop_leaf(indexed_frequencies_pairs[index].0 as u16);
             } else {
                 panic!("Not implemented!");
             }
         }
     }
+
+    // Prune resulting RC
+    rc.prune();
+
+    // Update leaf dependencies
     rc.clear_dependencies(&mut foliage.lock().unwrap());
-    rc.set_dependencies(&mut foliage.lock().unwrap());
+    rc.set_dependencies(&mut foliage.lock().unwrap(), None, vec![]);
+
+    // Validate full circuit once
+    rc.full_update(&foliage.lock().unwrap());
 }

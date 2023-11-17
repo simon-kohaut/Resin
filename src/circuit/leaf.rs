@@ -1,8 +1,8 @@
-use std::sync::atomic::Ordering::Release;
-use std::sync::{atomic::AtomicBool, Arc, Mutex};
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
-use crate::channels::ipc::IpcReader;
 use crate::channels::FoCEstimator;
+use crate::circuit::reactive::RcQueue;
 
 #[derive(Clone)]
 pub struct Leaf {
@@ -10,23 +10,21 @@ pub struct Leaf {
     frequency: f64,
     cluster: i32,
     foc_estimator: FoCEstimator,
-    pub ipc_channel: Option<IpcReader>,
     pub name: String,
-    valid_flags: Vec<Arc<AtomicBool>>,
+    pub indices: BTreeSet<usize>,
 }
 
 pub type Foliage = Arc<Mutex<Vec<Leaf>>>;
 
 impl Leaf {
-    pub fn new(value: &f64, frequency: &f64, name: &str) -> Self {
+    pub fn new(value: f64, frequency: f64, name: &str) -> Self {
         Self {
-            value: *value,
-            frequency: *frequency,
+            value,
+            frequency,
             cluster: 0,
             foc_estimator: FoCEstimator::new(frequency),
-            ipc_channel: None,
             name: name.to_owned(),
-            valid_flags: vec![],
+            indices: BTreeSet::new(),
         }
     }
 
@@ -34,9 +32,9 @@ impl Leaf {
         self.value
     }
 
-    pub fn set_value(&mut self, value: &f64) {
-        self.value = *value;
-        // self.frequency = self.foc_estimator.update(*value);
+    pub fn set_value(&mut self, value: f64) {
+        self.value = value;
+        self.frequency = self.foc_estimator.update();
     }
 
     pub fn set_cluster(&mut self, cluster: &i32) -> i32 {
@@ -57,35 +55,26 @@ impl Leaf {
         self.frequency = *frequency;
     }
 
-    pub fn add_dependency(&mut self, flag: Arc<AtomicBool>) {
-        self.valid_flags.push(flag);
+    pub fn add_dependency(&mut self, index: usize) {
+        self.indices.insert(index);
     }
 
     pub fn clear_dependencies(&mut self) {
-        self.valid_flags = vec![];
+        self.indices.clear();
     }
 
-    pub fn remove_dependency(&mut self, flag: &Arc<AtomicBool>) {
-        self.valid_flags.retain(|m| !Arc::ptr_eq(m, flag));
+    pub fn remove_dependency(&mut self, index: usize) {
+        self.indices.remove(&index);
     }
 }
 
-pub fn update(foliage: Foliage, index: usize, value: &f64) {
+pub fn update(foliage: &Foliage, rc_queue: &RcQueue, index: u16, value: f64) {
     let mut foliage_guard = foliage.lock().unwrap();
-    foliage_guard[index].set_value(value);
+    let mut queue_guard = rc_queue.lock().unwrap();
 
-    for flag in &foliage_guard[index].valid_flags {
-        flag.store(false, Release);
+    foliage_guard[index as usize].set_value(value);
+
+    for rc_index in &foliage_guard[index as usize].indices {
+        queue_guard.insert(*rc_index);
     }
-}
-
-pub fn activate_channel(foliage: Foliage, index: usize, channel: &str, invert: &bool) {
-    let channel = IpcReader::new(
-        foliage.clone(),
-        index,
-        channel.to_owned(),
-        invert.to_owned(),
-    )
-    .unwrap();
-    foliage.lock().unwrap()[index].ipc_channel = Some(channel);
 }

@@ -1,29 +1,26 @@
 #![allow(dead_code)]
 
-mod circuit;
 mod channels;
+mod circuit;
 mod language;
 mod tracking;
 
-use crate::channels::ipc::{retreive_messages, IpcWriter};
+use crate::channels::clustering::frequency_adaptation;
+use crate::channels::manager::Manager;
 use crate::circuit::Leaf;
 use crate::circuit::ReactiveCircuit;
-use crate::channels::clustering::frequency_adaptation;
 
-use circuit::leaf::{activate_channel, Foliage};
 use itertools::Itertools;
 use rand::seq::SliceRandom;
 use rand_distr::{Distribution, SkewNormal};
-use rayon::prelude::{IntoParallelRefMutIterator, ParallelIterator};
 
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
-use std::vec;
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::Path;
-
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use std::vec;
 
 pub fn power_set<T: Clone>(leafs: &[T]) -> Vec<Vec<T>> {
     let mut power_set = Vec::new();
@@ -51,15 +48,15 @@ pub fn random_set(number_leafs: u16, number_sets: usize) -> Vec<Vec<u16>> {
     random_set
 }
 
-fn randomized_rc(number_leafs: u16, number_models: usize) -> (ReactiveCircuit, Foliage) {
-    // let mut rc = RC::new();
-    let mut foliage = vec![];
+fn randomized_rc(
+    manager: &mut Manager,
+    number_leafs: u16,
+    number_models: usize,
+) -> ReactiveCircuit {
     let mut rc = ReactiveCircuit::new();
     for i in 0..number_leafs {
-        foliage.push(Leaf::new(&0.0, &0.0, &i.to_string()));
-        // rc.grow(0.0, &i.to_string());
+        manager.create_leaf(&i.to_string(), 0.0, 0.0);
     }
-    let foliage = Arc::new(Mutex::new(foliage));
 
     // let combinations = power_set(&(0..number_leafs).collect_vec());
     let combinations = random_set(number_leafs, number_models);
@@ -67,8 +64,8 @@ fn randomized_rc(number_leafs: u16, number_models: usize) -> (ReactiveCircuit, F
         rc = rc + combination;
     }
 
-    rc.set_dependencies(&mut foliage.lock().unwrap());
-    (rc, foliage)
+    rc.set_dependencies(&mut manager.foliage.lock().unwrap(), None, vec![]);
+    rc
 }
 
 // fn frequency_adaptation(rc: &mut ReactiveCircuit, foliage: &mut Foliage) {
@@ -193,122 +190,130 @@ fn randomized_rc(number_leafs: u16, number_models: usize) -> (ReactiveCircuit, F
 // }
 
 fn randomized_study() {
+    // Model size
     let number_leafs = 2000;
     let number_models = 100000;
-    let number_inferences = 1000;
-    let scale = 1.0;
+
+    // How long to run each model
+    let inference_time = 20.0;
+
+    // Frequency distribution
+    let scale = 3.0;
     let shape = 0.0;
-    let boundaries = vec![0.01, 0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 3.0, 10.0, 100.0];
+    let locations = vec![5.0];
 
-    for location in vec![2.0] {
-        println!("Building randomized RC.");
-        let (mut rc, mut foliage) = randomized_rc(number_leafs, number_models);
+    // Partitioning of leafs
+    let bin_sizes = vec![5.0];
+    let number_bins = 20;
 
-        println!("Activate randomized IPC.");
-        let mut true_frequencies = sample_frequencies(location, scale, shape, number_leafs as usize);
-        for (index, frequency) in true_frequencies.iter_mut().enumerate() {
-            let channel = format!("leaf_{}", foliage.lock().unwrap()[index as usize].name);
-            activate_channel(foliage.clone(), index as usize, &channel, &false);
+    for location in locations {
+        for bin_size in &bin_sizes {
+            let mut manager = Manager::new();
 
-            // let mut rng = rand::thread_rng();
-            if *frequency < 0.001 {
-                *frequency = 0.001;
+            let mut boundaries = vec![];
+            for i in 0..number_bins {
+                boundaries.push(i as f64 * bin_size + bin_size);
             }
 
-            let new_publisher = IpcWriter::new(
-                &foliage.lock().unwrap()[index as usize]
-                    .ipc_channel
-                    .as_ref()
-                    .unwrap()
-                    .topic,
-                *frequency,
-                1.0 //rng.gen_range(0.1..1.0),
+            println!("Building randomized RC for location {location} and bin size {bin_size}.");
+            let mut rc = randomized_rc(&mut manager, number_leafs, number_models);
+
+            println!("Activate randomized IPC.");
+            let mut true_frequencies =
+                sample_frequencies(location, scale, shape, number_leafs as usize);
+            for (index, frequency) in true_frequencies.iter_mut().enumerate() {
+                if *frequency < 0.001 {
+                    *frequency = 0.001;
+                }
+
+                let channel = format!(
+                    "leaf_{}",
+                    manager.foliage.lock().unwrap()[index as usize].name
+                );
+                let _ = manager.read(index as u16, &channel, false);
+                let _ = manager.write(1.0, &channel, *frequency);
+            }
+            let mut sorted_frequencies = true_frequencies.clone();
+            sorted_frequencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+            let mut inference_timestamps = vec![];
+            let mut inference_times = vec![];
+            let mut values = vec![];
+            let mut adaptation_times = vec![];
+
+            println!("Loop original for {}s.", inference_time);
+            let inference_clock = Instant::now();
+            while inference_clock.elapsed().as_secs_f64() < inference_time {
+                manager.spin_once();
+
+                let foliage = manager.foliage.lock().unwrap();
+                let before = Instant::now();
+                rc.update(&foliage);
+                let elapsed = before.elapsed().as_secs_f64();
+                drop(foliage);
+
+                inference_timestamps.push(inference_clock.elapsed().as_secs_f64());
+                inference_times.push(elapsed);
+                values.push(rc.value());
+                assert_eq!(values[0], rc.value());
+            }
+
+            println!("Start adaptation");
+            let before = Instant::now();
+            frequency_adaptation(&mut rc, &mut manager.foliage, &boundaries);
+            adaptation_times.push(before.elapsed().as_secs_f64());
+            println!(
+                "#Adaptations in {}s",
+                adaptation_times[adaptation_times.len() - 1]
             );
-            foliage.lock().unwrap()[index].set_frequency(&frequency);
-            new_publisher.unwrap().start();
-        }
-        let mut sorted_frequencies = true_frequencies.clone();
-        sorted_frequencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        println!("F = {:?}", sorted_frequencies);
 
-        let mut inference_times = vec![];
-        let mut values = vec![];
-        let mut adaptation_times = vec![];
+            let root = Arc::new(Mutex::new(rc));
+            let mut deploy = ReactiveCircuit::deploy(&root);
+            deploy.reverse();
+            println!("Loop deployed for {}s.", inference_time);
+            let inference_clock = Instant::now();
+            while inference_clock.elapsed().as_secs_f64() < inference_time {
+                manager.spin_once();
 
-        inference_times.reserve(number_inferences * 2);
-        values.reserve(number_inferences * 2);
+                let foliage_guard = manager.foliage.lock().unwrap();
+                let mut queue_guard = manager.rc_queue.lock().unwrap();
+                let before = Instant::now();
+                while let Some(rc_index) = queue_guard.pop_last() {
+                    deploy[rc_index].lock().unwrap().update(&foliage_guard);
+                }
+                let elapsed = before.elapsed().as_secs_f64();
+                drop(foliage_guard);
+                drop(queue_guard);
 
-        println!("Loop original for {} steps.", number_inferences);
-        while values.len() < number_inferences {
-            retreive_messages();
+                values.push(root.lock().unwrap().value());
+                assert_eq!(values[0], root.lock().unwrap().value());
 
-            let foliage = foliage.lock().unwrap();
-            let before = Instant::now();
-            let value = rc.value(&foliage);
-            let elapsed = before.elapsed().as_secs_f64();
-            drop(foliage);
-
-            inference_times.push(elapsed);
-            values.push(value);
-
-            if values.len() % 100 == 0 {
-                println!("Done {}", values.len());
-            }
-        }
-
-        let before = Instant::now();
-        frequency_adaptation(&mut rc, &mut foliage, &boundaries);
-        adaptation_times.push(before.elapsed().as_secs_f64());
-        println!(
-            "#Adaptations in {}s",
-            adaptation_times[adaptation_times.len() - 1]
-        );
-
-        let mut deploy = rc.deploy();
-        deploy.reverse();
-        println!("Loop deployed for {} steps.", number_inferences);
-        while values.len() < 2 * number_inferences {
-            retreive_messages();
-
-            let foliage_guard = foliage.lock().unwrap();
-            let before = Instant::now();
-            deploy.par_iter_mut().for_each(|rc| {
-                rc.value(&foliage_guard);
-            });
-            // deploy.iter_mut().for_each(|rc| { rc.value(&foliage_guard); });
-            let value = rc.value(&foliage_guard);
-            let elapsed = before.elapsed().as_secs_f64();
-            drop(foliage_guard);
-
-            values.push(value);
-            if values.len() % 100 == 0 {
-                println!("Done {}", values.len());
+                inference_timestamps.push(inference_clock.elapsed().as_secs_f64() + inference_time);
+                inference_times.push(elapsed);
             }
 
-            inference_times.push(elapsed);
-        }
+            println!("Export results.");
+            let path = Path::new("output/data/inference_times.csv");
+            if !path.exists() {
+                let mut file = File::create(path).expect("Unable to create file");
+                file.write_all("Time,Runtime,Leafs,Shape,Location,Value,BinSize\n".as_bytes())
+                    .expect("Unable to write data");
+            }
 
-        println!("Export results.");
-        let path = Path::new("output/inference_times.csv");
-        if !path.exists() {
-            let mut file = File::create(path).expect("Unable to create file");
-            file.write_all("Time,Runtime,Leafs,Shape,Location,Value\n".as_bytes()).expect("Unable to write data");
+            let mut file = OpenOptions::new().append(true).open(path).unwrap();
+            let mut csv_text = "".to_string();
+            for i in 0..inference_times.len() {
+                csv_text.push_str(&format!(
+                    "{},{},{},{shape},{location},{},{bin_size}\n",
+                    inference_timestamps[i],
+                    inference_times[i],
+                    number_leafs as usize / 2 * number_models as usize,
+                    values[i]
+                ));
+            }
+            file.write_all(csv_text.as_bytes())
+                .expect("Unable to write data");
         }
-
-        let mut file = OpenOptions::new().append(true).open(path).unwrap();
-        let mut csv_text = "".to_string();
-        for i in 0..inference_times.len() {
-            csv_text.push_str(&format!(
-                "{i},{},{},{shape},{location},{}\n",
-                inference_times[i],
-                number_leafs as usize / 2 * number_models as usize,
-                values[i]
-            ));
-        }
-        file.write_all(csv_text.as_bytes())
-            .expect("Unable to write data");
-
-        export_frequencies(Path::new("output/frequencies.csv"), location, scale, shape, 100000);
     }
 }
 

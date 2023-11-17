@@ -7,8 +7,8 @@ pub struct Category {
 
 impl Category {
     pub fn new(name: &str) -> Self {
-        let positive = Leaf::new(&0.0, &0.0, name);
-        let negative = Leaf::new(&1.0, &0.0, &format!("¬{}", name));
+        let positive = Leaf::new(0.0, 0.0, name);
+        let negative = Leaf::new(1.0, 0.0, &format!("¬{}", name));
 
         Self {
             name: name.to_owned(),
