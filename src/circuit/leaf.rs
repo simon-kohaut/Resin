@@ -68,6 +68,7 @@ impl Leaf {
     }
 }
 
+
 pub fn update(foliage: &Foliage, rc_queue: &RcQueue, index: u16, value: f64) {
     let mut foliage_guard = foliage.lock().unwrap();
     let mut queue_guard = rc_queue.lock().unwrap();

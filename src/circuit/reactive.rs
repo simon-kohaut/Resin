@@ -8,7 +8,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 // Third-party
-use rayon::prelude::{IntoParallelRefMutIterator, ParallelIterator};
+use rayon::prelude::{IntoParallelRefMutIterator, IntoParallelRefIterator, ParallelIterator};
 
 // Crate
 use crate::Leaf;
@@ -19,7 +19,7 @@ pub type SharedCircuit = Arc<Mutex<ReactiveCircuit>>;
 #[derive(Clone)]
 pub struct ReactiveCircuit {
     pub storage: f64,
-    pub products: Vec<(BTreeSet<u16>, Option<SharedCircuit>)>,
+    pub products: Vec<(Vec<u16>, Option<SharedCircuit>)>,
     pub index: usize,
 }
 
@@ -96,25 +96,23 @@ impl ReactiveCircuit {
         }
     }
 
-    pub fn update(&mut self, foliage: &MutexGuard<Vec<Leaf>>) {
+    pub fn update(&mut self, leaf_values: &[f64]) {
         let value = self
             .products
-            .iter_mut()
-            .map(|(factors, sub_rc)| {
-                let value = if sub_rc.is_some() {
-                    sub_rc.as_mut().unwrap().lock().unwrap().value()
-                } else {
-                    1.0
-                };
-
-                factors
+            .iter()
+            .fold(0.0, |acc, (factors, sub_rc)| {
+                let value;
+                unsafe {
+                    value = match sub_rc {
+                        Some(rc) => rc.lock().unwrap_unchecked().value(),
+                        None => 1.0
+                    };    
+                }
+                
+                acc + factors
                     .iter()
-                    .map(|index| foliage[*index as usize].get_value())
-                    .product::<f64>()
-                    * value
-            })
-            .reduce(|acc, v| acc + v)
-            .unwrap_or(0.0);
+                    .fold(value, |acc, index| acc * leaf_values[*index as usize])
+            });
 
         self.storage = value;
     }
@@ -175,74 +173,93 @@ impl ReactiveCircuit {
     }
 
     pub fn drop_leaf(&mut self, leaf: u16) {
-        self.products
-            .par_iter_mut()
-            .for_each(|(factors, sub_rc)| match factors.remove(&leaf) {
-                true => {
-                    if sub_rc.is_some() {
-                        let inner = sub_rc.as_ref().unwrap().lock().unwrap().clone();
-                        *sub_rc = Some(Arc::new(Mutex::new(inner * leaf)));
-                    } else {
-                        *sub_rc = Some(Arc::new(Mutex::new(ReactiveCircuit::new() + leaf)));
+        self.products = self.products
+            .par_iter()
+            .map(|(factors, sub_rc)| {
+                let mut factors_set = BTreeSet::from_iter(factors.clone());
+                let mut new_rc: Option<SharedCircuit> = None;
+                match factors_set.remove(&leaf) {
+                    true => {
+                        if sub_rc.is_some() {
+                            let inner = sub_rc.as_ref().unwrap().lock().unwrap().clone();
+                            new_rc = Some(Arc::new(Mutex::new(inner * leaf)));
+                        } else {
+                            new_rc = Some(Arc::new(Mutex::new(ReactiveCircuit::new() + leaf)));
+                        }
                     }
+                    false => match sub_rc {
+                        Some(sub_rc) => sub_rc.lock().unwrap().drop_leaf(leaf),
+                        None => (),
+                    },
                 }
-                false => match sub_rc {
-                    Some(sub_rc) => sub_rc.lock().unwrap().drop_leaf(leaf),
-                    None => (),
-                },
-            });
+                
+                (Vec::from_iter(factors_set), new_rc)
+            }).collect();
     }
 
     pub fn prune(&mut self) {
         // Keep track of redundant and newly created products
-        let mut to_delete = vec![];
-        let mut merged_products = vec![];
+        let mut to_delete = BTreeSet::new();
 
         // We need to match factors between all products
-        for i in 0..self.products.len() {
-            for j in 0..self.products.len() {
-                if i == j || to_delete.contains(&i) || to_delete.contains(&j) {
+        let original_length = self.products.len();
+        for i in 0..original_length {
+            let mut merged_rc = ReactiveCircuit::new();
+            for j in i + 1..original_length {
+                if to_delete.contains(&j) {
                     continue;
                 }
 
                 // If factors are equal, we can merge the circuits underneath
-                let mut merged_rc = ReactiveCircuit::new();
                 let (factors_left, rc_left) = &self.products[i];
                 let (factors_right, rc_right) = &self.products[j];
-                if factors_left.eq(&factors_right) {
+                if factors_left == factors_right {
                     // Add up circuits beneath each product
-                    if rc_left.is_some() {
-                        merged_rc = merged_rc + rc_left.as_ref().unwrap().lock().unwrap().clone();
-                    }
-                    if rc_right.is_some() {
-                        merged_rc = merged_rc + rc_right.as_ref().unwrap().lock().unwrap().clone();
-                    }
+                    if rc_left.is_some() && rc_right.is_some() {
+                        // Only add i's part once
+                        if !to_delete.contains(&i) {
+                            merged_rc += rc_left.as_ref().unwrap().lock().unwrap().clone();
+                        }
 
-                    // Later remove both of these since they are redundant now
-                    to_delete.push(i);
-                    to_delete.push(j);
+                        // Add right half
+                        merged_rc += rc_right.as_ref().unwrap().lock().unwrap().clone();
 
-                    merged_products
-                        .push((factors_left.clone(), Some(Arc::new(Mutex::new(merged_rc)))));
+                        // Later remove both of these since they are redundant now
+                        to_delete.insert(i);
+                        to_delete.insert(j);
+                    }
                 }
+            }
+
+            if !merged_rc.products.is_empty() {
+                self.products.push((
+                    self.products[i].0.clone(),
+                    Some(Arc::new(Mutex::new(merged_rc))),
+                ));
             }
         }
 
         // Remove all redundant products
-        to_delete.sort_unstable();
-        while let Some(i) = to_delete.pop() {
-            self.products.remove(i);
-        }
-
-        // Add all newly created
-        for merged in merged_products {
-            self.products.push(merged);
+        while let Some(index) = to_delete.pop_last() {
+            self.products.remove(index);
         }
 
         // Prune all underneath
         self.products.par_iter_mut().for_each(|(_, rc)| {
             if rc.is_some() {
                 rc.as_mut().unwrap().lock().unwrap().prune();
+            }
+        })
+    }
+
+    pub fn reset(&mut self) {
+        // Set storage to 0.0
+        self.storage = 0.0;
+
+        // Reset all underneath
+        self.products.par_iter_mut().for_each(|(_, rc)| {
+            if rc.is_some() {
+                rc.as_mut().unwrap().lock().unwrap().reset();
             }
         })
     }
@@ -329,16 +346,19 @@ impl ReactiveCircuit {
 impl Add for ReactiveCircuit {
     type Output = ReactiveCircuit;
 
-    fn add(mut self, rhs: ReactiveCircuit) -> Self::Output {
-        // Store the sum of both memorized values
-        self.storage = self.storage + rhs.storage;
+    fn add(self, rhs: ReactiveCircuit) -> Self::Output {
+        let mut sum = ReactiveCircuit::new();
+        sum.storage = self.storage + rhs.storage;
 
-        // Add up the products of rhs
-        for (factors, sub_rc) in &rhs.products {
-            self.products.push((factors.clone(), sub_rc.clone()));
+        for (factors, sub_rc) in &self.products {
+            sum.products.push((factors.clone(), sub_rc.clone()));
         }
 
-        self
+        for (factors, sub_rc) in &rhs.products {
+            sum.products.push((factors.clone(), sub_rc.clone()));
+        }
+
+        sum
     }
 }
 
@@ -368,12 +388,10 @@ impl Add<&ReactiveCircuit> for ReactiveCircuit {
         let mut sum = ReactiveCircuit::new();
         sum.storage = self.storage + rhs.storage;
 
-        // Add up the products of self
         for (factors, sub_rc) in &self.products {
             sum.products.push((factors.clone(), sub_rc.clone()));
         }
 
-        // Add up the products of rhs
         for (factors, sub_rc) in &rhs.products {
             sum.products.push((factors.clone(), sub_rc.clone()));
         }
@@ -398,7 +416,7 @@ impl Add<u16> for ReactiveCircuit {
     type Output = ReactiveCircuit;
 
     fn add(mut self, rhs: u16) -> Self::Output {
-        self.products.push((BTreeSet::from_iter(vec![rhs]), None));
+        self.products.push((vec![rhs], None));
 
         self
     }
@@ -410,7 +428,7 @@ impl Add<u16> for &ReactiveCircuit {
     fn add(self, rhs: u16) -> Self::Output {
         let mut sum = ReactiveCircuit::new();
         sum = sum + self;
-        sum.products.push((BTreeSet::from_iter(vec![rhs]), None));
+        sum.products.push((vec![rhs], None));
 
         sum
     }
@@ -420,7 +438,7 @@ impl Add<Vec<u16>> for ReactiveCircuit {
     type Output = ReactiveCircuit;
 
     fn add(mut self, rhs: Vec<u16>) -> Self::Output {
-        self.products.push((BTreeSet::from_iter(rhs), None));
+        self.products.push((rhs, None));
 
         self
     }
@@ -430,9 +448,8 @@ impl Mul<u16> for ReactiveCircuit {
     type Output = ReactiveCircuit;
 
     fn mul(mut self, rhs: u16) -> Self::Output {
-        // Combine own products with new leaf index
         for (factors, _) in &mut self.products {
-            factors.insert(rhs);
+            factors.push(rhs);
         }
 
         self
@@ -459,7 +476,7 @@ mod tests {
         manager.create_leaf("3", 0.1, 0.0);
 
         rc = rc + 0 + vec![1, 2, 3];
-        rc.update(&manager.foliage.lock().unwrap());
+        rc.update(&manager.get_values());
         assert_eq!(rc.counted_update(&manager.foliage.lock().unwrap()), 3);
         assert_eq!(rc.value(), 0.5 + 0.75 * 0.25 * 0.1);
 
@@ -486,9 +503,8 @@ mod tests {
         assert_eq!(*queue_guard.first().unwrap(), 0);
         assert_eq!(*queue_guard.last().unwrap(), 1);
         while let Some(rc_index) = queue_guard.pop_last() {
-            deploy[rc_index].lock().unwrap().update(&foliage_guard);
+            deploy[rc_index].lock().unwrap().update(&manager.get_values());
         }
-
         assert_eq!(deploy[0].lock().unwrap().value(), 0.5 + 0.1 * 0.3 * 0.1);
         assert_eq!(deploy[0].lock().unwrap().counted_update(&foliage_guard), 3);
         assert_eq!(deploy[1].lock().unwrap().value(), 0.3);
