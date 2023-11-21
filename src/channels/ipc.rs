@@ -1,6 +1,6 @@
-use rclrs::{Node, Publisher, QoSHistoryPolicy, RclrsError, Subscription, QOS_PROFILE_DEFAULT, SubscriptionBase};
+use rclrs::{Node, Publisher, QoSHistoryPolicy, RclrsError, Subscription, QOS_PROFILE_DEFAULT};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::Arc;
-use std::sync::mpsc::{self, TryRecvError, Sender, Receiver};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use std_msgs::msg::Float64;
@@ -19,7 +19,7 @@ pub struct IpcWriter {
     publisher: Arc<Publisher<Float64>>,
     value: fn(f64) -> f64,
     sender: Option<Sender<()>>,
-    handle: Option<JoinHandle<()>>
+    handle: Option<JoinHandle<()>>,
 }
 
 impl IpcReader {
@@ -57,9 +57,13 @@ impl IpcReader {
     }
 }
 
-
 impl IpcWriter {
-    pub fn new(node: &Node, topic: &str, frequency: f64, value: fn(f64) -> f64) -> Result<Self, RclrsError> {
+    pub fn new(
+        node: &Node,
+        topic: &str,
+        frequency: f64,
+        value: fn(f64) -> f64,
+    ) -> Result<Self, RclrsError> {
         let mut profile = QOS_PROFILE_DEFAULT;
         profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
 
@@ -75,7 +79,7 @@ impl IpcWriter {
     }
 
     pub fn start(&mut self) {
-        use std::thread::{sleep, spawn};
+        use std::thread::spawn;
 
         // If this is already running, we don't do anything
         if self.sender.is_some() {
@@ -85,7 +89,7 @@ impl IpcWriter {
         // Make copies such that self isn't moved here
         let thread_publisher = self.publisher.clone();
         let thread_value = self.value;
-        let thread_frequency = self.frequency;
+        let thread_timeout = Duration::from_secs_f64(1.0 / self.frequency);
 
         // Create a channel to later terminate the thread
         let (sender, receiver) = mpsc::channel();
@@ -93,12 +97,15 @@ impl IpcWriter {
 
         let clock = Instant::now();
         self.handle = Some(spawn(move || loop {
-            match receiver.try_recv() {
-                Ok(_) | Err(TryRecvError::Disconnected) => break,
-                Err(TryRecvError::Empty) => {
-                    let _ = thread_publisher.publish(Float64 { data: thread_value(clock.elapsed().as_secs_f64()) });
-                    sleep(Duration::from_secs_f64(1.0 / thread_frequency));
-                }
+            // Publish next value
+            let _ = thread_publisher.publish(Float64 {
+                data: thread_value(clock.elapsed().as_secs_f64()),
+            });
+
+            // Break if notified via channel or disconnected
+            match receiver.recv_timeout(thread_timeout) {
+                Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => (),
             }
         }));
     }
@@ -111,15 +118,16 @@ impl IpcWriter {
 
             // Send message and wait for join
             let _ = sender.unwrap().send(());
-            handle.unwrap().join().expect("Could not join with writer thread!");
+            handle
+                .unwrap()
+                .join()
+                .expect("Could not join with writer thread!");
         }
     }
 }
-
 
 impl Drop for IpcWriter {
     fn drop(&mut self) {
         self.stop();
     }
 }
-

@@ -5,16 +5,15 @@ mod circuit;
 mod language;
 mod tracking;
 
+use crate::channels::clustering::create_boundaries;
 use crate::channels::clustering::frequency_adaptation;
 use crate::channels::manager::Manager;
 use crate::circuit::Leaf;
 use crate::circuit::ReactiveCircuit;
 
 use itertools::Itertools;
-use rand::Rng;
-use rand::seq::SliceRandom;
-use rand::thread_rng;
 use rand::prelude::*;
+use rand::seq::SliceRandom;
 use rand_distr::{Distribution, SkewNormal};
 
 use std::fs::File;
@@ -67,7 +66,7 @@ fn randomized_rc(
         rc = rc + combination;
     }
 
-    rc.set_dependencies(&mut manager.foliage.lock().unwrap(), None, vec![]);
+    rc.set_dependencies(manager, None, vec![]);
     rc
 }
 
@@ -194,35 +193,29 @@ fn randomized_rc(
 
 fn randomized_study(location: f64, bin_size: f64) {
     // Model size
-    let number_leafs = 20;
-    let number_models = 100;
+    let number_leafs = 2000;
+    let number_models = 10000;
 
     // How long to run each model
-    let inference_time = 5.0;
+    let inference_time = 1.0;
 
     // Frequency distribution
-    let scale = 3.0;
+    let scale = 2.0;
     let shape = 0.0;
 
     // Partitioning of leafs
-    let number_bins = 200;
-
-    let mut manager = Manager::new();
-
-    let mut boundaries = vec![];
-    for i in 0..number_bins {
-        boundaries.push(i as f64 * bin_size + bin_size);
-    }
+    let number_bins = 500;
+    let boundaries = create_boundaries(bin_size, number_bins);
 
     println!("Building randomized RC for location {location} and bin size {bin_size}.");
+    let mut manager = Manager::new();
     let mut rc = randomized_rc(&mut manager, number_leafs, number_models);
 
     println!("Activate randomized IPC.");
-    let mut true_frequencies =
-        sample_frequencies(location, scale, shape, number_leafs as usize);
+    let mut true_frequencies = sample_frequencies(location, scale, shape, number_leafs as usize);
     for (index, frequency) in true_frequencies.iter_mut().enumerate() {
-        if *frequency < 0.001 {
-            *frequency = 0.001;
+        if *frequency < 0.1 {
+            *frequency = 0.1;
         }
 
         let channel = format!(
@@ -230,10 +223,8 @@ fn randomized_study(location: f64, bin_size: f64) {
             manager.foliage.lock().unwrap()[index as usize].name
         );
         let _ = manager.read(index as u16, &channel, false);
-        let _ = manager.write(|t| StdRng::seed_from_u64(t as u64).gen_range(0.0..10.0), &channel, *frequency);
+        let _ = manager.write(|_| 1.0, &channel, *frequency);
     }
-    let mut sorted_frequencies = true_frequencies.clone();
-    sorted_frequencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     let mut inference_timestamps = vec![];
     let mut inference_times = vec![];
@@ -245,15 +236,25 @@ fn randomized_study(location: f64, bin_size: f64) {
         manager.spin_once();
 
         let leaf_values = manager.get_values();
-        
+
+        let mut queue_guard = manager.rc_queue.lock().unwrap();
         let before = Instant::now();
-        rc.update(&leaf_values);
+        if let Some(_) = queue_guard.pop_last() {
+            rc.update(&leaf_values);
+        }
         let elapsed = before.elapsed().as_secs_f64();
+        drop(queue_guard);
 
         inference_timestamps.push(inference_clock.elapsed().as_secs_f64());
         inference_times.push(elapsed);
         values.push(rc.value());
     }
+    println!(
+        "Original RC had value {} with depth {} in {} operations",
+        rc.value(),
+        rc.depth(None),
+        rc.counted_update(&manager.get_values())
+    );
 
     println!("Export results.");
     let path = Path::new("output/data/original_inference_times.csv");
@@ -279,11 +280,17 @@ fn randomized_study(location: f64, bin_size: f64) {
 
     println!("Start adaptation");
     let before = Instant::now();
-    frequency_adaptation(&mut rc, &mut manager.foliage, &boundaries);
-    println!(
-        "#Adaptations in {}s",
-        before.elapsed().as_secs_f64()
-    );
+    // Adapt layers
+    frequency_adaptation(&mut rc, &true_frequencies, &boundaries);
+
+    // Prune resulting RC
+    rc.prune();
+
+    // Update leaf dependencies
+    rc.clear_dependencies(&mut manager);
+    rc.set_dependencies(&mut manager, None, vec![]);
+    rc.full_update(&manager.get_values());
+    println!("#Adaptations in {}s", before.elapsed().as_secs_f64());
 
     let mut inference_timestamps = vec![];
     let mut inference_times = vec![];
@@ -291,6 +298,7 @@ fn randomized_study(location: f64, bin_size: f64) {
 
     let root = Arc::new(Mutex::new(rc));
     let deploy = ReactiveCircuit::deploy(&root);
+
     println!("Loop deployed for {}s.", inference_time);
     let inference_clock = Instant::now();
     while inference_clock.elapsed().as_secs_f64() < inference_time {
@@ -309,6 +317,12 @@ fn randomized_study(location: f64, bin_size: f64) {
         inference_times.push(elapsed);
         values.push(root.lock().unwrap().value());
     }
+    let root_value = root.lock().unwrap().value();
+    let root_depth = root.lock().unwrap().depth(None);
+    let root_ops = root.lock().unwrap().counted_update(&manager.get_values());
+    println!(
+        "Adapted RC had value {root_value} with depth {root_depth} in {root_ops} operations",
+    );
 
     println!("Export results.");
     let path = Path::new("output/data/adapted_inference_times.csv");
@@ -339,7 +353,8 @@ fn sample_frequencies(location: f64, scale: f64, shape: f64, number_samples: usi
 
     let mut frequencies = vec![];
     while frequencies.len() < number_samples {
-        frequencies.push(distribution.sample(&mut rng));
+        let frequency = distribution.sample(&mut rng).clamp(0.0001, f64::MAX);
+        frequencies.push(frequency);
     }
 
     frequencies
@@ -365,13 +380,18 @@ fn export_frequencies(path: &Path, location: f64, scale: f64, shape: f64, number
 }
 
 fn main() -> std::io::Result<()> {
-    let location = 5.0;
-    let bin_size = 6.0;
+    let locations = vec![5.0, 10.0];
 
-    randomized_study(location, bin_size);
+    for location in &locations {
+        let mut bin_size = 1.0;
+        while bin_size < 10.0 {
+            randomized_study(*location, bin_size);
+            bin_size += 1.0;
+        }
+    }
 
     Ok(())
-    
+
     // let args = Args::parse();
 
     // let model = read_to_string(args.source).unwrap();
@@ -419,7 +439,6 @@ fn main() -> std::io::Result<()> {
     //     .y_axis(PAxis::new().title(Title::new("#Operations")))
     // );
     // plot.write_html("output/operations_curve.html");
-
 
     // loop {
     //     println!("Value of RC = {:?}", resin.circuits[0].lock().unwrap().get_value());

@@ -26,9 +26,9 @@ adapted_results = pd.read_csv("output/data/adapted_inference_times.csv", low_mem
 plot = sns.lineplot(data=original_results, x="BinSize", y="Runtime", label="Original")
 # plot = sns.lineplot(data=original_results, x="Time", y="Runtime", hue="BinSize")
 
-for location in [5, 10]:
+for location in [1.0, 5.0, 10.0]:
     distribution_results = adapted_results[adapted_results["Location"] == location]
-    sns.lineplot(data=distribution_results, x="BinSize", y="Runtime", label=r'$\mathcal{N}(' + f"{location}" + r', 3)$')
+    sns.lineplot(data=distribution_results, x="BinSize", y="Runtime", label=r'$\mathcal{N}(' + f"{location}" + r', 2)$')
 
 plt.gcf().tight_layout()
 sns.despine(top=True, right=True)
@@ -36,9 +36,8 @@ sns.despine(top=True, right=True)
 plot.set_xlabel("Bin size / Hz", fontsize=20)
 plot.set_ylabel("Inference Time / s", fontsize=20)
 plot.tick_params(labelsize=15)
-# plot.set_ylim([0.0, 0.1])
-# plot.legend(title="Mean FoC", fontsize=15)
+plot.legend(title="Mean FoC")
 plot.set_yscale("log")
-# plot.set_aspect(8.0 / 10.0)
+plot.set_aspect(10.0 / 8.0)
 
 plot.get_figure().savefig("output/plots/time_plot.pdf", bbox_inches='tight')
