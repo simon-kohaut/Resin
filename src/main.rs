@@ -223,7 +223,7 @@ fn randomized_study(location: f64, bin_size: f64) {
             manager.foliage.lock().unwrap()[index as usize].name
         );
         let _ = manager.read(index as u16, &channel, false);
-        let _ = manager.write(|_| 1.0, &channel, *frequency);
+        let _ = manager.write(|_| thread_rng().gen_range(0.1..=1.0), &channel, *frequency);
     }
 
     let mut inference_timestamps = vec![];
@@ -380,13 +380,15 @@ fn export_frequencies(path: &Path, location: f64, scale: f64, shape: f64, number
 }
 
 fn main() -> std::io::Result<()> {
-    let locations = vec![5.0, 10.0];
+    let locations = vec![1.0, 5.0, 10.0];
 
-    for location in &locations {
-        let mut bin_size = 1.0;
-        while bin_size < 10.0 {
-            randomized_study(*location, bin_size);
-            bin_size += 1.0;
+    for _ in 0..10 {
+        for location in &locations {
+            let mut bin_size = 1.0;
+            while bin_size < 10.0 {
+                randomized_study(*location, bin_size);
+                bin_size += 1.0;
+            }
         }
     }
 
