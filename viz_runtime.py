@@ -23,25 +23,38 @@ adapted_results = pd.read_csv("output/data/adapted_inference_times.csv", low_mem
 #         bars = pd.concat([bars, data], ignore_index=True)
 
 # plot = sns.lineplot(data=original_results, x="BinSize", y="Runtime", label="Original")
-plot = sns.barplot(data=original_results, x=0, y="Runtime", label="Original", errorbar=None)
+fig, axes = plt.subplots(2, 1)
 
-# for location in [1.0, 5.0, 10.0]:
-#     distribution_results = adapted_results[adapted_results["Location"] == location]
-plot = sns.barplot(data=adapted_results, x="BinSize", y="Runtime", hue="Location", palette=sns.color_palette()[1:], errorbar=None)
+sns.barplot(ax=axes[0], data=adapted_results, x="BinSize", y="Runtime", hue="Location", palette=sns.color_palette(), errorbar=None)
+sns.lineplot(ax=axes[1], data=adapted_results, x="BinSize", y="Depth", hue="Location", palette=sns.color_palette())
 
-h, l = plot.get_legend_handles_labels()
-labels = [r'$\mathcal{N}(' + f"{label}" + r', 2)$' for label in l if label != "Original"]
-plot.legend(h, labels + ["Original"])
+baseline = original_results["Runtime"].mean()
+axes[0].axhline(baseline, ls='--', c="r")
+axes[0].text(1, baseline + 0.075 * baseline, "Baseline")
 
-plt.gcf().tight_layout()
+axes[0].set_ylabel("Runtime / s", fontsize=20)
+axes[0].tick_params(labelsize=15)
+axes[0].set_yscale("log")
+axes[0].get_legend().remove()
+axes[0].tick_params(
+    axis='x',          # changes apply to the x-axis
+    which='both',      # both major and minor ticks are affected
+    bottom=False,      # ticks along the bottom edge are off
+    top=False,         # ticks along the top edge are off
+    labelbottom=False) # labels along the bottom edge are off
+axes[0].set_xlabel("")
+
+
+axes[1].set_xlabel("Partitioning", fontsize=20)
+axes[1].set_ylabel(r"$\mathcal{RC}$ Depth", fontsize=20)
+axes[1].tick_params(labelsize=15)
+axes[1].set_yticks(range(1, 10, 2))
+axes[1].set_xticks(range(1, 11));
+axes[1].set_xticklabels(["1Hz", "2Hz", "3Hz", "4Hz", "5Hz", "6Hz", "7Hz", "8Hz", "9Hz", "10Hz"])
+h, l = axes[1].get_legend_handles_labels()
+labels = [r"$\mathcal{N}(" + label + r", 2)$" for label in l]
+axes[1].legend(h, labels, title="FoC PDF")
+
 sns.despine(top=True, right=True)
-
-plot.set_xlabel("Partitioning", fontsize=20)
-plot.set_ylabel("Inference Time / s", fontsize=20)
-plot.tick_params(labelsize=15)
-plot.set_yscale("log")
-plot.set_aspect(10.0 / 7.0)
-plot.set_xticks([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
-plot.set_xticklabels(["None", "1Hz", "2Hz", "3Hz", "4Hz", "5Hz", "6Hz", "7Hz", "8Hz", "9Hz", "10Hz"])
-
-plot.get_figure().savefig("output/plots/time_plot.pdf", bbox_inches='tight')
+fig.tight_layout()
+fig.savefig("output/plots/time_plot.pdf", bbox_inches='tight')

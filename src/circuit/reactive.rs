@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use rayon::prelude::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
 
 // Crate
-use crate::Leaf;
 use crate::Manager;
 
 pub type RcQueue = Arc<Mutex<BTreeSet<usize>>>;
@@ -213,6 +212,8 @@ impl ReactiveCircuit {
                         if repeat > 0 {
                             new_rc.as_mut().unwrap().lock().unwrap().drop_leaf(leaf, repeat - 1);
                         }
+
+                        new_rc.as_mut().unwrap().lock().unwrap().prune();
                     }
                     false => match sub_rc {
                         Some(rc) => {

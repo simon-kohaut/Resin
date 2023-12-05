@@ -197,10 +197,10 @@ fn randomized_study(location: f64, bin_size: f64) {
     let number_models = 10000;
 
     // How long to run each model
-    let inference_time = 1.0;
+    let inference_time = 30.0;
 
     // Frequency distribution
-    let scale = 2.0;
+    let scale = 1.0;
     let shape = 0.0;
 
     // Partitioning of leafs
@@ -238,6 +238,10 @@ fn randomized_study(location: f64, bin_size: f64) {
         let leaf_values = manager.get_values();
 
         let mut queue_guard = manager.rc_queue.lock().unwrap();
+        if queue_guard.len() == 0 {
+            continue;
+        }
+
         let before = Instant::now();
         if let Some(_) = queue_guard.pop_last() {
             rc.update(&leaf_values);
@@ -283,9 +287,6 @@ fn randomized_study(location: f64, bin_size: f64) {
     // Adapt layers
     frequency_adaptation(&mut rc, &true_frequencies, &boundaries);
 
-    // Prune resulting RC
-    rc.prune();
-
     // Update leaf dependencies
     rc.clear_dependencies(&mut manager);
     rc.set_dependencies(&mut manager, None, vec![]);
@@ -306,6 +307,10 @@ fn randomized_study(location: f64, bin_size: f64) {
 
         let leaf_values = manager.get_values();
         let mut queue_guard = manager.rc_queue.lock().unwrap();
+        if queue_guard.len() == 0 {
+            continue;
+        }
+
         let before = Instant::now();
         while let Some(rc_index) = queue_guard.pop_last() {
             deploy[rc_index].lock().unwrap().update(&leaf_values);
@@ -315,7 +320,7 @@ fn randomized_study(location: f64, bin_size: f64) {
 
         inference_timestamps.push(inference_clock.elapsed().as_secs_f64());
         inference_times.push(elapsed);
-        values.push(root.lock().unwrap().value());
+        values.push(root.lock().unwrap().value());    
     }
     let root_value = root.lock().unwrap().value();
     let root_depth = root.lock().unwrap().depth(None);
@@ -328,7 +333,7 @@ fn randomized_study(location: f64, bin_size: f64) {
     let path = Path::new("output/data/adapted_inference_times.csv");
     if !path.exists() {
         let mut file = File::create(path).expect("Unable to create file");
-        file.write_all("Time,Runtime,Leafs,Shape,Location,Value,BinSize\n".as_bytes())
+        file.write_all("Time,Runtime,Leafs,Shape,Location,Value,BinSize,Depth\n".as_bytes())
             .expect("Unable to write data");
     }
 
@@ -336,11 +341,12 @@ fn randomized_study(location: f64, bin_size: f64) {
     let mut csv_text = "".to_string();
     for i in 0..inference_times.len() {
         csv_text.push_str(&format!(
-            "{},{},{},{shape},{location},{},{bin_size}\n",
+            "{},{},{},{shape},{location},{},{bin_size},{}\n",
             inference_timestamps[i],
             inference_times[i],
             number_leafs as usize / 2 * number_models as usize,
-            values[i]
+            values[i],
+            root_depth
         ));
     }
     file.write_all(csv_text.as_bytes())
@@ -385,7 +391,7 @@ fn main() -> std::io::Result<()> {
     for _ in 0..10 {
         for location in &locations {
             let mut bin_size = 1.0;
-            while bin_size < 10.0 {
+            while bin_size <= 10.0 {
                 randomized_study(*location, bin_size);
                 bin_size += 1.0;
             }
