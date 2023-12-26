@@ -2,10 +2,11 @@
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Write;
+use std::mem::size_of_val;
 use std::ops::{Add, AddAssign, Mul};
 use std::process::Command;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 // Third-party
 use rayon::prelude::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
@@ -67,9 +68,9 @@ impl ReactiveCircuit {
                 .iter_mut()
                 .fold((0.0, 0), |(acc_value, acc_count), (factors, sub_rc)| {
                     // Get product of leafs
-                    let mut value = factors.iter().fold(1.0, |acc, factor| {
-                        acc * leaf_values[*factor as usize]
-                    });
+                    let mut value = factors
+                        .iter()
+                        .fold(1.0, |acc, factor| acc * leaf_values[*factor as usize]);
 
                     // How many numbers where multiplied
                     let mut count = if factors.len() < 2 {
@@ -210,7 +211,12 @@ impl ReactiveCircuit {
                         }
 
                         if repeat > 0 {
-                            new_rc.as_mut().unwrap().lock().unwrap().drop_leaf(leaf, repeat - 1);
+                            new_rc
+                                .as_mut()
+                                .unwrap()
+                                .lock()
+                                .unwrap()
+                                .drop_leaf(leaf, repeat - 1);
                         }
 
                         new_rc.as_mut().unwrap().lock().unwrap().prune();
@@ -305,6 +311,23 @@ impl ReactiveCircuit {
         });
 
         rcs
+    }
+
+    pub fn size(&self) -> usize {
+        let size_underneath = self.products.iter().fold(0, |acc, (factors, sub_rc)| {
+            acc + size_of_val(factors)
+                + size_of_val(&*factors)
+                + if sub_rc.is_some() {
+                    sub_rc.as_ref().unwrap().lock().unwrap().size()
+                } else {
+                    0
+                }
+        });
+
+        size_of_val(&self.storage)
+            + size_of_val(&self.products)
+            + size_underneath
+            + size_of_val(&self.index)
     }
 
     pub fn to_svg(&self, path: &str, manager: &Manager) -> std::io::Result<()> {

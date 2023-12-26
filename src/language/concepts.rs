@@ -1,18 +1,18 @@
 use regex::Regex;
 use std::panic;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
 
-use crate::circuit::{leaf::Foliage, reactive::ReactiveCircuit};
+use crate::circuit::reactive::ReactiveCircuit;
+use crate::channels::manager::Manager;
 
-use super::matching::{CLAUSE_REGEX, LITERAL_REGEX, SOURCE_REGEX, TARGET_REGEX};
+use super::matching::{CLAUSE_REGEX, SOURCE_REGEX, TARGET_REGEX, get_literals};
 
 pub struct Resin {
     pub circuits: Vec<ReactiveCircuit>,
     pub clauses: Vec<Clause>,
     pub sources: Vec<Source>,
     pub targets: Vec<Target>,
-    pub foliage: Foliage,
+    pub manager: Manager
 }
 
 pub struct Clause {
@@ -108,7 +108,7 @@ impl FromStr for Resin {
             clauses: vec![],
             sources: vec![],
             targets: vec![],
-            foliage: Arc::new(Mutex::new(vec![])),
+            manager: Manager::new(),
         };
 
         // Parse Resin source line by line into appropriate data structures
@@ -149,6 +149,7 @@ impl FromStr for Clause {
                 Ok(capture) => body += capture,
                 _ => (),
             }
+            let literals = get_literals(&body);
 
             let mut probability = None;
             match panic::catch_unwind(|| &captures["probability"]) {
@@ -156,11 +157,6 @@ impl FromStr for Clause {
                 _ => (),
             }
             let _ = panic::take_hook();
-
-            let mut literals = vec![];
-            for (_, [literal]) in LITERAL_REGEX.captures_iter(&body).map(|c| c.extract()) {
-                literals.push(literal.to_string());
-            }
 
             let clause = Clause {
                 head: captures["atom"].to_string(),
@@ -227,4 +223,50 @@ impl FromStr for ResinType {
             _ => Err(()),
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    #[test]
+    fn test_clauses() {
+        let code = "test.";
+        let clause: Clause = code.parse().expect("Parse clause failed!");
+        assert!(clause.body.is_empty());
+        assert_eq!(clause.code, code);
+        assert_eq!(clause.head, "test");
+        assert!(clause.probability.is_none());
+
+        let code = "pilot(ben).";
+        let clause: Clause = code.parse().expect("Parse clause failed!");
+        assert!(clause.body.is_empty());
+        assert_eq!(clause.code, code);
+        assert_eq!(clause.head, "pilot(ben)");
+        assert!(clause.probability.is_none()); 
+
+        let code = "heavy(drone_1) <- P(0.8).";
+        let clause: Clause = code.parse().expect("Parse clause failed!");
+        assert!(clause.body.is_empty());
+        assert_eq!(clause.code, code);
+        assert_eq!(clause.head, "heavy(drone_1)");
+        assert_eq!(clause.probability.unwrap(), 0.8); 
+
+        let code = "unsafe(drone_1, drone_2) <- P(0.65) if close(drone_1, drone_2) and heavy(drone_1).";
+        let clause: Clause = code.parse().expect("Parse clause failed!");
+        assert_eq!(clause.code, code);
+        assert_eq!(clause.head, "unsafe(drone_1, drone_2)");
+        assert_eq!(clause.probability.unwrap(), 0.65); 
+        assert_eq!(clause.body, vec!["close(drone_1, drone_2)", "heavy(drone_1)"]);
+    }
+
+    fn test_sources() {
+
+    }
+
+    fn test_targets() {
+
+    }
+
 }

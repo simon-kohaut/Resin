@@ -10,6 +10,5 @@ sns.despine(top=True, right=True)
 plot.set_xlabels("Frequency / Hz", fontsize=20)
 plot.set_ylabels("Density", fontsize=20)
 plot.tick_params(labelsize=15)
-# plot.legends(title="Shape", fontsize=15)
 
 plot.savefig("output/plots/frequencies_plot.pdf", bbox_inches='tight')

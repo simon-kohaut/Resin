@@ -8,7 +8,6 @@ mod tracking;
 use crate::channels::clustering::create_boundaries;
 use crate::channels::clustering::frequency_adaptation;
 use crate::channels::manager::Manager;
-use crate::circuit::Leaf;
 use crate::circuit::ReactiveCircuit;
 
 use itertools::Itertools;
@@ -254,17 +253,18 @@ fn randomized_study(location: f64, bin_size: f64) {
         values.push(rc.value());
     }
     println!(
-        "Original RC had value {} with depth {} in {} operations",
+        "Original RC had value {} with depth {} in {} operations using {} Bytes",
         rc.value(),
         rc.depth(None),
-        rc.counted_update(&manager.get_values())
+        rc.counted_update(&manager.get_values()),
+        rc.size()
     );
 
     println!("Export results.");
     let path = Path::new("output/data/original_inference_times.csv");
     if !path.exists() {
         let mut file = File::create(path).expect("Unable to create file");
-        file.write_all("Time,Runtime,Leafs,Shape,Location,Value,BinSize\n".as_bytes())
+        file.write_all("Time,Runtime,Leafs,Shape,Location,Value,BinSize,Size\n".as_bytes())
             .expect("Unable to write data");
     }
 
@@ -272,11 +272,12 @@ fn randomized_study(location: f64, bin_size: f64) {
     let mut csv_text = "".to_string();
     for i in 0..inference_times.len() {
         csv_text.push_str(&format!(
-            "{},{},{},{shape},{location},{},{bin_size}\n",
+            "{},{},{},{shape},{location},{},{bin_size},{}\n",
             inference_timestamps[i],
             inference_times[i],
             number_leafs as usize / 2 * number_models as usize,
-            values[i]
+            values[i],
+            rc.size()
         ));
     }
     file.write_all(csv_text.as_bytes())
@@ -320,20 +321,19 @@ fn randomized_study(location: f64, bin_size: f64) {
 
         inference_timestamps.push(inference_clock.elapsed().as_secs_f64());
         inference_times.push(elapsed);
-        values.push(root.lock().unwrap().value());    
+        values.push(root.lock().unwrap().value());
     }
     let root_value = root.lock().unwrap().value();
     let root_depth = root.lock().unwrap().depth(None);
     let root_ops = root.lock().unwrap().counted_update(&manager.get_values());
-    println!(
-        "Adapted RC had value {root_value} with depth {root_depth} in {root_ops} operations",
-    );
+    let graph_size = root.lock().unwrap().size();
+    println!("Adapted RC had value {root_value} with depth {root_depth} in {root_ops} operations using {graph_size} Bytes",);
 
     println!("Export results.");
     let path = Path::new("output/data/adapted_inference_times.csv");
     if !path.exists() {
         let mut file = File::create(path).expect("Unable to create file");
-        file.write_all("Time,Runtime,Leafs,Shape,Location,Value,BinSize,Depth\n".as_bytes())
+        file.write_all("Time,Runtime,Leafs,Shape,Location,Value,BinSize,Depth,Size\n".as_bytes())
             .expect("Unable to write data");
     }
 
@@ -341,12 +341,13 @@ fn randomized_study(location: f64, bin_size: f64) {
     let mut csv_text = "".to_string();
     for i in 0..inference_times.len() {
         csv_text.push_str(&format!(
-            "{},{},{},{shape},{location},{},{bin_size},{}\n",
+            "{},{},{},{shape},{location},{},{bin_size},{},{}\n",
             inference_timestamps[i],
             inference_times[i],
             number_leafs as usize / 2 * number_models as usize,
             values[i],
-            root_depth
+            root_depth,
+            graph_size
         ));
     }
     file.write_all(csv_text.as_bytes())

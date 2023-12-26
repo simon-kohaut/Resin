@@ -17,7 +17,7 @@ impl FoCEstimator {
         let prediction = array![frequency, 0.0];
         let prediction_covariance = array![[30.0, 0.0], [0.0, 100.0]];
         let process_noise = array![[0.05, 1.0], [1.0, 20.0]];
-        let sensor_noise = array![[0.01]];
+        let sensor_noise = array![[0.05]];
 
         let model = LinearModel::new(forward_model, &input_model, &output_model);
         Self {
@@ -64,7 +64,7 @@ mod tests {
     use rand_distr::{Distribution, Normal};
 
     use super::FoCEstimator;
-    use crate::channels::clustering::binning;
+    use crate::channels::clustering::{binning, create_boundaries};
     use crate::channels::generators::generate_uniform_frequencies;
 
     #[test]
@@ -72,18 +72,10 @@ mod tests {
         // Test settings
         let low = 0.0;
         let high = 30.0;
-        let number_samples = 1000;
-        let number_measurements = 60;
-        let boundaries = vec![
-            2.5, 5.0, 7.5, 10.0, 12.5, 15.0, 17.5, 20.0, 22.5, 25.0, 27.5, 30.0, 32.5, 35.0, 37.5,
-            40.0, 1000.0,
-        ];
-
-        // Sample random frequencies
-        let true_frequencies = generate_uniform_frequencies(low, high, number_samples);
-
-        // Get true cluster assignments
-        let true_clusters = binning(&true_frequencies, &boundaries);
+        let number_samples = 1;
+        let number_measurements = 20;
+        let number_repetitions = 60;
+        let bin_sizes = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];
 
         // Create estimators
         let mut estimators = vec![];
@@ -95,70 +87,47 @@ mod tests {
         let path = Path::new("output/data/foc_estimation.csv");
         if !path.exists() {
             let mut file = File::create(path).expect("Unable to create file");
-            file.write_all("Measurement,Error,ClusterError,Variance\n".as_bytes())
-                .expect("Unable to write data");
+            file.write_all(
+                "Estimator,Measurement,True,Estimated,BinSize,TrueCluster,EstimatedCluster\n"
+                    .as_bytes(),
+            )
+            .expect("Unable to write data");
         }
 
-        // Now append to CSV
+        // Append to CSV
         let mut file = OpenOptions::new().append(true).open(path).unwrap();
         let mut csv_text = "".to_string();
-
-        for (i, estimator) in &mut estimators.iter_mut().enumerate() {
-            let true_frequency = true_frequencies[i];
-            let true_cluster = true_clusters[i];
-
-            let estimated = estimator.kalman.prediction[0];
-            let estimated_cluster = binning(&vec![estimated], &boundaries)[0];
-
-            let error = (estimated - true_frequency).abs();
-            let cluster_error = true_cluster.abs_diff(estimated_cluster);
-
-            csv_text.push_str(&format!("0,{error},{cluster_error},0\n"));
-        }
 
         // Start estimation process
         let mut rng = thread_rng();
         for (i, estimator) in &mut estimators.iter_mut().enumerate() {
-            let true_frequency = true_frequencies[i];
-            let true_cluster = true_clusters[i];
+            for bin_size in bin_sizes {
+                let boundaries = create_boundaries(bin_size, 100);
 
-            for j in 0..number_measurements {
-                let noisy_elapsed =
-                    1.0 / Normal::new(true_frequency, 1.0).unwrap().sample(&mut rng);
-                let estimated = estimator.update_elapsed(noisy_elapsed).clamp(0.0, 100.0);
-                let error = (true_frequency - estimated).abs();
+                // Sample new random frequencies and clusters
+                let mut true_frequency = generate_uniform_frequencies(low, high, 1)[0];
+                let mut true_cluster = binning(&vec![true_frequency], &boundaries)[0];
 
-                let estimated_cluster = binning(&vec![estimated], &boundaries)[0];
-                let cluster_error = true_cluster.abs_diff(estimated_cluster);
+                // Write down initial values
+                let initial = estimator.kalman.prediction[0];
+                let initial_cluster = binning(&vec![initial], &boundaries)[0];
+                csv_text.push_str(&format!("{i},0,{true_frequency},{initial},{bin_size},{true_cluster},{initial_cluster}\n"));
 
-                let variance = estimator.kalman.estimate_covariance[(0, 0)];
-                csv_text.push_str(&format!("{},{error},{cluster_error},{variance}\n", j + 1));
-            }
-        }
+                for k in 0..number_repetitions {
+                    for j in k * number_measurements + 1..=(k + 1) * number_measurements {
+                        let noisy_elapsed =
+                            1.0 / Normal::new(true_frequency, 0.25).unwrap().sample(&mut rng);
 
-        // Shift true frequencies estimation process
-        for (i, estimator) in &mut estimators.iter_mut().enumerate() {
-            let shifted_i = if i < number_samples - 1 { i + 1 } else { 0 };
-            let true_frequency = true_frequencies[shifted_i];
-            let true_cluster = true_clusters[shifted_i];
+                        let estimated = estimator.update_elapsed(noisy_elapsed).clamp(0.0, 100.0);
+                        let estimated_cluster = binning(&vec![estimated], &boundaries)[0];
 
-            for j in number_measurements..2 * number_measurements {
-                let noisy_elapsed =
-                    1.0 / Normal::new(true_frequency, 1.0).unwrap().sample(&mut rng);
-                let estimated = estimator.update_elapsed(noisy_elapsed).clamp(0.0, 100.0);
-                let error = (true_frequency - estimated).abs();
-
-                let mut estimated_cluster = 0;
-                for (cluster, boundary) in boundaries.iter().enumerate() {
-                    if estimated <= *boundary {
-                        estimated_cluster = cluster;
-                        break;
+                        csv_text.push_str(&format!("{i},{j},{true_frequency},{estimated},{bin_size},{true_cluster},{estimated_cluster}\n"));
                     }
-                }
-                let cluster_error = true_cluster.abs_diff(estimated_cluster);
 
-                let variance = estimator.kalman.estimate_covariance[(0, 0)];
-                csv_text.push_str(&format!("{},{error},{cluster_error},{variance}\n", j + 1));
+                    // Sample new random frequencies and clusters
+                    true_frequency = generate_uniform_frequencies(low, high, 1)[0];
+                    true_cluster = binning(&vec![true_frequency], &boundaries)[0];
+                }
             }
         }
 

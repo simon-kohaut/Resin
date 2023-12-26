@@ -10,5 +10,4 @@ alarm if alarm_e.
 alarm if alarm_b.
 
 calls(mary) if alarm and hears_alarm(mary).
-
 calls(mary) -> target("/landline").

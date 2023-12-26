@@ -105,6 +105,12 @@ impl Manager {
 
         foliage_guard.iter().map(|leaf| leaf.get_value()).collect()
     }
+
+    pub fn get_names(&self) -> Vec<String> {
+        let foliage_guard = self.foliage.lock().unwrap();
+
+        foliage_guard.iter().map(|leaf| leaf.name.to_owned()).collect()
+    }
 }
 
 impl Drop for Manager {
