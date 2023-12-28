@@ -2,6 +2,7 @@ use lazy_static::lazy_static;
 use std::time::Duration;
 use std::{
     collections::BTreeSet,
+    collections::HashMap,
     sync::{Arc, Mutex},
 };
 
@@ -109,7 +110,25 @@ impl Manager {
     pub fn get_names(&self) -> Vec<String> {
         let foliage_guard = self.foliage.lock().unwrap();
 
-        foliage_guard.iter().map(|leaf| leaf.name.to_owned()).collect()
+        foliage_guard
+            .iter()
+            .map(|leaf| leaf.name.to_owned())
+            .collect()
+    }
+
+    pub fn get_index_map(&self) -> HashMap<String, usize> {
+        let names = self.get_names();
+        let mut map = HashMap::new();
+
+        for name in &names {
+            let position = names
+                .iter()
+                .position(|leaf_name| *leaf_name == *name)
+                .expect("Error during creation of index map!");
+            map.insert(name.to_owned(), position);
+        }
+
+        map
     }
 }
 

@@ -33,13 +33,14 @@ lazy_static! {
     pub static ref VARIABLE_REGEX: Regex = Regex::new(VARIABLE_PATTERN).unwrap();
 }
 
-
 pub fn get_literals(body: &str) -> Vec<String> {
     let body = body.replace("and", "");
-    
-    LITERAL_REGEX.find_iter(&body).map(|m| m.as_str().to_owned()).collect()
-}
 
+    LITERAL_REGEX
+        .find_iter(&body)
+        .map(|m| m.as_str().to_owned())
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
@@ -51,7 +52,7 @@ mod tests {
         let input = "test";
         let Some(captures) = LITERAL_REGEX.captures(input) else { panic!() };
         assert_eq!(&captures["literal"], input);
-        
+
         let input = "test(a)";
         let Some(captures) = LITERAL_REGEX.captures(input) else { panic!() };
         assert_eq!(&captures["literal"], input);
@@ -83,7 +84,9 @@ mod tests {
         let Some(captures) = CLAUSE_REGEX.captures(input) else { panic!() };
         assert_eq!(&captures["atom"], "a_b(X, some_thing)");
         assert_eq!(&captures["body"], "test(X) and other(some_thing, C)");
-        assert_eq!(get_literals(&captures["body"]), vec!["test(X)", "other(some_thing, C)"]);
+        assert_eq!(
+            get_literals(&captures["body"]),
+            vec!["test(X)", "other(some_thing, C)"]
+        );
     }
-
 }

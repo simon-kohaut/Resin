@@ -1,18 +1,21 @@
-use regex::Regex;
 use std::panic;
 use std::str::FromStr;
 
-use crate::circuit::reactive::ReactiveCircuit;
-use crate::channels::manager::Manager;
+use rclrs::RclrsError;
+use regex::Regex;
 
-use super::matching::{CLAUSE_REGEX, SOURCE_REGEX, TARGET_REGEX, get_literals};
+use crate::channels::manager::Manager;
+use crate::circuit::category::Category;
+use crate::circuit::reactive::ReactiveCircuit;
+
+use super::matching::{get_literals, CLAUSE_REGEX, SOURCE_REGEX, TARGET_REGEX};
 
 pub struct Resin {
     pub circuits: Vec<ReactiveCircuit>,
     pub clauses: Vec<Clause>,
     pub sources: Vec<Source>,
     pub targets: Vec<Target>,
-    pub manager: Manager
+    pub manager: Manager,
 }
 
 pub struct Clause {
@@ -53,6 +56,43 @@ impl Resin {
 
         asp.push_str(&self.targets[target_index].to_asp());
         asp
+    }
+
+    pub fn setup_signals(&mut self) -> Result<(), RclrsError> {
+        // Create all source channels and parameter leafs
+        for source in &self.sources {
+            let category = Category::new(&source.name, 0.0);
+
+            let index = self.manager.create_leaf(
+                &category.leafs[0].name,
+                category.leafs[0].get_value(),
+                0.0,
+            );
+            self.manager.read(index as u16, &source.channel, false)?;
+
+            let index = self.manager.create_leaf(
+                &category.leafs[1].name,
+                category.leafs[1].get_value(),
+                0.0,
+            );
+            self.manager.read(index as u16 + 1, &source.channel, true)?;
+        }
+
+        for clause in &self.clauses {
+            // Clauses that are deterministic do not need to be included in model
+            if clause.probability.is_none() {
+                continue;
+            }
+
+            let category = Category::new(&clause.head, clause.probability.unwrap());
+
+            self.manager
+                .create_leaf(&category.leafs[0].name, category.leafs[0].get_value(), 0.0);
+            self.manager
+                .create_leaf(&category.leafs[1].name, category.leafs[1].get_value(), 0.0);
+        }
+
+        Ok(())
     }
 }
 
@@ -244,29 +284,28 @@ mod tests {
         assert!(clause.body.is_empty());
         assert_eq!(clause.code, code);
         assert_eq!(clause.head, "pilot(ben)");
-        assert!(clause.probability.is_none()); 
+        assert!(clause.probability.is_none());
 
         let code = "heavy(drone_1) <- P(0.8).";
         let clause: Clause = code.parse().expect("Parse clause failed!");
         assert!(clause.body.is_empty());
         assert_eq!(clause.code, code);
         assert_eq!(clause.head, "heavy(drone_1)");
-        assert_eq!(clause.probability.unwrap(), 0.8); 
+        assert_eq!(clause.probability.unwrap(), 0.8);
 
-        let code = "unsafe(drone_1, drone_2) <- P(0.65) if close(drone_1, drone_2) and heavy(drone_1).";
+        let code =
+            "unsafe(drone_1, drone_2) <- P(0.65) if close(drone_1, drone_2) and heavy(drone_1).";
         let clause: Clause = code.parse().expect("Parse clause failed!");
         assert_eq!(clause.code, code);
         assert_eq!(clause.head, "unsafe(drone_1, drone_2)");
-        assert_eq!(clause.probability.unwrap(), 0.65); 
-        assert_eq!(clause.body, vec!["close(drone_1, drone_2)", "heavy(drone_1)"]);
+        assert_eq!(clause.probability.unwrap(), 0.65);
+        assert_eq!(
+            clause.body,
+            vec!["close(drone_1, drone_2)", "heavy(drone_1)"]
+        );
     }
 
-    fn test_sources() {
+    fn test_sources() {}
 
-    }
-
-    fn test_targets() {
-
-    }
-
+    fn test_targets() {}
 }
