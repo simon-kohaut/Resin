@@ -33,8 +33,10 @@ impl Leaf {
     }
 
     pub fn set_value(&mut self, value: f64) {
-        self.value = value;
-        self.frequency = self.foc_estimator.update();
+        if value != self.value {
+            self.value = value;
+            self.frequency = self.foc_estimator.update();
+        }
     }
 
     pub fn set_cluster(&mut self, cluster: &i32) -> i32 {

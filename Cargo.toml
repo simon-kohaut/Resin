@@ -49,3 +49,5 @@ atomic_float = "*"
 rand_distr = "*"
 cpu-time = "*"
 rand_chacha = "*"
+polars = { version = "*", features = ["rows"] }
+tempfile = "*"

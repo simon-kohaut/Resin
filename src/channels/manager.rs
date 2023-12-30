@@ -77,15 +77,16 @@ impl Manager {
 
     pub fn write(
         &mut self,
-        value: fn(f64) -> f64,
         channel: &str,
         frequency: f64,
-    ) -> Result<(), RclrsError> {
-        let mut writer = IpcWriter::new(&NODE.lock().unwrap(), channel, frequency, value)?;
+    ) -> Result<Arc<Mutex<f64>>, RclrsError> {
+        let mut writer = IpcWriter::new(&NODE.lock().unwrap(), channel, frequency)?;
+        let value = writer.get_value_access();
 
         writer.start();
         self.writers.push(writer);
-        Ok(())
+
+        Ok(value)
     }
 
     pub fn stop_writers(&mut self) {
@@ -150,7 +151,8 @@ mod tests {
         // Create a leaf and connect it with a reader and writer
         let receiver = manager.create_leaf("tester_1", 0.0, 0.0);
         manager.read(receiver, "/test_1", false)?;
-        manager.write(|_| 1.0, "/test_1", 1.0)?;
+        let value = manager.write("/test_1", 1.0)?;
+        *value.lock().unwrap() = 1.0;
 
         // Wait for long enough that we must have a result
         // The recv_timeout internally can be a bit slow so we add a millisecond
@@ -175,7 +177,8 @@ mod tests {
         // Create a leaf and connect it with a reader and writer
         let receiver = manager.create_leaf("tester_2", 0.0, 0.0);
         manager.read(receiver, "/test_2", false)?;
-        manager.write(|_| 1.0, "/test_2", 1.0)?;
+        let value = manager.write("/test_2", 1.0)?;
+        *value.lock().unwrap() = 1.0;
 
         // Node should have 1 subscriber and 1 publisher
         assert_eq!(

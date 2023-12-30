@@ -222,7 +222,7 @@ fn randomized_study(location: f64, bin_size: f64) {
             manager.foliage.lock().unwrap()[index as usize].name
         );
         let _ = manager.read(index as u16, &channel, false);
-        let _ = manager.write(|_| thread_rng().gen_range(0.1..=1.0), &channel, *frequency);
+        let _ = manager.write(&channel, *frequency);
     }
 
     let mut inference_timestamps = vec![];
