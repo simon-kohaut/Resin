@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
+use ndarray_linalg::Scalar;
+
 use crate::channels::FoCEstimator;
 use crate::circuit::reactive::RcQueue;
 
@@ -32,10 +34,21 @@ impl Leaf {
         self.value
     }
 
-    pub fn set_value(&mut self, value: f64) {
-        if value != self.value {
+    pub fn prune_frequency(&mut self, timestamp: f64, threshold: f64) {
+        if timestamp - self.foc_estimator.timestamp.unwrap_or_default() >= threshold {
+            self.foc_estimator = FoCEstimator::new(0.0);
+            self.frequency = 0.0
+        }
+    }
+
+    pub fn set_value(&mut self, value: f64, timestamp: f64) -> bool {
+        if (value - self.value).abs() > 1e-3 {
             self.value = value;
-            self.frequency = self.foc_estimator.update();
+            self.frequency = self.foc_estimator.update(timestamp);
+
+            true
+        } else {
+            false
         }
     }
 
@@ -61,6 +74,12 @@ impl Leaf {
         self.indices.insert(index);
     }
 
+    pub fn add_dependencies(&mut self, indices: &[usize]) {
+        for index in indices {
+            self.indices.insert(*index);
+        }
+    }
+
     pub fn clear_dependencies(&mut self) {
         self.indices.clear();
     }
@@ -70,13 +89,13 @@ impl Leaf {
     }
 }
 
-pub fn update(foliage: &Foliage, rc_queue: &RcQueue, index: u16, value: f64) {
+pub fn update(foliage: &Foliage, rc_queue: &RcQueue, index: u16, value: f64, timestamp: f64) {
     let mut foliage_guard = foliage.lock().unwrap();
     let mut queue_guard = rc_queue.lock().unwrap();
 
-    foliage_guard[index as usize].set_value(value);
-
-    for rc_index in &foliage_guard[index as usize].indices {
-        queue_guard.insert(*rc_index);
+    if foliage_guard[index as usize].set_value(value, timestamp) {
+        for rc_index in &foliage_guard[index as usize].indices {
+            queue_guard.insert(*rc_index);
+        }
     }
 }

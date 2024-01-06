@@ -1,9 +1,10 @@
-use rclrs::{Node, Publisher, QoSHistoryPolicy, RclrsError, Subscription, QOS_PROFILE_DEFAULT};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
-use std_msgs::msg::Float64;
+use std::time::{Duration, UNIX_EPOCH, SystemTime};
+
+use rclrs::{Node, Publisher, QoSHistoryPolicy, RclrsError, Subscription, QOS_PROFILE_DEFAULT};
+use std_msgs::msg::Float64MultiArray;
 
 use crate::circuit::leaf::{update, Foliage};
 use crate::circuit::reactive::RcQueue;
@@ -11,12 +12,16 @@ use crate::circuit::reactive::RcQueue;
 #[derive(Clone)]
 pub struct IpcReader {
     pub topic: String,
-    subscription: Arc<Subscription<Float64>>,
+    subscription: Arc<Subscription<Float64MultiArray>>,
 }
 
 pub struct IpcWriter {
+    publisher: Arc<Publisher<Float64MultiArray>>,
+}
+
+pub struct TimedIpcWriter {
     pub frequency: f64,
-    publisher: Arc<Publisher<Float64>>,
+    publisher: Arc<Publisher<Float64MultiArray>>,
     value: Arc<Mutex<f64>>,
     sender: Option<Sender<()>>,
     handle: Option<JoinHandle<()>>,
@@ -31,38 +36,52 @@ impl IpcReader {
         channel: &str,
         invert: bool,
     ) -> Result<Self, RclrsError> {
-        let mut prefix = "";
-        // TODO: Remove prefix, only send on one topic but invert for negated leaf
-        if invert {
-            prefix = "/not";
-        }
-
         let mut profile = QOS_PROFILE_DEFAULT;
         profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
 
-        let subscription = node.create_subscription(
-            &format!("{}{}", prefix, channel),
-            profile,
-            move |msg: Float64| {
-                let value = if invert { 1.0 - msg.data } else { msg.data };
+        let subscription = node.create_subscription(channel, profile, move |msg: Float64MultiArray| {
+            let value = if invert { 1.0 - msg.data[0] } else { msg.data[0] };
+            let timestamp = msg.data[1];
 
-                update(&foliage, &rc_queue, index, value);
-            },
-        )?;
+            update(&foliage, &rc_queue, index, value, timestamp);
+        })?;
 
         Ok(Self {
-            topic: format!("{}{}", prefix, channel),
+            topic: channel.to_owned(),
             subscription,
         })
     }
 }
 
 impl IpcWriter {
-    pub fn new(
-        node: &Node,
-        topic: &str,
-        frequency: f64,
-    ) -> Result<Self, RclrsError> {
+    pub fn new(node: &Node, topic: &str) -> Result<Self, RclrsError> {
+        let mut profile = QOS_PROFILE_DEFAULT;
+        profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
+
+        let publisher = Arc::new(node.create_publisher(topic, profile)?);
+
+        Ok(Self {
+            publisher,
+        })
+    }
+
+    pub fn write(&self, value: f64, timestamp: Option<f64>) {
+        let timestamp = if timestamp.is_none() {
+            SystemTime::now().duration_since(UNIX_EPOCH).expect("Acquiring UNIX timestamp failed!").as_secs_f64()
+        } else {
+            timestamp.unwrap()
+        };
+
+        let mut message = Float64MultiArray::default();
+        message.data = vec![value, timestamp];
+        
+        // Publish next value
+        let _ = self.publisher.publish(message);
+    }
+}
+
+impl TimedIpcWriter {
+    pub fn new(node: &Node, topic: &str, frequency: f64) -> Result<Self, RclrsError> {
         let mut profile = QOS_PROFILE_DEFAULT;
         profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
 
@@ -100,12 +119,15 @@ impl IpcWriter {
         let (sender, receiver) = mpsc::channel();
         self.sender = Some(sender);
 
-        let clock = Instant::now();
         self.handle = Some(spawn(move || loop {
+            let value = *thread_value.lock().unwrap();
+            let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).expect("Acquiring timestamp failed!").as_secs_f64();
+
+            let mut message = Float64MultiArray::default();
+            message.data = vec![value, timestamp];
+            
             // Publish next value
-            let _ = thread_publisher.publish(Float64 {
-                data: *thread_value.lock().unwrap(),
-            });
+            let _ = thread_publisher.publish(message);
 
             // Break if notified via channel or disconnected
             match receiver.recv_timeout(thread_timeout) {
@@ -131,7 +153,7 @@ impl IpcWriter {
     }
 }
 
-impl Drop for IpcWriter {
+impl Drop for TimedIpcWriter {
     fn drop(&mut self) {
         self.stop();
     }

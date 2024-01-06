@@ -72,7 +72,14 @@ pub fn create_boundaries(bin_size: f64, number_bins: usize) -> Vec<f64> {
     boundaries
 }
 
-pub fn frequency_adaptation(rc: &mut ReactiveCircuit, frequencies: &[f64], boundaries: &[f64]) {
+pub fn partitioning(frequencies: &[f64], boundaries: &[f64]) -> Vec<usize> {
+    flip(&pack(&binning(&frequencies, boundaries)))
+}
+
+pub fn frequency_adaptation(
+    rc: &mut ReactiveCircuit,
+    partitioning: &[usize],
+) -> i32 {
     // let mut indexed_frequencies_pairs: Vec<(usize, Leaf)> = vec![];
     // for (i, leaf) in foliage.lock().unwrap().iter().enumerate() {
     //     let position = indexed_frequencies_pairs.binary_search_by(|pair| {
@@ -117,13 +124,15 @@ pub fn frequency_adaptation(rc: &mut ReactiveCircuit, frequencies: &[f64], bound
     //     *step -= min_cluster;
     // }
 
-    let mut bins = flip(&pack(&binning(&frequencies, boundaries)));
-
-    for (index, cluster_step) in bins.iter_mut().enumerate() {
+    let mut number_of_adaptations = 0;
+    for (index, cluster_step) in partitioning.iter().enumerate() {
         if *cluster_step != 0 {
             rc.drop_leaf(index as u16, *cluster_step - 1);
+            number_of_adaptations += 1;
         }
     }
+
+    number_of_adaptations
 }
 
 #[cfg(test)]

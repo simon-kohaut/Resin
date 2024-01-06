@@ -62,10 +62,9 @@ fn randomized_rc(
     // let combinations = power_set(&(0..number_leafs).collect_vec());
     let combinations = random_set(number_leafs, number_models);
     for combination in combinations {
-        rc = rc + combination;
+        rc.add_leafs(combination);
     }
 
-    rc.set_dependencies(manager, None, vec![]);
     rc
 }
 
@@ -222,7 +221,7 @@ fn randomized_study(location: f64, bin_size: f64) {
             manager.foliage.lock().unwrap()[index as usize].name
         );
         let _ = manager.read(index as u16, &channel, false);
-        let _ = manager.write(&channel, *frequency);
+        let _ = manager.make_timed_writer(&channel, *frequency);
     }
 
     let mut inference_timestamps = vec![];
@@ -286,11 +285,9 @@ fn randomized_study(location: f64, bin_size: f64) {
     println!("Start adaptation");
     let before = Instant::now();
     // Adapt layers
-    frequency_adaptation(&mut rc, &true_frequencies, &boundaries);
+    // frequency_adaptation(&mut rc, &true_frequencies, &boundaries);
 
     // Update leaf dependencies
-    rc.clear_dependencies(&mut manager);
-    rc.set_dependencies(&mut manager, None, vec![]);
     rc.full_update(&manager.get_values());
     println!("#Adaptations in {}s", before.elapsed().as_secs_f64());
 
@@ -299,7 +296,7 @@ fn randomized_study(location: f64, bin_size: f64) {
     let mut values = vec![];
 
     let root = Arc::new(Mutex::new(rc));
-    let deploy = ReactiveCircuit::deploy(&root);
+    // let deploy = ReactiveCircuit::deploy(&root, &manager, None);
 
     println!("Loop deployed for {}s.", inference_time);
     let inference_clock = Instant::now();
@@ -314,7 +311,7 @@ fn randomized_study(location: f64, bin_size: f64) {
 
         let before = Instant::now();
         while let Some(rc_index) = queue_guard.pop_last() {
-            deploy[rc_index].lock().unwrap().update(&leaf_values);
+            // deploy[rc_index].lock().unwrap().update(&leaf_values);
         }
         let elapsed = before.elapsed().as_secs_f64();
         drop(queue_guard);
@@ -327,7 +324,7 @@ fn randomized_study(location: f64, bin_size: f64) {
     let root_depth = root.lock().unwrap().depth(None);
     let root_ops = root.lock().unwrap().counted_update(&manager.get_values());
     let graph_size = root.lock().unwrap().size();
-    println!("Adapted RC had value {root_value} with depth {root_depth} in {root_ops} operations using {graph_size} Bytes",);
+    println!("Adapted RC had value {root_value} with depth {root_depth} in {root_ops} operations using {graph_size} Bytes");
 
     println!("Export results.");
     let path = Path::new("output/data/adapted_inference_times.csv");

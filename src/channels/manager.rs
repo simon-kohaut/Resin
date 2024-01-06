@@ -1,12 +1,12 @@
 use lazy_static::lazy_static;
-use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use std::{
     collections::BTreeSet,
     collections::HashMap,
     sync::{Arc, Mutex},
 };
 
-use super::ipc::{IpcReader, IpcWriter};
+use super::ipc::{IpcReader, IpcWriter, TimedIpcWriter};
 use crate::circuit::{
     leaf::{Foliage, Leaf},
     reactive::RcQueue,
@@ -26,7 +26,7 @@ pub struct Manager {
     pub foliage: Foliage,
     pub rc_queue: RcQueue,
     readers: Vec<IpcReader>,
-    writers: Vec<IpcWriter>,
+    writers: Vec<TimedIpcWriter>,
 }
 
 impl Manager {
@@ -49,6 +49,14 @@ impl Manager {
             .unwrap()
             .push(Leaf::new(value, frequency, name));
         self.foliage.lock().unwrap().len() as u16 - 1
+    }
+
+    pub fn clear_dependencies(&mut self) {
+        for leaf in self.foliage.lock().unwrap().iter_mut() {
+            leaf.clear_dependencies();
+        }
+
+        self.rc_queue.lock().unwrap().clear();
     }
 
     pub fn spin(self) {
@@ -75,12 +83,12 @@ impl Manager {
         Ok(())
     }
 
-    pub fn write(
-        &mut self,
-        channel: &str,
-        frequency: f64,
-    ) -> Result<Arc<Mutex<f64>>, RclrsError> {
-        let mut writer = IpcWriter::new(&NODE.lock().unwrap(), channel, frequency)?;
+    pub fn make_writer(&mut self, channel: &str) -> Result<IpcWriter, RclrsError> {
+        IpcWriter::new(&NODE.lock().unwrap(), channel)
+    }
+
+    pub fn make_timed_writer(&mut self, channel: &str, frequency: f64) -> Result<Arc<Mutex<f64>>, RclrsError> {
+        let mut writer = TimedIpcWriter::new(&NODE.lock().unwrap(), channel, frequency)?;
         let value = writer.get_value_access();
 
         writer.start();
@@ -89,8 +97,22 @@ impl Manager {
         Ok(value)
     }
 
-    pub fn stop_writers(&mut self) {
+    pub fn stop_timed_writers(&mut self) {
         self.writers.clear();
+    }
+
+    pub fn prune_frequencies(&self, threshold: f64, timestamp: Option<f64>) {
+        let mut foliage_guard = self.foliage.lock().unwrap();
+
+        let timestamp = if timestamp.is_none() {
+            SystemTime::now().duration_since(UNIX_EPOCH).expect("Acquiring UNIX timestamp failed!").as_secs_f64()
+        } else {
+            timestamp.unwrap()
+        };
+
+        for leaf in &mut foliage_guard.iter_mut() {
+            leaf.prune_frequency(timestamp, threshold);
+        }
     }
 
     pub fn get_frequencies(&self) -> Vec<f64> {
@@ -135,7 +157,7 @@ impl Manager {
 
 impl Drop for Manager {
     fn drop(&mut self) {
-        self.stop_writers();
+        self.stop_timed_writers();
     }
 }
 
@@ -151,7 +173,7 @@ mod tests {
         // Create a leaf and connect it with a reader and writer
         let receiver = manager.create_leaf("tester_1", 0.0, 0.0);
         manager.read(receiver, "/test_1", false)?;
-        let value = manager.write("/test_1", 1.0)?;
+        let value = manager.make_timed_writer("/test_1", 1.0)?;
         *value.lock().unwrap() = 1.0;
 
         // Wait for long enough that we must have a result
@@ -177,7 +199,7 @@ mod tests {
         // Create a leaf and connect it with a reader and writer
         let receiver = manager.create_leaf("tester_2", 0.0, 0.0);
         manager.read(receiver, "/test_2", false)?;
-        let value = manager.write("/test_2", 1.0)?;
+        let value = manager.make_timed_writer("/test_2", 1.0)?;
         *value.lock().unwrap() = 1.0;
 
         // Node should have 1 subscriber and 1 publisher

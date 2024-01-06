@@ -1,12 +1,11 @@
 use crate::tracking::Kalman;
 use crate::tracking::LinearModel;
 use ndarray::array;
-use std::time::Instant;
 
 #[derive(Clone)]
 pub struct FoCEstimator {
-    kalman: Kalman,
-    clock: Instant,
+    pub kalman: Kalman,
+    pub timestamp: Option<f64>
 }
 
 impl FoCEstimator {
@@ -28,24 +27,36 @@ impl FoCEstimator {
                 &sensor_noise,
                 &model,
             ),
-            clock: Instant::now(),
+            timestamp: None
         }
     }
 
-    pub fn update(&mut self) -> f64 {
-        let elapsed = self.clock.elapsed().as_secs_f64();
+    pub fn update(&mut self, timestamp: f64) -> f64 {
+        // Very first update, do not estimate
+        if self.timestamp.is_none() {
+            self.timestamp = Some(timestamp);
+            return 0.0;
+        }
 
+        // Get elapsed time since last call and set new timestamp
+        let elapsed = timestamp - self.timestamp.unwrap();
+        self.timestamp = Some(timestamp);
+
+        // Predict-correct cycle
         self.kalman.predict(elapsed, None);
         self.kalman.update(&array![elapsed]);
-        self.clock = Instant::now();
 
+        // Ensure that we never estimate a negative time between updates
+        self.kalman.estimate[0] = self.kalman.estimate[0].clamp(0.0001, 100.0);
+
+        // Return frequency as inverse of estimated time delta
         1.0 / self.kalman.estimate[0]
     }
 
     pub fn update_elapsed(&mut self, elapsed: f64) -> f64 {
         self.kalman.predict(elapsed, None);
         self.kalman.update(&array![elapsed]);
-        self.clock = Instant::now();
+        self.kalman.estimate[0] = self.kalman.estimate[0].clamp(0.0001, 1000.0);
 
         1.0 / self.kalman.estimate[0]
     }
