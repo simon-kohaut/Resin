@@ -83,7 +83,7 @@ mod tests {
         // Test settings
         let low = 0.0;
         let high = 30.0;
-        let number_samples = 1;
+        let number_samples = 1000;
         let number_measurements = 20;
         let number_repetitions = 60;
         let bin_sizes = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0];

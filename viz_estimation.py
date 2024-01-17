@@ -9,12 +9,14 @@ fig, axes = plt.subplots(2, 1)
 colors = [sns.color_palette("Paired", 10)[1], sns.color_palette("Paired", 10)[7], sns.color_palette("Paired", 10)[9]] 
 
 results["Error"] = abs(results["True"] - results["Estimated"])
-sns.lineplot(ax=axes[0], data=results[results["BinSize"] == 1], x="Measurement", y="Estimated", label="Estimated", color=colors[0]);
-sns.lineplot(ax=axes[0], data=results[results["BinSize"] == 1], x="Measurement", y="True", label="True", color=colors[1]);
+example_data = results[results["BinSize"] == 1]
+example_data = example_data[example_data["Estimator"] == 3]
+sns.lineplot(ax=axes[0], data=example_data, x="Measurement", y="Estimated", label="Estimated", color=colors[0]);
+sns.lineplot(ax=axes[0], data=example_data, x="Measurement", y="True", label="True", color=colors[1]);
 sns.despine(top=True, right=True)
 
-axes[0].set_xlabel("#Measurements", fontsize=15)
-axes[0].set_ylabel("FoC Tracking", fontsize=15)
+axes[0].set_xlabel("#Measurements", fontsize=15, fontname="Times New Roman")
+axes[0].set_ylabel("FoC / Hz", fontsize=15, fontname="Times New Roman")
 axes[0].tick_params(labelsize=10)
 # axes[0].tick_params(
 #     axis='x',          # changes apply to the x-axis
@@ -33,8 +35,8 @@ results["ErrorCluster"] = abs(results["TrueCluster"] - results["EstimatedCluster
 sns.barplot(ax=axes[1], data=results, x="BinSize", y="ErrorCluster", color=colors[2]);
 
 axes[1].tick_params(labelsize=10)
-axes[1].set_xlabel("Partitioning", fontsize=15)
-axes[1].set_ylabel("Partition MAE", fontsize=15)
+axes[1].set_xlabel("Partitioning", fontsize=15, fontname="Times New Roman")
+axes[1].set_ylabel("Partition MAE", fontsize=15, fontname="Times New Roman")
 axes[1].tick_params(labelsize=10)
 axes[1].set_xticks(ticks=range(10), labels=[f"{h}Hz" for h in range(1, 11)])
 

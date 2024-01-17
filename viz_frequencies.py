@@ -7,8 +7,8 @@ plot = sns.displot(data=results, hue="Location", x="Frequency", clip=(0, 1000), 
 plt.gcf().tight_layout()
 sns.despine(top=True, right=True)
 
-plot.set_xlabels("Frequency / Hz", fontsize=20)
-plot.set_ylabels("Density", fontsize=20)
+plot.set_xlabels("Frequency / Hz", fontsize=20, fontname="Times New Roman")
+plot.set_ylabels("Density", fontsize=20, fontname="Times New Roman")
 plot.tick_params(labelsize=15)
 
 plot.savefig("output/plots/frequencies_plot.pdf", bbox_inches='tight')

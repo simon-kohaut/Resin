@@ -15,7 +15,7 @@ colors = [sns.color_palette("Paired", 10)[1], sns.color_palette("Paired", 10)[7]
 adapted_results["Speedup"] = original_results["Runtime"].mean() / adapted_results["Runtime"]
 sns.barplot(ax=axes[0], data=adapted_results, x="BinSize", y="Speedup", hue="Location", palette=colors, errorbar=None)
 
-axes[0].set_ylabel("Speedup", fontsize=15)
+axes[0].set_ylabel("Speedup", fontsize=15, fontname="Times New Roman")
 axes[0].tick_params(labelsize=10)
 axes[0].set_yscale("log")
 axes[0].tick_params(
@@ -32,7 +32,7 @@ axes[0].get_legend().remove()
 adapted_results["SizeIncrease"] = adapted_results["Size"] / original_results["Size"].mean()
 sns.barplot(ax=axes[1], data=adapted_results, x="BinSize", y="SizeIncrease", hue="Location", palette=colors, errorbar=None)
 
-axes[1].set_ylabel("Mem. Ratio", fontsize=15)
+axes[1].set_ylabel("Mem. Ratio", fontsize=15, fontname="Times New Roman")
 axes[1].tick_params(labelsize=10)
 axes[1].tick_params(
     axis='x',          # changes apply to the x-axis
@@ -50,8 +50,8 @@ axes[1].legend(h, labels, title="FoC PDF")
 ###################
 # Depth
 sns.barplot(ax=axes[2], data=adapted_results, x="BinSize", y="Depth", hue="Location", palette=colors, errorbar=None)
-axes[2].set_xlabel("Partitioning", fontsize=15)
-axes[2].set_ylabel("Depth", fontsize=15)
+axes[2].set_xlabel("Partitioning", fontsize=15, fontname="Times New Roman")
+axes[2].set_ylabel("Depth", fontsize=15, fontname="Times New Roman")
 axes[2].set_ylim([1, 10])
 axes[2].set_yticks(range(1, 11, 3))
 axes[2].tick_params(labelsize=10)
