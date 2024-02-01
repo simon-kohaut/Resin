@@ -1,4 +1,3 @@
-use std::rc;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -410,10 +409,6 @@ mod tests {
                 Some(t) => simulation_time = t,
                 None => break,
             }
-
-            // if simulation_time > 60.0 {
-            //     break;
-            // }
 
             // Get data for this timestep
             let mask = timestamp_series.equal(simulation_time).unwrap();
