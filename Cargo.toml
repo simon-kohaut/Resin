@@ -16,7 +16,7 @@ rustflags = ["-C", "target-cpu=native"]
 opt-level = 0
 
 [profile.test]
-opt-level = 3
+opt-level = 0
 lto = "fat"
 codegen-units = 1
 panic = "abort"
@@ -28,6 +28,7 @@ codegen-units = 1
 panic = "abort"
 
 [dependencies]
+petgraph = "*"
 rclrs = "*"
 std_msgs = "*"
 plotly = "*"
