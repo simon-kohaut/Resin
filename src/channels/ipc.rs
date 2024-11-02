@@ -1,13 +1,15 @@
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, UNIX_EPOCH, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rclrs::{Node, Publisher, QoSHistoryPolicy, RclrsError, Subscription, QOS_PROFILE_DEFAULT};
 use std_msgs::msg::Float64MultiArray;
 
 use crate::circuit::leaf::{update, Foliage};
 use crate::circuit::reactive::RcQueue;
+
+use super::Vector;
 
 #[derive(Clone)]
 pub struct IpcReader {
@@ -29,7 +31,7 @@ pub struct TimedIpcWriter {
 
 impl IpcReader {
     pub fn new(
-        node: &mut Node,
+        node: Arc<Node>,
         foliage: Foliage,
         rc_queue: RcQueue,
         index: u16,
@@ -39,12 +41,13 @@ impl IpcReader {
         let mut profile = QOS_PROFILE_DEFAULT;
         profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
 
-        let subscription = node.create_subscription(channel, profile, move |msg: Float64MultiArray| {
-            let value = if invert { 1.0 - msg.data[0] } else { msg.data[0] };
-            let timestamp = msg.data[1];
+        let subscription =
+            node.create_subscription(channel, profile, move |msg: Float64MultiArray| {
+                let data = Vector::from_iter(msg.data.clone().into_iter().skip(1));
+                let value = if invert { 1.0 - data } else { data };
 
-            update(&foliage, &rc_queue, index, value, timestamp);
-        })?;
+                update(&foliage, &rc_queue, index, value, msg.data[0]);
+            })?;
 
         Ok(Self {
             topic: channel.to_owned(),
@@ -54,39 +57,40 @@ impl IpcReader {
 }
 
 impl IpcWriter {
-    pub fn new(node: &Node, topic: &str) -> Result<Self, RclrsError> {
+    pub fn new(node: Arc<Node>, topic: &str) -> Result<Self, RclrsError> {
         let mut profile = QOS_PROFILE_DEFAULT;
         profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
 
-        let publisher = Arc::new(node.create_publisher(topic, profile)?);
+        let publisher = node.create_publisher(topic, profile)?;
 
-        Ok(Self {
-            publisher,
-        })
+        Ok(Self { publisher })
     }
 
-    pub fn write(&self, value: f64, timestamp: Option<f64>) {
+    pub fn write(&self, value: Vector, timestamp: Option<f64>) {
         let timestamp = if timestamp.is_none() {
-            SystemTime::now().duration_since(UNIX_EPOCH).expect("Acquiring UNIX timestamp failed!").as_secs_f64()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Acquiring UNIX timestamp failed!")
+                .as_secs_f64()
         } else {
             timestamp.unwrap()
         };
 
         let mut message = Float64MultiArray::default();
-        message.data = vec![value, timestamp];
-        
+        message.data = vec![timestamp];
+        message.data.append(&mut value.to_vec());
+
         // Publish next value
         let _ = self.publisher.publish(message);
     }
 }
 
 impl TimedIpcWriter {
-    pub fn new(node: &Node, topic: &str, frequency: f64) -> Result<Self, RclrsError> {
+    pub fn new(node: Arc<Node>, topic: &str, frequency: f64) -> Result<Self, RclrsError> {
         let mut profile = QOS_PROFILE_DEFAULT;
         profile.history = QoSHistoryPolicy::KeepLast { depth: 1 };
 
-        let publisher = Arc::new(node.create_publisher(topic, profile)?);
-
+        let publisher = node.create_publisher(topic, profile)?;
         let value = Arc::new(Mutex::new(0.0));
 
         Ok(Self {
@@ -121,11 +125,14 @@ impl TimedIpcWriter {
 
         self.handle = Some(spawn(move || loop {
             let value = *thread_value.lock().unwrap();
-            let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).expect("Acquiring timestamp failed!").as_secs_f64();
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Acquiring timestamp failed!")
+                .as_secs_f64();
 
             let mut message = Float64MultiArray::default();
             message.data = vec![value, timestamp];
-            
+
             // Publish next value
             let _ = thread_publisher.publish(message);
 

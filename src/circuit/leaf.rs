@@ -1,14 +1,14 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use ndarray_linalg::Scalar;
-
 use crate::channels::FoCEstimator;
 use crate::circuit::reactive::RcQueue;
 
+use super::Vector;
+
 #[derive(Clone)]
 pub struct Leaf {
-    value: f64,
+    value: Vector,
     frequency: f64,
     cluster: i32,
     foc_estimator: FoCEstimator,
@@ -19,9 +19,9 @@ pub struct Leaf {
 pub type Foliage = Arc<Mutex<Vec<Leaf>>>;
 
 impl Leaf {
-    pub fn new(value: f64, frequency: f64, name: &str) -> Self {
+    pub fn new(value: Vector, frequency: f64, name: &str) -> Self {
         Self {
-            value,
+            value: value.clone(),
             frequency,
             cluster: 0,
             foc_estimator: FoCEstimator::new(frequency),
@@ -30,20 +30,24 @@ impl Leaf {
         }
     }
 
-    pub fn get_value(&self) -> f64 {
-        self.value
+    pub fn get_value(&self) -> Vector {
+        self.value.clone()
     }
 
     pub fn prune_frequency(&mut self, timestamp: f64, threshold: f64) {
         if timestamp - self.foc_estimator.timestamp.unwrap_or_default() >= threshold {
-            self.foc_estimator = FoCEstimator::new(0.0);
-            self.frequency = 0.0
+            self.foc_estimator.reset();
+            self.frequency = 0.0;
         }
     }
 
-    pub fn set_value(&mut self, value: f64, timestamp: f64) -> bool {
-        if (value - self.value).abs() > 1e-3 {
-            self.value = value;
+    pub fn set_value(&mut self, value: Vector, timestamp: f64) -> bool {
+        let difference = &value - &self.value;
+
+        // Check if any difference in the value vector is larger than threshold
+        // TODO: Make threshold leaf parameter or argument
+        if difference.fold(false, |acc, value| acc | (value.abs() > 1e-3)) {
+            self.value = value.clone();
             self.frequency = self.foc_estimator.update(timestamp);
 
             true
@@ -89,7 +93,7 @@ impl Leaf {
     }
 }
 
-pub fn update(foliage: &Foliage, rc_queue: &RcQueue, index: u16, value: f64, timestamp: f64) {
+pub fn update(foliage: &Foliage, rc_queue: &RcQueue, index: u16, value: Vector, timestamp: f64) {
     let mut foliage_guard = foliage.lock().unwrap();
     let mut queue_guard = rc_queue.lock().unwrap();
 

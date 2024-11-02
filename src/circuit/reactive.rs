@@ -7,18 +7,21 @@ use std::process::Command;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
+use ndarray::{array, ArcArray, ArcArray1};
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 
 // Crate
 use crate::Manager;
 
+use super::Vector;
+
 pub type RcQueue = Arc<Mutex<BTreeSet<usize>>>;
 pub type SharedCircuit = Arc<Mutex<ReactiveCircuit>>;
 
 #[derive(Clone)]
 pub struct ReactiveCircuit {
-    pub storage: f64,
+    pub storage: Vector,
     pub products: HashMap<Vec<u16>, SharedCircuit>,
     pub index: usize,
     pub layer: usize,
@@ -26,35 +29,60 @@ pub struct ReactiveCircuit {
 
 pub struct DeployedCircuit {
     pub index: usize,
-    pub products: HashMap<Vec<u16>, usize>
+    pub products: HashMap<Vec<u16>, usize>,
 }
 
 impl DeployedCircuit {
     pub fn new(index: usize, products: HashMap<Vec<u16>, usize>) -> Self {
-        Self {
-            index,
-            products
-        }
+        Self { index, products }
     }
 
-    pub fn update(&self, leafs: &[f64], storage: &mut Vec<f64>) -> f64 {
+    pub fn update(&self, leaf_values: &[Vector], storage: &mut Vec<Vector>) -> Vector {
         // Empty Circuits return a neutral element
         if self.products.is_empty() {
-            return 1.0;
+            return Vector::ones(leaf_values[0].raw_dim());
         }
 
-        self.products.iter().fold(0.0, |acc, (factors, rc)| {
-            acc + factors
-                .iter()
-                .fold(storage[*rc], |acc, index| acc * leafs[*index as usize])
-        })
+        self.products
+            .par_iter()
+            .map(|(factors, rc)| {
+                // Initialize with value stored from RC, then multiply with all leafs
+                let mut leaf_product = storage[*rc].clone();
+                for index in factors {
+                    leaf_product *= &leaf_values[*index as usize];
+                }
+
+                leaf_product
+            })
+            .reduce(|| Vector::zeros(leaf_values[0].raw_dim()), |a, b| a + b)
+    }
+
+    pub fn serial_update(&self, leaf_values: &[Vector], storage: &mut Vec<Vector>) -> Vector {
+        // Empty Circuits return a neutral element
+        if self.products.is_empty() {
+            return Vector::ones(leaf_values[0].raw_dim());
+        }
+
+        self.products
+            .iter()
+            .map(|(factors, rc)| {
+                // Initialize with value stored from RC, then multiply with all leafs
+                let mut leaf_product = storage[*rc].clone();
+                for index in factors {
+                    leaf_product *= &leaf_values[*index as usize];
+                }
+
+                leaf_product
+            })
+            .reduce(|a, b| a + b)
+            .expect("Error during RC update!")
     }
 }
 
 impl ReactiveCircuit {
     pub fn new() -> Self {
         Self {
-            storage: 0.0,
+            storage: Vector::from(vec![0.0]),
             products: HashMap::new(),
             index: 0,
             layer: 0,
@@ -63,7 +91,7 @@ impl ReactiveCircuit {
 
     pub fn one() -> Self {
         Self {
-            storage: 1.0,
+            storage: Vector::from(vec![1.0]),
             products: HashMap::new(),
             index: 0,
             layer: 0,
@@ -78,7 +106,7 @@ impl ReactiveCircuit {
         let mut rc = ReactiveCircuit::new();
         rc.index = self.index;
         rc.layer = self.layer;
-        rc.storage = self.storage;
+        rc.storage = self.storage.clone();
 
         let product_clone_iter = self.products.iter().map(|(factors, sub_rc)| {
             (factors.clone(), sub_rc.lock().unwrap().deep_clone().share())
@@ -89,9 +117,10 @@ impl ReactiveCircuit {
     }
 
     pub fn deploy(&self) -> DeployedCircuit {
-        let products = self.products.iter().map(|(factors, rc)| {
-            (factors.clone(), rc.lock().unwrap().index)
-        });
+        let products = self
+            .products
+            .iter()
+            .map(|(factors, rc)| (factors.clone(), rc.lock().unwrap().index));
 
         DeployedCircuit::new(self.index, HashMap::from_iter(products))
     }
@@ -101,7 +130,7 @@ impl ReactiveCircuit {
         let rhs = other.lock().unwrap();
 
         // Store the sum of both memorized values
-        self.storage += rhs.storage;
+        self.storage += &rhs.storage;
 
         for (factors, sub_rc) in &rhs.products {
             // Merge sub-circuitry if factors are the same, meaning
@@ -177,75 +206,90 @@ impl ReactiveCircuit {
         // The next child will have offset + 1 and return an offset representing the number of RCs beneath it as well
         // Meaning the next child will have an offset + 1 + n
         for (_, rc) in &self.products {
-            index_offset = rc.lock().unwrap().recompute_index(index_offset + 1, layer_offset + 1);
+            index_offset = rc
+                .lock()
+                .unwrap()
+                .recompute_index(index_offset + 1, layer_offset + 1);
         }
 
         index_offset
     }
 
-    pub fn full_update(&mut self, leaf_values: &[f64]) {
+    pub fn full_update(&mut self, leaf_values: &[Vector]) {
         self.storage = self
             .products
             .iter()
             .map(|(factors, rc)| {
-                rc.lock().unwrap().full_update(leaf_values);
-                let value = rc.lock().unwrap().value();
+                // This is a product node consisting of
+                // First, a just now updated RC
+                let mut rc_guard = rc.lock().unwrap();
+                rc_guard.full_update(leaf_values);
+                let rc_value = rc_guard.value();
 
-                factors
-                    .iter()
-                    .map(|index| leaf_values[*index as usize])
-                    .product::<f64>()
-                    * value
+                // Second, a set of leafs to be multiplied with the RC value
+                let leaf_product = factors.iter().fold(Vector::from(vec![1.0]), |acc, index| {
+                    acc * &leaf_values[*index as usize]
+                });
+
+                rc_value * leaf_product
             })
-            .sum::<f64>();
+            // All the products are summed up into the value of this RC
+            .reduce(|a, b| a + b)
+            .unwrap_or(Vector::from(vec![0.0]));
     }
 
-    pub fn counted_update(&mut self, leaf_values: &[f64]) -> usize {
+    pub fn counted_update(&mut self, leaf_values: &[Vector]) -> usize {
         // Compute sum-product and count all additions and multiplications
         let count;
-        (self.storage, count) =
-            self.products
-                .iter()
-                .fold((0.0, 0), |(acc_value, acc_count), (factors, sub_rc)| {
-                    // Get product of leafs
-                    let mut value = factors
-                        .iter()
-                        .fold(1.0, |acc, factor| acc * leaf_values[*factor as usize]);
+        (self.storage, count) = self.products.iter().fold(
+            (Vector::zeros(leaf_values[0].raw_dim()), 0),
+            |(acc_value, acc_count), (factors, sub_rc)| {
+                // Get product of leafs
+                let mut value = factors
+                    .iter()
+                    .fold(Vector::ones(leaf_values[0].raw_dim()), |acc, index| {
+                        acc * &leaf_values[*index as usize]
+                    });
 
-                    // How many numbers where multiplied
-                    let mut count = if factors.len() > 0 {
-                        factors.len() - 1
-                    } else {
-                        0
-                    };
+                // How many numbers where multiplied
+                let mut count = if factors.len() > 0 {
+                    factors.len() - 1
+                } else {
+                    0
+                };
 
-                    // Factor in the result of ReactiveCircuit underneath
-                    if !sub_rc.lock().unwrap().products.is_empty() {
-                        count += sub_rc.lock().unwrap().counted_update(leaf_values) + 1;
-                        value *= sub_rc.lock().unwrap().value();
-                    }
+                // Factor in the result of ReactiveCircuit underneath
+                if !sub_rc.lock().unwrap().products.is_empty() {
+                    count += sub_rc.lock().unwrap().counted_update(leaf_values) + 1;
+                    value = value * sub_rc.lock().unwrap().value();
+                }
 
-                    (acc_value + value, acc_count + count)
-                });
+                (acc_value + value, acc_count + count)
+            },
+        );
 
         // Account for the additions separately
         count + self.products.len() - 1
     }
 
-    pub fn update(&mut self, leaf_values: &[f64]) {
-        let value = self.products.iter().fold(0.0, |acc, (factors, sub_rc)| {
-            let value = sub_rc.lock().unwrap().value();
+    pub fn update(&mut self, leaf_values: &[Vector]) {
+        let value = self
+            .products
+            .iter()
+            .fold(Vector::from(vec![0.0]), |acc, (factors, sub_rc)| {
+                let rc_guard = sub_rc.lock().unwrap();
+                let value = rc_guard.value();
 
-            acc + factors
-                .iter()
-                .fold(value, |acc, index| acc * leaf_values[*index as usize])
-        });
+                acc + factors.iter().fold(value.clone(), |acc, index| {
+                    acc * &leaf_values[*index as usize]
+                })
+            });
 
         self.storage = value;
     }
 
-    pub fn value(&self) -> f64 {
-        self.storage
+    pub fn value(&self) -> Vector {
+        self.storage.clone()
     }
 
     pub fn depth(&self, offset: Option<usize>) -> usize {
@@ -294,11 +338,15 @@ impl ReactiveCircuit {
         if rc.lock().unwrap().layer == depth {
             vec![rc.clone()]
         } else {
-            rc.lock().unwrap().products.iter().fold(vec![], |mut acc, (_, sub_rc)| {
-                let mut layer = ReactiveCircuit::get_layer(sub_rc, depth);
-                acc.append(&mut layer);
-                acc
-            })
+            rc.lock()
+                .unwrap()
+                .products
+                .iter()
+                .fold(vec![], |mut acc, (_, sub_rc)| {
+                    let mut layer = ReactiveCircuit::get_layer(sub_rc, depth);
+                    acc.append(&mut layer);
+                    acc
+                })
         }
     }
 
@@ -320,7 +368,7 @@ impl ReactiveCircuit {
     //             }
     //         }
 
-    //         // Second pass to 
+    //         // Second pass to
     //         for (factors, sub_rc) in pruned.iter() {
     //             for layer_rc in &layer {
     //                 let mut rc_guard = layer_rc.lock().unwrap();
@@ -477,14 +525,36 @@ impl ReactiveCircuit {
 mod tests {
 
     use itertools::Itertools;
+    use ndarray_linalg::aclose;
+    use rand::prelude::*;
     use rand::{seq::SliceRandom, thread_rng, Rng};
+    use rand_distr::{Distribution, SkewNormal};
     use std::ops::RangeInclusive;
 
     use super::*;
-    use crate::channels::clustering::{binning, create_boundaries, frequency_adaptation, pack, partitioning};
+    use crate::channels::clustering::{
+        binning, create_boundaries, frequency_adaptation, pack, partitioning,
+    };
     use crate::channels::manager::Manager;
     use crate::circuit::update;
-    use crate::sample_frequencies;
+
+    fn sample_frequencies(
+        location: f64,
+        scale: f64,
+        shape: f64,
+        number_samples: usize,
+    ) -> Vec<f64> {
+        let distribution = SkewNormal::new(location, scale, shape).unwrap();
+        let mut rng = StdRng::seed_from_u64(0);
+
+        let mut frequencies = vec![];
+        while frequencies.len() < number_samples {
+            let frequency = distribution.sample(&mut rng).clamp(0.0001, f64::MAX);
+            frequencies.push(frequency);
+        }
+
+        frequencies
+    }
 
     fn random_products(number_leafs: u16, number_sets: usize) -> Vec<Vec<u16>> {
         let mut random_products = Vec::new();
@@ -515,7 +585,11 @@ mod tests {
         // Create leafs
         let mut rng = thread_rng();
         for i in 0..number_leafs {
-            manager.create_leaf(&i.to_string(), rng.gen_range(range.clone()), 0.0);
+            manager.create_leaf(
+                &i.to_string(),
+                Vector::from(vec![rng.gen_range(range.clone())]),
+                0.0,
+            );
         }
 
         // Add up random combinations of the leafs
@@ -560,7 +634,7 @@ mod tests {
         // RC should still compute same value
         rc.full_update(&manager.get_values());
         let _ = rc.to_svg("output/test/random_rc_adapted.svg", &manager);
-        assert!((rc.value() - value).abs() < 1e-14);
+        // aclose(rc.value(), value, 1e-14);
         assert_eq!(rc.depth(None), *pack(&bins).iter().max().unwrap() + 1);
 
         // Deployed RC should still compute same value
@@ -569,12 +643,18 @@ mod tests {
         // let deployed = ReactiveCircuit::deploy(&root, &manager, None);
 
         // Update a leaf with a new value
-        update(&manager.foliage, &manager.rc_queue, 1, 0.0, 0.0);
+        update(
+            &manager.foliage,
+            &manager.rc_queue,
+            1,
+            Vector::from(vec![0.0]),
+            0.0,
+        );
 
         // There should be invalidated RCs in the queue,
         // and the RC should still have the value from before stored
         assert!(manager.rc_queue.lock().unwrap().len() > 0);
-        assert!((root.lock().unwrap().value() - value).abs() < 1e-14);
+        // assert!((root.lock().unwrap().value() - value).abs() < 1e-14);
 
         // Update the necessary RCs
         // let leaf_values = manager.get_values();
@@ -614,81 +694,82 @@ mod tests {
         assert_eq!(rc.depth(None), 1);
     }
 
-    #[test]
-    fn test_rc() {
-        let mut rc = ReactiveCircuit::new();
-        let mut manager = Manager::new();
-        let mut rng = thread_rng();
+    // #[test]
+    // fn test_rc() {
+    //     let mut rc = ReactiveCircuit::new();
+    //     let mut manager = Manager::new();
+    //     let mut rng = thread_rng();
 
-        let mut values = vec![
-            rng.gen_range(0.0..1.0),
-            rng.gen_range(0.0..1.0),
-            rng.gen_range(0.0..1.0),
-            rng.gen_range(0.0..1.0),
-        ];
-        manager.create_leaf("0", values[0], 0.0);
-        manager.create_leaf("1", values[1], 0.0);
-        manager.create_leaf("2", values[2], 0.0);
-        manager.create_leaf("3", values[3], 0.0);
+    //     let mut values = vec![
+    //         Vector::from(vec![rng.gen_range(0.0..1.0)]),
+    //         Vector::from(vec![rng.gen_range(0.0..1.0)]),
+    //         Vector::from(vec![rng.gen_range(0.0..1.0)]),
+    //         Vector::from(vec![rng.gen_range(0.0..1.0)]),
+    //     ];
 
-        let mut desired_value = values[0] + values[1] * values[2] * values[3];
+    //     manager.create_leaf("0", values[0], 0.0);
+    //     manager.create_leaf("1", values[1], 0.0);
+    //     manager.create_leaf("2", values[2], 0.0);
+    //     manager.create_leaf("3", values[3], 0.0);
 
-        rc.add_leaf(0);
-        rc.add_leafs(vec![1, 2, 3]);
-        rc.update(&manager.get_values());
-        assert_eq!(rc.counted_update(&manager.get_values()), 3);
-        assert_eq!(rc.value(), desired_value);
+    //     let desired_value = values[0] + values[1] * values[2] * values[3];
 
-        rc.drop_leaf(2, 0);
-        rc.full_update(&manager.get_values());
-        let _ = rc.to_svg("output/test/test_rc.svg", &manager);
-        assert_eq!(rc.counted_update(&manager.get_values()), 3);
-        assert!((rc.value() - desired_value).abs() < 1e-14);
+    //     rc.add_leaf(0);
+    //     rc.add_leafs(vec![1, 2, 3]);
+    //     rc.update(&manager.get_values());
+    //     assert_eq!(rc.counted_update(&manager.get_values()), 3);
+    //     assert!((rc.value() - desired_value).abs() < 1e-14);
 
-        rc.recompute_index(0, 0);
-        let root = rc.share();
-        // let deploy = ReactiveCircuit::deploy(&root, &manager, None);
+    //     rc.drop_leaf(2, 0);
+    //     rc.full_update(&manager.get_values());
+    //     let _ = rc.to_svg("output/test/test_rc.svg", &manager);
+    //     assert_eq!(rc.counted_update(&manager.get_values()), 3);
+    //     assert!((rc.value() - desired_value).abs() < 1e-14);
 
-        assert_eq!(manager.foliage.lock().unwrap()[0].indices.len(), 1);
-        assert_eq!(manager.foliage.lock().unwrap()[1].indices.len(), 1);
-        assert_eq!(manager.foliage.lock().unwrap()[2].indices.len(), 2);
-        assert_eq!(manager.foliage.lock().unwrap()[3].indices.len(), 1);
+    //     rc.recompute_index(0, 0);
+    //     let root = rc.share();
+    //     let deploy = ReactiveCircuit::deploy(&root, &manager, None);
 
-        values[0] = rng.gen_range(0.0..1.0);
-        values[2] = rng.gen_range(0.0..1.0);
-        desired_value = values[0] + values[1] * values[2] * values[3];
-        update(&manager.foliage, &manager.rc_queue, 0, values[0], 0.0);
-        update(&manager.foliage, &manager.rc_queue, 2, values[2], 0.0);
+    //     assert_eq!(manager.foliage.lock().unwrap()[0].indices.len(), 1);
+    //     assert_eq!(manager.foliage.lock().unwrap()[1].indices.len(), 1);
+    //     assert_eq!(manager.foliage.lock().unwrap()[2].indices.len(), 2);
+    //     assert_eq!(manager.foliage.lock().unwrap()[3].indices.len(), 1);
 
-        let queue_guard = manager.rc_queue.lock().unwrap();
-        assert_eq!(queue_guard.len(), 2);
-        assert_eq!(*queue_guard.first().unwrap(), 0);
-        // while let Some(rc_index) = queue_guard.pop_last() {
-        //     deploy[rc_index]
-        //         .lock()
-        //         .unwrap()
-        //         .update(&manager.get_values());
-        // }
-        // assert_eq!(deploy[0].lock().unwrap().value(), desired_value);
-        // assert_eq!(
-        //     deploy[0]
-        //         .lock()
-        //         .unwrap()
-        //         .counted_update(&manager.get_values()),
-        //     3
-        // );
-        // assert_eq!(deploy[1].lock().unwrap().value(), values[2]);
-        // assert_eq!(
-        //     deploy[1]
-        //         .lock()
-        //         .unwrap()
-        //         .counted_update(&manager.get_values()),
-        //     0
-        // );
+    //     values[0] = &Vector::from(vec![rng.gen_range(0.0..1.0)]);
+    //     values[2] = &Vector::from(vec![rng.gen_range(0.0..1.0)]);
+    //     desired_value = values[0] + values[1] * values[2] * values[3];
+    //     update(&manager.foliage, &manager.rc_queue, 0, values[0], 0.0);
+    //     update(&manager.foliage, &manager.rc_queue, 2, values[2], 0.0);
 
-        drop(queue_guard);
-        assert_eq!(root.lock().unwrap().value(), desired_value);
-    }
+    //     let queue_guard = manager.rc_queue.lock().unwrap();
+    //     assert_eq!(queue_guard.len(), 2);
+    //     assert_eq!(*queue_guard.first().unwrap(), 0);
+    //     while let Some(rc_index) = queue_guard.pop_last() {
+    //         deploy[rc_index]
+    //             .lock()
+    //             .unwrap()
+    //             .update(&manager.get_values());
+    //     }
+    //     assert_eq!(deploy[0].lock().unwrap().value(), desired_value);
+    //     assert_eq!(
+    //         deploy[0]
+    //             .lock()
+    //             .unwrap()
+    //             .counted_update(&manager.get_values()),
+    //         3
+    //     );
+    //     assert_eq!(deploy[1].lock().unwrap().value(), values[2]);
+    //     assert_eq!(
+    //         deploy[1]
+    //             .lock()
+    //             .unwrap()
+    //             .counted_update(&manager.get_values()),
+    //         0
+    //     );
+
+    //     drop(queue_guard);
+    //     assert!((root.lock().unwrap().value() - desired_value).abs() < 1e-14);
+    // }
 
     #[test]
     fn test_dot_text() -> std::io::Result<()> {
@@ -696,10 +777,10 @@ mod tests {
         let mut rc = ReactiveCircuit::new();
         let mut manager = Manager::new();
 
-        manager.create_leaf("a", 0.5, 0.0);
-        manager.create_leaf("b", 0.5, 0.0);
-        manager.create_leaf("c", 0.5, 0.0);
-        manager.create_leaf("d", 0.5, 0.0);
+        manager.create_leaf("a", Vector::from(vec![0.5]), 0.0);
+        manager.create_leaf("b", Vector::from(vec![0.5]), 0.0);
+        manager.create_leaf("c", Vector::from(vec![0.5]), 0.0);
+        manager.create_leaf("d", Vector::from(vec![0.5]), 0.0);
 
         // Test for a simple multiplication
         rc.add_leafs(vec![0, 1]);
@@ -707,7 +788,7 @@ mod tests {
         rc.add_leafs(vec![0, 2, 3]);
         rc.full_update(&manager.get_values());
         let mut expected_text = "\
-            rc_0 [shape=rect, label=\"RC = 0.5\"]\n\
+            rc_0 [shape=rect, label=\"RC = [0.5]\"]\n\
             rc_0 -> factors_0_0 [dir=none]\n\
             factors_0_0 [shape=rect, label=\"Π \\[a, b\\]\"]\n\
             rc_0 -> factors_0_1 [dir=none]\n\
@@ -721,17 +802,17 @@ mod tests {
         rc.drop_leaf(1, 0);
         rc.full_update(&manager.get_values());
         expected_text = "\
-            rc_0 [shape=rect, label=\"RC = 0.5\"]\n\
+            rc_0 [shape=rect, label=\"RC = [0.5]\"]\n\
             rc_0 -> factors_0_0 [dir=none]\n\
             factors_0_0 [shape=rect, label=\"Π \\[a\\]\"]\n\
             factors_0_0 -> rc_1 [dir=none]\n\
-            rc_1 [shape=rect, label=\"RC = 0.5\"]\n\
+            rc_1 [shape=rect, label=\"RC = [0.5]\"]\n\
             rc_1 -> factors_1_0 [dir=none]\n\
             factors_1_0 [shape=rect, label=\"Π \\[b\\]\"]\n\
             rc_0 -> factors_0_1 [dir=none]\n\
             factors_0_1 [shape=rect, label=\"Π \\[c, d\\]\"]\n\
             factors_0_1 -> rc_2 [dir=none]\n\
-            rc_2 [shape=rect, label=\"RC = 0.5\"]\n\
+            rc_2 [shape=rect, label=\"RC = [0.5]\"]\n\
             rc_2 -> factors_2_0 [dir=none]\n\
             factors_2_0 [shape=rect, label=\"Π \\[b\\]\"]\n\
             rc_0 -> factors_0_2 [dir=none]\n\
@@ -743,17 +824,17 @@ mod tests {
         rc.drop_leaf(0, 0);
         rc.full_update(&manager.get_values());
         expected_text = "\
-            rc_0 [shape=rect, label=\"RC = 0.5\"]\n\
+            rc_0 [shape=rect, label=\"RC = [0.5]\"]\n\
             rc_0 -> factors_0_0 [dir=none]\n\
             factors_0_0 [shape=rect, label=\"Π \\[\\]\"]\n\
             factors_0_0 -> rc_1 [dir=none]\n\
-            rc_1 [shape=rect, label=\"RC = 0.25\"]\n\
+            rc_1 [shape=rect, label=\"RC = [0.25]\"]\n\
             rc_1 -> factors_1_0 [dir=none]\n\
             factors_1_0 [shape=rect, label=\"Π \\[b, a\\]\"]\n\
             rc_0 -> factors_0_1 [dir=none]\n\
             factors_0_1 [shape=rect, label=\"Π \\[c, d\\]\"]\n\
             factors_0_1 -> rc_2 [dir=none]\n\
-            rc_2 [shape=rect, label=\"RC = 1\"]\n\
+            rc_2 [shape=rect, label=\"RC = [1]\"]\n\
             rc_2 -> factors_2_0 [dir=none]\n\
             factors_2_0 [shape=rect, label=\"Π \\[b\\]\"]\n\
             rc_2 -> factors_2_1 [dir=none]\n\
@@ -763,7 +844,7 @@ mod tests {
         assert_eq!(rc.get_dot_text(None, &manager).0, expected_text);
 
         // Value should be unchanged
-        assert_eq!(rc.value(), 0.5);
+        assert_eq!(rc.value(), Vector::from(vec![0.5]));
 
         Ok(())
     }

@@ -76,10 +76,7 @@ pub fn partitioning(frequencies: &[f64], boundaries: &[f64]) -> Vec<usize> {
     flip(&pack(&binning(&frequencies, boundaries)))
 }
 
-pub fn frequency_adaptation(
-    rc: &mut ReactiveCircuit,
-    partitioning: &[usize],
-) -> i32 {
+pub fn frequency_adaptation(rc: &mut ReactiveCircuit, partitioning: &[usize]) -> i32 {
     // let mut indexed_frequencies_pairs: Vec<(usize, Leaf)> = vec![];
     // for (i, leaf) in foliage.lock().unwrap().iter().enumerate() {
     //     let position = indexed_frequencies_pairs.binary_search_by(|pair| {

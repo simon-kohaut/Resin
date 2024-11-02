@@ -25,8 +25,8 @@ pub struct Kalman {
 
 impl Kalman {
     pub fn new(
-        prediction: &Vector,
-        prediction_covariance: &Matrix,
+        estimate: &Vector,
+        estimate_covariance: &Matrix,
         process_noise: &Matrix,
         sensor_noise: &Matrix,
         model: &LinearModel,
@@ -35,10 +35,10 @@ impl Kalman {
         let z_dim = model.get_measurement_dimension();
 
         Self {
-            prediction: prediction.clone(),
-            prediction_covariance: prediction_covariance.clone(),
-            estimate: Vector::zeros(x_dim),
-            estimate_covariance: Matrix::zeros((x_dim, x_dim)),
+            prediction: Vector::zeros(x_dim),
+            prediction_covariance: Matrix::zeros((x_dim, x_dim)),
+            estimate: estimate.clone(),
+            estimate_covariance: estimate_covariance.clone(),
             model: model.clone(),
             process_noise: process_noise.clone(),
             sensor_noise: sensor_noise.clone(),
@@ -46,6 +46,15 @@ impl Kalman {
             residual_covariance: Matrix::zeros((z_dim, z_dim)),
             kalman_gain: Matrix::zeros((z_dim, x_dim)),
         }
+    }
+
+    pub fn reset(&mut self, estimate: &Vector, estimate_covariance: &Matrix) {
+        self.estimate = estimate.clone();
+        self.estimate_covariance = estimate_covariance.clone();
+
+        let x_dim = self.model.get_state_dimension();
+        self.prediction = Vector::zeros(x_dim);
+        self.prediction_covariance = Matrix::zeros((x_dim, x_dim));
     }
 
     pub fn predict(&mut self, dt: f64, input: Option<&Vector>) {

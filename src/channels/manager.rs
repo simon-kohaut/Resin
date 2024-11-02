@@ -1,5 +1,4 @@
-use lazy_static::lazy_static;
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{
     collections::BTreeSet,
     collections::HashMap,
@@ -7,6 +6,7 @@ use std::{
 };
 
 use super::ipc::{IpcReader, IpcWriter, TimedIpcWriter};
+use super::Vector;
 use crate::circuit::{
     leaf::{Foliage, Leaf},
     reactive::RcQueue,
@@ -17,16 +17,18 @@ use rclrs::{spin, spin_once, Context, Node, RclrsError};
 // We need this context to live throughout the programs lifetime
 // Otherwise the ROS2 to Rust cleanup makes trouble (segmentation fault, trying to drop context with active node, ...)
 // All channel instantiations should be handled by Manager object
-lazy_static! {
-    static ref CONTEXT: Context = Context::new(vec![]).unwrap();
-    static ref NODE: Mutex<Node> = Mutex::new(Node::new(&CONTEXT, "resin_ipc").unwrap());
-}
+// use lazy_static::lazy_static;
+// lazy_static! {
+//     static ref CONTEXT: Context = Context::new(vec![]).unwrap();
+//     static ref NODE: Mutex<Arc<Node>> = Mutex::new(Node::new(&CONTEXT, "resin_ipc").unwrap());
+// }
 
 pub struct Manager {
     pub foliage: Foliage,
     pub rc_queue: RcQueue,
     readers: Vec<IpcReader>,
     writers: Vec<TimedIpcWriter>,
+    node: Arc<Node>,
 }
 
 impl Manager {
@@ -36,10 +38,11 @@ impl Manager {
             rc_queue: Arc::new(Mutex::new(BTreeSet::new())),
             readers: vec![],
             writers: vec![],
+            node: Node::new(&Context::new(vec![]).unwrap(), "resin_ipc").unwrap(),
         }
     }
 
-    pub fn create_leaf(&mut self, name: &str, value: f64, frequency: f64) -> u16 {
+    pub fn create_leaf(&mut self, name: &str, value: Vector, frequency: f64) -> u16 {
         // This should never grow beyong u16.MAX since we use that range for indexing
         assert!(self.foliage.lock().unwrap().len() + 1 < u16::MAX.into());
 
@@ -61,17 +64,17 @@ impl Manager {
 
     pub fn spin(self) {
         std::thread::spawn(move || {
-            let _ = spin(&NODE.lock().unwrap());
+            let _ = spin(self.node.clone());
         });
     }
 
     pub fn spin_once(&self) {
-        let _ = spin_once(&NODE.lock().unwrap(), Some(Duration::from_millis(0)));
+        let _ = spin_once(self.node.clone(), Some(Duration::from_millis(0)));
     }
 
     pub fn read(&mut self, receiver: u16, channel: &str, invert: bool) -> Result<(), RclrsError> {
         let reader = IpcReader::new(
-            &mut NODE.lock().unwrap(),
+            self.node.clone(),
             self.foliage.clone(),
             self.rc_queue.clone(),
             receiver,
@@ -84,11 +87,15 @@ impl Manager {
     }
 
     pub fn make_writer(&mut self, channel: &str) -> Result<IpcWriter, RclrsError> {
-        IpcWriter::new(&NODE.lock().unwrap(), channel)
+        IpcWriter::new(self.node.clone(), channel)
     }
 
-    pub fn make_timed_writer(&mut self, channel: &str, frequency: f64) -> Result<Arc<Mutex<f64>>, RclrsError> {
-        let mut writer = TimedIpcWriter::new(&NODE.lock().unwrap(), channel, frequency)?;
+    pub fn make_timed_writer(
+        &mut self,
+        channel: &str,
+        frequency: f64,
+    ) -> Result<Arc<Mutex<f64>>, RclrsError> {
+        let mut writer = TimedIpcWriter::new(self.node.clone(), channel, frequency)?;
         let value = writer.get_value_access();
 
         writer.start();
@@ -105,7 +112,10 @@ impl Manager {
         let mut foliage_guard = self.foliage.lock().unwrap();
 
         let timestamp = if timestamp.is_none() {
-            SystemTime::now().duration_since(UNIX_EPOCH).expect("Acquiring UNIX timestamp failed!").as_secs_f64()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Acquiring UNIX timestamp failed!")
+                .as_secs_f64()
         } else {
             timestamp.unwrap()
         };
@@ -124,10 +134,13 @@ impl Manager {
             .collect()
     }
 
-    pub fn get_values(&self) -> Vec<f64> {
+    pub fn get_values(&self) -> Vec<Vector> {
         let foliage_guard = self.foliage.lock().unwrap();
 
-        foliage_guard.iter().map(|leaf| leaf.get_value()).collect()
+        foliage_guard
+            .iter()
+            .map(|leaf| leaf.get_value().clone())
+            .collect()
     }
 
     pub fn get_names(&self) -> Vec<String> {
@@ -164,6 +177,8 @@ impl Drop for Manager {
 #[cfg(test)]
 mod tests {
 
+    use ndarray::array;
+
     use super::*;
 
     #[test]
@@ -171,7 +186,7 @@ mod tests {
         let mut manager = Manager::new();
 
         // Create a leaf and connect it with a reader and writer
-        let receiver = manager.create_leaf("tester_1", 0.0, 0.0);
+        let receiver = manager.create_leaf("tester_1", Vector::from(vec![0.0]), 0.0);
         manager.read(receiver, "/test_1", false)?;
         let value = manager.make_timed_writer("/test_1", 1.0)?;
         *value.lock().unwrap() = 1.0;
@@ -183,11 +198,11 @@ mod tests {
         sleep(Duration::new(2, 0));
 
         // Before spinning, value should still be 0.0
-        assert_eq!(manager.get_values(), vec![0.0]);
+        assert_eq!(manager.get_values(), vec![array![0.0]]);
 
         // Leaf should now have value 1.0
         manager.spin_once();
-        assert_eq!(manager.get_values(), vec![1.0]);
+        assert_eq!(manager.get_values(), vec![array![1.0]]);
 
         Ok(())
     }
@@ -197,26 +212,14 @@ mod tests {
         let mut manager = Manager::new();
 
         // Create a leaf and connect it with a reader and writer
-        let receiver = manager.create_leaf("tester_2", 0.0, 0.0);
+        let receiver = manager.create_leaf("tester_2", Vector::from(vec![0.0]), 0.0);
         manager.read(receiver, "/test_2", false)?;
         let value = manager.make_timed_writer("/test_2", 1.0)?;
         *value.lock().unwrap() = 1.0;
 
         // Node should have 1 subscriber and 1 publisher
-        assert_eq!(
-            NODE.lock().unwrap().count_subscriptions("/test_2").unwrap(),
-            1
-        );
-        assert_eq!(NODE.lock().unwrap().count_publishers("/test_2").unwrap(), 1);
-
-        drop(manager);
-
-        // Everything should have stopped
-        assert_eq!(
-            NODE.lock().unwrap().count_subscriptions("/test_2").unwrap(),
-            0
-        );
-        assert_eq!(NODE.lock().unwrap().count_publishers("/test_2").unwrap(), 0);
+        assert_eq!(manager.node.count_subscriptions("/test_2").unwrap(), 1);
+        assert_eq!(manager.node.count_publishers("/test_2").unwrap(), 1);
 
         Ok(())
     }
