@@ -1,4 +1,3 @@
-use std::default;
 use std::fs::File;
 use std::io::Write;
 use std::mem::discriminant;
@@ -7,50 +6,45 @@ use std::process::Command;
 use petgraph::stable_graph::{NodeIndex, StableGraph};
 use petgraph::visit::EdgeRef;
 use petgraph::Direction::{Incoming, Outgoing};
-use plotly::sankey::Node;
+
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
 
 use super::Vector;
 
 #[derive(Debug, PartialEq)]
 enum NodeType {
-    Memory(Vector),
+    Memory(Vector, bool),
     Sum,
     Product,
     Leaf(usize),
 }
 
 #[derive(Debug)]
-struct ReactiveCircuit2 {
+struct ReactiveCircuit {
     structure: StableGraph<NodeType, ()>,
     leafs: Vec<NodeIndex>,
     products: Vec<NodeIndex>,
 }
 
-impl ReactiveCircuit2 {
-    fn new(structure: Option<StableGraph<NodeType, ()>>) -> Self {
-        match structure {
-            // TODO: Add leafs and products of graph
-            Some(graph) => ReactiveCircuit2 {
-                structure: graph,
-                leafs: Vec::new(),
-                products: Vec::new(),
-            },
-            None => ReactiveCircuit2 {
-                structure: StableGraph::new(),
-                leafs: Vec::new(),
-                products: Vec::new(),
-            },
+impl ReactiveCircuit {
+
+    pub fn new() -> Self {
+        ReactiveCircuit {
+            structure: StableGraph::new(),
+            leafs: Vec::new(),
+            products: Vec::new(),
         }
     }
 
-    fn from_flat_sum_product(sum_product: &[Vec<usize>]) -> Self {
+    pub fn from_sum_product(sum_product: &[Vec<usize>]) -> Self {
         // Initialize ReactiveCircuit
-        let mut rc = ReactiveCircuit2::new(None);
+        let mut rc = ReactiveCircuit::new();
 
         // Add single memorized sum node
         let memory_index = rc
             .structure
-            .add_node(NodeType::Memory(Vector::from(vec![1.0])));
+            .add_node(NodeType::Memory(Vector::from(vec![1.0]), false));
         let sum_index = rc.structure.add_node(NodeType::Sum);
         rc.structure.add_edge(memory_index, sum_index, ());
 
@@ -79,11 +73,6 @@ impl ReactiveCircuit2 {
         rc
     }
 
-    // fn from_targets(&mut self, targets: &[usize], sum_products: &[Vec<Vec<usize>>]) -> ReactiveCircuit2 {
-    //     assert_eq!(targets.len(), sum_products.len(), "Number of targets does not match number of sum-product formulas!");
-    //     let new_output_memory = self.structure.add_node(NodeType::Memory(Vector::from(vec![1.0])));
-    // }
-
     fn find_leaf(&self, index: usize) -> Option<NodeIndex> {
         // Check which NodeIndex belongs to this leaf
         let mut leaf_index = None;
@@ -109,7 +98,7 @@ impl ReactiveCircuit2 {
         // Add single memorized sum and product nodes
         let new_memory = self
             .structure
-            .add_node(NodeType::Memory(Vector::from(vec![1.0])));
+            .add_node(NodeType::Memory(Vector::from(vec![1.0]), false));
         let new_sum = self.structure.add_node(NodeType::Sum);
         let new_product = self.structure.add_node(NodeType::Product);
 
@@ -231,12 +220,15 @@ impl ReactiveCircuit2 {
     fn is_at_top(&self, node: &NodeIndex) -> bool {
         match self.structure.node_weight(*node) {
             // If memory node, its at the top if it has no parents
-            Some(NodeType::Memory(_)) => self.is_orphan(node),
+            Some(NodeType::Memory(..)) => self.is_orphan(node),
             // If not in graph, its also not at the top
             None => false,
             // Otherwise, it is at the top if we cannot find a direct Memory ancestor that is not an orphan
             _ => self
-                .find_next_ancestors_by_type(node, &NodeType::Memory(Vector::from(vec![1.0])))
+                .find_next_ancestors_by_type(
+                    node,
+                    &NodeType::Memory(Vector::from(vec![1.0]), false),
+                )
                 .iter()
                 .find(|ancestor| !self.is_orphan(&ancestor))
                 .is_none(),
@@ -245,7 +237,8 @@ impl ReactiveCircuit2 {
 
     fn ensure_sub_graph_above(&mut self, node: &NodeIndex) {
         // Collect next memory nodes above
-        let memory_node_ancestors: Vec<NodeIndex> = self.find_next_ancestors_by_type(node, &NodeType::Memory(Vector::from(vec![1.0])));
+        let memory_node_ancestors: Vec<NodeIndex> = self
+            .find_next_ancestors_by_type(node, &NodeType::Memory(Vector::from(vec![1.0]), false));
 
         // If they are orphans, create a new sub-graph above
         for memory_node in &memory_node_ancestors {
@@ -260,26 +253,43 @@ impl ReactiveCircuit2 {
         // For each type of node we get the next related product node(s)
         match self.structure.node_weight(*node) {
             // For a leaf, its the parents
-            Some(NodeType::Leaf(_)) => self.get_parents(node).iter().for_each(|product| self.ensure_sub_graph_below(product)),
+            Some(NodeType::Leaf(_)) => self
+                .get_parents(node)
+                .iter()
+                .for_each(|product| self.ensure_sub_graph_below(product)),
             // For a sum, its the children
-            Some(NodeType::Sum) => self.get_children(node).iter().for_each(|product| self.ensure_sub_graph_below(product)),
+            Some(NodeType::Sum) => self
+                .get_children(node)
+                .iter()
+                .for_each(|product| self.ensure_sub_graph_below(product)),
             // For a memory cell, its the grandchildren
-            Some(NodeType::Memory(_)) => {
+            Some(NodeType::Memory(..)) => {
                 let sum_children = self.get_children(node);
                 for sum_child in &sum_children {
-                    self.get_children(sum_child).iter().for_each(|product| self.ensure_sub_graph_below(product));
+                    self.get_children(sum_child)
+                        .iter()
+                        .for_each(|product| self.ensure_sub_graph_below(product));
                 }
-            },
+            }
             Some(NodeType::Product) => {
                 let children = self.get_children(node);
 
                 // If the product is within a larger sub-graph (pointing at a sum instead of memory), we delegate further down
-                if !self.filter_nodes_by_type(&children, &NodeType::Sum).is_empty() {
+                if !self
+                    .filter_nodes_by_type(&children, &NodeType::Sum)
+                    .is_empty()
+                {
                     self.ensure_sub_graph_below(node);
                 }
 
                 // Else, we check if it points at memory and add the missing sub-graph if not
-                if self.filter_nodes_by_type(&children, &NodeType::Memory(Vector::from(vec![1.0]))).is_empty() {
+                if self
+                    .filter_nodes_by_type(
+                        &children,
+                        &NodeType::Memory(Vector::from(vec![1.0]), false),
+                    )
+                    .is_empty()
+                {
                     let (new_memory, _, _) = self.create_empty_sub_graph();
                     self.structure.add_edge(*node, new_memory, ());
                 }
@@ -327,7 +337,7 @@ impl ReactiveCircuit2 {
                 // If there is no sum node, check if there is a memory node instead
                 let mem_child = self.filter_nodes_by_type(
                     &self.get_children(product),
-                    &NodeType::Memory(Vector::zeros(0)),
+                    &NodeType::Memory(Vector::from(vec![1.0]), false),
                 );
                 debug_assert!(
                     mem_child.len() < 2,
@@ -426,7 +436,64 @@ impl ReactiveCircuit2 {
         result
     }
 
-    fn lift(&mut self, index: usize) -> bool {
+    pub fn value(&self, node: &NodeIndex) -> Vector {
+        match self
+            .structure
+            .node_weight(*node)
+            .expect("Node was not found within RC!")
+        {
+            NodeType::Leaf(value) => return Vector::from(vec![*value as f64]),
+            NodeType::Product => {
+                let mut result = Vector::from(vec![1.0]);
+
+                let values: Vec<Vector> = self
+                    .get_children(node)
+                    .par_iter()
+                    .map(|child| self.value(&child))
+                    .collect();
+
+                for value in &values {
+                    result *= value;
+                }
+
+                return result;
+            }
+            NodeType::Sum => {
+                let mut result = Vector::from(vec![0.0]);
+
+                let values: Vec<Vector> = self
+                    .get_children(node)
+                    .par_iter()
+                    .map(|child| self.value(&child))
+                    .collect();
+                for value in &values {
+                    result += value;
+                }
+
+                return result;
+            }
+            NodeType::Memory(value, _) => return value.clone(),
+        }
+    }
+
+    pub fn update(&mut self, node: &NodeIndex) {
+        match self
+            .structure
+            .node_weight(*node)
+            .expect("Node was not found within RC!")
+        {
+            NodeType::Memory(_, updated) => match updated {
+                true => (),
+                false => {
+                    let value = self.value(&self.get_children(node)[0]);
+                    self.structure[*node] = NodeType::Memory(value.clone(), true);
+                }
+            },
+            _ => (),
+        }
+    }
+
+    pub fn lift(&mut self, index: usize) -> bool {
         // Find leaf node in graph
         let leaf = self
             .find_leaf(index)
@@ -460,8 +527,10 @@ impl ReactiveCircuit2 {
             if !non_leaf_siblings.is_empty() {}
             let non_leaf_sum = self.structure.add_node(NodeType::Sum);
 
-            let memory_nodes =
-                self.find_next_ancestors_by_type(product, &NodeType::Memory(Vector::zeros(0)));
+            let memory_nodes = self.find_next_ancestors_by_type(
+                product,
+                &NodeType::Memory(Vector::from(vec![1.0]), false),
+            );
 
             // Lift the leaf above this sub-graphs memory node
             for memory_node in &memory_nodes {
@@ -498,7 +567,7 @@ impl ReactiveCircuit2 {
         true
     }
 
-    fn drop(&mut self, index: usize) -> bool {
+    pub fn drop(&mut self, index: usize) -> bool {
         // Find leaf node in graph
         let leaf = self
             .find_leaf(index)
@@ -524,7 +593,7 @@ impl ReactiveCircuit2 {
             // There can not be any sums, only memory nodes, since otherwise distribute would have pushed the leaf further down
             let memory_nodes = self.filter_nodes_by_type(
                 &self.get_children(product),
-                &NodeType::Memory(Vector::zeros(0)),
+                &NodeType::Memory(Vector::from(vec![1.0]), false),
             );
 
             // If there is no sub-graph to drop the leaf into, we create a new one
@@ -555,7 +624,7 @@ impl ReactiveCircuit2 {
         true
     }
 
-    fn prune(&mut self) {
+    pub fn prune(&mut self) {
         // Remove all nodes with no outgoing edges until convergence
         loop {
             // Collect nodes without outgoing edges that are not leafs
@@ -583,7 +652,7 @@ impl ReactiveCircuit2 {
         }
     }
 
-    fn to_dot_text(&self) -> String {
+    pub fn to_dot_text(&self) -> String {
         let mut dot = String::new();
 
         // Start the DOT graph
@@ -593,7 +662,7 @@ impl ReactiveCircuit2 {
         for node in self.structure.node_indices() {
             let node_type = &self.structure[node];
             let node_label = match node_type {
-                NodeType::Memory(vector) => format!("Memory({:?})", vector),
+                NodeType::Memory(vector, updated) => format!("Memory({:?}, {:?})", vector, updated),
                 NodeType::Sum => format!("Sum"),
                 NodeType::Product => "Product".to_string(),
                 NodeType::Leaf(index) => format!("Leaf({})", index),
@@ -616,7 +685,7 @@ impl ReactiveCircuit2 {
         dot
     }
 
-    fn to_dot(&self, filename: &str) -> std::io::Result<()> {
+    pub fn to_dot(&self, filename: &str) -> std::io::Result<()> {
         // Translate graph into DOT text
         let dot = self.to_dot_text();
 
@@ -647,17 +716,17 @@ impl ReactiveCircuit2 {
 #[cfg(test)]
 mod tests {
 
-    use super::ReactiveCircuit2;
+    use super::ReactiveCircuit;
 
     #[test]
     fn test_rc() -> std::io::Result<()> {
-        // let mut rc = ReactiveCircuit2::from_flat_sum_product(0, &vec![vec![0, 1, 2], vec![1, 3]]);
+        let mut rc = ReactiveCircuit::from_sum_product(&vec![vec![0, 1, 2], vec![1, 3]]);
 
-        // rc.to_svg("original.svg")?;
-        // rc.lift(1);
-        // rc.to_svg("lifted_1.svg")?;
-        // rc.drop(2);
-        // rc.to_svg("drop_2.svg")?;
+        rc.to_svg("original.svg")?;
+        rc.lift(1);
+        rc.to_svg("lifted_1.svg")?;
+        rc.drop(2);
+        rc.to_svg("drop_2.svg")?;
 
         Ok(())
     }
