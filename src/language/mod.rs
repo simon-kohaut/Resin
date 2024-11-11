@@ -6,7 +6,7 @@ mod resin;
 
 pub use crate::language::concepts::{Clause, ResinType, Source, Target};
 pub use crate::language::dnf::Dnf;
-pub use crate::language::resin::Resin;
+// pub use crate::language::resin::Resin;
 
 use ndarray::{ArcArray1, ArcArray2};
 

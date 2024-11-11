@@ -1,22 +1,20 @@
 use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
 
 use crate::channels::FoCEstimator;
-use crate::circuit::reactive::RcQueue;
+// use crate::circuit::reactive::RcQueue;
 
+use super::reactive::ReactiveCircuit;
 use super::Vector;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Leaf {
     value: Vector,
     frequency: f64,
     cluster: i32,
     foc_estimator: FoCEstimator,
     pub name: String,
-    pub indices: BTreeSet<usize>,
+    pub dependencies: BTreeSet<u32>,
 }
-
-pub type Foliage = Arc<Mutex<Vec<Leaf>>>;
 
 impl Leaf {
     pub fn new(value: Vector, frequency: f64, name: &str) -> Self {
@@ -26,7 +24,7 @@ impl Leaf {
             cluster: 0,
             foc_estimator: FoCEstimator::new(frequency),
             name: name.to_owned(),
-            indices: BTreeSet::new(),
+            dependencies: BTreeSet::new(),
         }
     }
 
@@ -62,6 +60,10 @@ impl Leaf {
         cluster_step
     }
 
+    pub fn get_dependencies(&self) -> BTreeSet<u32> {
+        self.dependencies.clone()
+    }
+
     pub fn get_cluster(&self) -> i32 {
         self.cluster
     }
@@ -74,32 +76,35 @@ impl Leaf {
         self.frequency = *frequency;
     }
 
-    pub fn add_dependency(&mut self, index: usize) {
-        self.indices.insert(index);
+    pub fn add_dependency(&mut self, index: u32) {
+        self.dependencies.insert(index);
     }
 
-    pub fn add_dependencies(&mut self, indices: &[usize]) {
+    pub fn add_dependencies(&mut self, indices: &[u32]) {
         for index in indices {
-            self.indices.insert(*index);
+            self.dependencies.insert(*index);
         }
     }
 
     pub fn clear_dependencies(&mut self) {
-        self.indices.clear();
+        self.dependencies.clear();
     }
 
-    pub fn remove_dependency(&mut self, index: usize) {
-        self.indices.remove(&index);
+    pub fn remove_dependency(&mut self, index: u32) {
+        self.dependencies.remove(&index);
     }
 }
 
-pub fn update(foliage: &Foliage, rc_queue: &RcQueue, index: u16, value: Vector, timestamp: f64) {
-    let mut foliage_guard = foliage.lock().unwrap();
-    let mut queue_guard = rc_queue.lock().unwrap();
-
-    if foliage_guard[index as usize].set_value(value, timestamp) {
-        for rc_index in &foliage_guard[index as usize].indices {
-            queue_guard.insert(*rc_index);
+pub fn update(
+    reactive_circuit: &mut ReactiveCircuit,
+    leaf_index: u32,
+    value: Vector,
+    timestamp: f64,
+) {
+    let leaf = &mut reactive_circuit.leafs[leaf_index as usize];
+    if leaf.set_value(value, timestamp) {
+        for algebraic_circuit_index in &leaf.dependencies {
+            reactive_circuit.queue.insert(*algebraic_circuit_index);
         }
     }
 }

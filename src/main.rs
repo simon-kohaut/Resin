@@ -6,8 +6,8 @@ mod language;
 mod tracking;
 
 use crate::channels::clustering::create_boundaries;
-use crate::channels::manager::Manager;
-use crate::circuit::ReactiveCircuit;
+// use crate::channels::manager::Manager;
+// use crate::circuit::ReactiveCircuit;
 
 use itertools::Itertools;
 use rand::prelude::*;

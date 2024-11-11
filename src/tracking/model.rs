@@ -1,6 +1,6 @@
 use super::{Matrix, Vector};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LinearModel {
     pub forward_model: fn(f64) -> Matrix,
     pub input_model: Matrix,

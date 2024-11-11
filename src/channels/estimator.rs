@@ -2,7 +2,7 @@ use crate::tracking::Kalman;
 use crate::tracking::LinearModel;
 use ndarray::array;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FoCEstimator {
     pub kalman: Kalman,
     pub timestamp: Option<f64>,

@@ -1,850 +1,433 @@
-// Standard library
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Write;
-use std::mem::size_of_val;
 use std::process::Command;
-use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use ndarray::{array, ArcArray, ArcArray1};
-use rayon::iter::IntoParallelRefIterator;
-use rayon::iter::ParallelIterator;
+use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableGraph};
+use petgraph::visit::{EdgeRef, NodeRef};
+use petgraph::Direction::{Incoming, Outgoing};
 
-// Crate
-use crate::Manager;
+use super::{algebraic::AlgebraicCircuit, algebraic::NodeType, leaf::Leaf, Vector};
 
-use super::Vector;
-
-pub type RcQueue = Arc<Mutex<BTreeSet<usize>>>;
-pub type SharedCircuit = Arc<Mutex<ReactiveCircuit>>;
-
-#[derive(Clone)]
+/// A dynamic computation graph where each node contains an `AlgebraicCircuit` for which the result is
+/// stored as weight of the incoming edges.
+///
+/// A ReactiveCircuit owns its `structure` as a `StableGraph<AlgebraicCircuit, Vector>`, where each
+/// `Vector` is of length `value_size`.
+///
+/// Further, it has `leafs` and a `queue`, with the former holding time-dynamic input data and
+/// the latter holding indices to the `AlgebraicCircuits` that need reevaluation due to an update
+/// of a contained `leaf` or one of its decendants.
+#[derive(Debug)]
 pub struct ReactiveCircuit {
-    pub storage: Vector,
-    pub products: HashMap<Vec<u16>, SharedCircuit>,
-    pub index: usize,
-    pub layer: usize,
-}
-
-pub struct DeployedCircuit {
-    pub index: usize,
-    pub products: HashMap<Vec<u16>, usize>,
-}
-
-impl DeployedCircuit {
-    pub fn new(index: usize, products: HashMap<Vec<u16>, usize>) -> Self {
-        Self { index, products }
-    }
-
-    pub fn update(&self, leaf_values: &[Vector], storage: &mut Vec<Vector>) -> Vector {
-        // Empty Circuits return a neutral element
-        if self.products.is_empty() {
-            return Vector::ones(leaf_values[0].raw_dim());
-        }
-
-        self.products
-            .par_iter()
-            .map(|(factors, rc)| {
-                // Initialize with value stored from RC, then multiply with all leafs
-                let mut leaf_product = storage[*rc].clone();
-                for index in factors {
-                    leaf_product *= &leaf_values[*index as usize];
-                }
-
-                leaf_product
-            })
-            .reduce(|| Vector::zeros(leaf_values[0].raw_dim()), |a, b| a + b)
-    }
-
-    pub fn serial_update(&self, leaf_values: &[Vector], storage: &mut Vec<Vector>) -> Vector {
-        // Empty Circuits return a neutral element
-        if self.products.is_empty() {
-            return Vector::ones(leaf_values[0].raw_dim());
-        }
-
-        self.products
-            .iter()
-            .map(|(factors, rc)| {
-                // Initialize with value stored from RC, then multiply with all leafs
-                let mut leaf_product = storage[*rc].clone();
-                for index in factors {
-                    leaf_product *= &leaf_values[*index as usize];
-                }
-
-                leaf_product
-            })
-            .reduce(|a, b| a + b)
-            .expect("Error during RC update!")
-    }
+    pub structure: StableGraph<AlgebraicCircuit, Vector>,
+    pub value_size: usize,
+    pub leafs: Vec<Leaf>,
+    pub queue: BTreeSet<u32>,
 }
 
 impl ReactiveCircuit {
-    pub fn new() -> Self {
-        Self {
-            storage: Vector::from(vec![0.0]),
-            products: HashMap::new(),
-            index: 0,
-            layer: 0,
+    /// Create a new `ReactiveCircuit` with the given `value_size` and set of `leafs`.
+    pub fn new(value_size: usize, leafs: &[Leaf]) -> Self {
+        ReactiveCircuit {
+            structure: StableGraph::new(),
+            value_size,
+            leafs: leafs.into(),
+            queue: BTreeSet::new(),
         }
     }
 
-    pub fn one() -> Self {
-        Self {
-            storage: Vector::from(vec![1.0]),
-            products: HashMap::new(),
-            index: 0,
-            layer: 0,
+    /// Initialize the ReactiveCircuit from a single sum-product formula.
+    pub fn from_sum_product(value_size: usize, leafs: &[Leaf], sum_product: &[Vec<u32>]) -> Self {
+        // Initialize ReactiveCircuit with a single AlgebraicCircuit inside
+        let mut reactive_circuit = ReactiveCircuit::new(value_size, leafs);
+        let index = reactive_circuit
+            .structure
+            .add_node(AlgebraicCircuit::from_sum_product(value_size, sum_product));
+
+        for leaf in reactive_circuit.leafs.iter_mut() {
+            leaf.add_dependency(index.index() as u32);
         }
+
+        reactive_circuit
     }
 
-    pub fn share(&self) -> SharedCircuit {
-        Arc::new(Mutex::new(self.clone()))
+    /// Ensure that an AlgebraicCircuit with `index` within the ReactiveCircuit has a parent, e.g., to lift a leaf into.
+    fn ensure_parent(&mut self, index: u32) -> Vec<(NodeIndex, EdgeIndex)> {
+        let parents_and_edges: Vec<(NodeIndex, EdgeIndex)> = self
+            .structure
+            .edges_directed(index.into(), Incoming)
+            .map(|edge| (edge.source().id(), edge.id()))
+            .collect();
+
+        if parents_and_edges.is_empty() {
+            // Create the missing parent and its edge potining at the specified circuit
+            let parent = self
+                .structure
+                .add_node(AlgebraicCircuit::new(self.value_size));
+            let edge = self
+                .structure
+                .add_edge(parent, index.into(), Vector::ones(self.value_size));
+
+            // Access the parent mutably
+            let algebraic_circuit = self
+                .structure
+                .node_weight_mut(parent)
+                .expect("Leaf dependency was not found in Reactive Circuit!");
+
+            // Add a memory node pointing at the new edge to the circuit
+            let memory_index = algebraic_circuit.structure.add_node(NodeType::Memory(edge));
+            algebraic_circuit.add_to_nodes(&vec![algebraic_circuit.root], &vec![memory_index]);
+
+            return vec![(parent, edge)];
+        }
+
+        return parents_and_edges;
     }
 
-    pub fn deep_clone(&self) -> ReactiveCircuit {
-        let mut rc = ReactiveCircuit::new();
-        rc.index = self.index;
-        rc.layer = self.layer;
-        rc.storage = self.storage.clone();
+    /// Ensure that an AlgebraicCircuit with `index` within the ReactiveCircuit has a child, e.g., to drop a leaf into.
+    fn ensure_child(&mut self, index: u32) -> Vec<(NodeIndex, EdgeIndex)> {
+        let children_and_edges: Vec<(NodeIndex, EdgeIndex)> = self
+            .structure
+            .edges_directed(index.into(), Outgoing)
+            .map(|edge| (edge.target().id(), edge.id()))
+            .collect();
 
-        let product_clone_iter = self.products.iter().map(|(factors, sub_rc)| {
-            (factors.clone(), sub_rc.lock().unwrap().deep_clone().share())
-        });
-        rc.products = HashMap::from_iter(product_clone_iter);
+        if children_and_edges.is_empty() {
+            // Create the missing parent and its edge potining at the specified circuit
+            let child = self
+                .structure
+                .add_node(AlgebraicCircuit::new(self.value_size));
+            let edge = self
+                .structure
+                .add_edge(child, index.into(), Vector::ones(self.value_size));
 
-        rc
+            // Access the parent mutably
+            let algebraic_circuit = self
+                .structure
+                .node_weight_mut(child)
+                .expect("Leaf dependency was not found in Reactive Circuit!");
+
+            // Add a memory node pointing at the new edge to the circuit
+            let memory_index = algebraic_circuit.structure.add_node(NodeType::Memory(edge));
+            algebraic_circuit.add_to_nodes(&vec![algebraic_circuit.root], &vec![memory_index]);
+
+            return vec![(child, edge)];
+        }
+
+        return children_and_edges;
     }
 
-    pub fn deploy(&self) -> DeployedCircuit {
-        let products = self
-            .products
-            .iter()
-            .map(|(factors, rc)| (factors.clone(), rc.lock().unwrap().index));
+    /// Lift the leaf with `index` out of its current circuits into its ancestors.
+    pub fn lift(&mut self, index: u32) {
+        // Get all the circuits that depend on the leaf
+        let dependencies = self.leafs[index as usize].get_dependencies();
 
-        DeployedCircuit::new(self.index, HashMap::from_iter(products))
-    }
+        for dependency in dependencies {
+            // If leaf is not a node within the circuit, go to next dependency
+            // (i.e., this is just an ancestor dependency)
+            let leaf_node;
+            match self
+                .structure
+                .node_weight(dependency.into())
+                .expect("Dependency was missing!")
+                .get_leaf(index)
+            {
+                Some(node) => leaf_node = node,
+                None => continue,
+            }
 
-    pub fn add_rc(&mut self, other: &SharedCircuit) {
-        // Get locked access to other RC
-        let rhs = other.lock().unwrap();
+            // Ensure that the dependant has at least one parent, else we have no circuit to lift into
+            let parents_and_edges = self.ensure_parent(dependency);
 
-        // Store the sum of both memorized values
-        self.storage += &rhs.storage;
+            // Setup optional new circuits to contain part of algebra that has the leaf in scope and a part that has not
+            let (in_scope_circuit, out_of_scope_circuit) = self
+                .structure
+                .node_weight_mut(dependency.into())
+                .expect("Dependency was missing!")
+                .split(&leaf_node);
 
-        for (factors, sub_rc) in &rhs.products {
-            // Merge sub-circuitry if factors are the same, meaning
-            // factors * a + factors * b = factors * (a + b)
-            if self.products.contains_key(factors) {
-                // Merg sub-circuitry by addition
-                self.products
-                    .get_mut(factors)
+            if out_of_scope_circuit.is_some() {
+                // Create a new node in the Reactive Circuit
+                let out_of_scope_circuit_node =
+                    self.structure.add_node(out_of_scope_circuit.unwrap());
+
+                // Add the old product with new memory node as new sum to the parents
+                for (parent, in_scope_edge) in &parents_and_edges {
+                    let out_of_scope_edge = self.structure.add_edge(
+                        *parent,
+                        out_of_scope_circuit_node,
+                        Vector::ones(self.value_size),
+                    );
+                    let parent_node = self
+                        .structure
+                        .node_weight_mut(*parent)
+                        .expect("Parent node was missing!");
+
+                    let in_scope_memory = parent_node
+                        .get_memory(*in_scope_edge)
+                        .expect("Memory node was missing!");
+                    let out_of_scope_memory = parent_node
+                        .structure
+                        .add_node(NodeType::Memory(out_of_scope_edge));
+
+                    let mut product = parent_node.get_siblings(&in_scope_memory);
+                    product.push(out_of_scope_memory);
+
+                    parent_node.add_to_nodes(&parent_node.get_parents(&in_scope_memory), &product);
+                }
+            }
+
+            if in_scope_circuit.is_some() {
+                // We override the old circuit with the in-scope one and remove the leaf
+                *self.structure.node_weight_mut(dependency.into()).unwrap() =
+                    in_scope_circuit.unwrap();
+                self.structure
+                    .node_weight_mut(dependency.into())
                     .unwrap()
-                    .lock()
-                    .unwrap()
-                    .add_rc(sub_rc);
-            } else {
-                self.products.insert(factors.clone(), sub_rc.clone());
+                    .remove(&leaf_node);
+
+                // All parents that depend on this need to have their respective memory node be multiplied with the leaf
+                // i.e., this is lifting the leaf into the parents
+                for (parent, edge) in &parents_and_edges {
+                    let parent_leaf = self.structure[*parent].ensure_leaf(index);
+                    let memory = self.structure[*parent]
+                        .get_memory(*edge)
+                        .expect("Memory node was missing!");
+                    self.structure[*parent].multiply_with_nodes(&vec![memory], &vec![parent_leaf]);
+                }
             }
         }
     }
 
-    pub fn add_leafs(&mut self, mut leafs: Vec<u16>) {
-        // Ensure leafs are sorted
-        leafs.sort();
+    /// Drop the leaf with `index` out of its current circuits into its ancestors.
+    pub fn drop(&mut self, index: u32) {
+        // Get all the circuits that depend on the leaf
+        let dependencies = self.leafs[index as usize].get_dependencies();
 
-        // Either add 1 to sub-circuitry if leaf combination is already in products
-        // or insert an entire new product
-        if self.products.contains_key(&leafs) {
-            self.products
-                .get(&leafs)
-                .unwrap()
-                .lock()
-                .unwrap()
-                .add_rc(&ReactiveCircuit::one().share());
-        } else {
-            self.products.insert(leafs, ReactiveCircuit::one().share());
-        }
-    }
-
-    pub fn add_leaf(&mut self, leaf: u16) {
-        let factors = vec![leaf];
-        self.add_leafs(factors);
-    }
-
-    pub fn mul_leaf(&mut self, leaf: u16) {
-        let mut multiplied_products = HashMap::new();
-
-        // If this is a const 1, we just insert the leaf
-        if self.products.is_empty() {
-            self.products
-                .insert(vec![leaf], ReactiveCircuit::one().share());
-            return;
-        }
-
-        for (factors, rc) in &mut self.products {
-            let mut multiplied_factors = vec![leaf];
-            multiplied_factors.append(&mut factors.clone());
-            multiplied_factors.sort();
-
-            multiplied_products.insert(multiplied_factors, rc.clone());
-        }
-
-        self.products = multiplied_products;
-    }
-
-    pub fn recompute_index(&mut self, mut index_offset: usize, layer_offset: usize) -> usize {
-        // Empty RC do not get an index
-        if self.products.is_empty() {
-            return index_offset - 1;
-        }
-
-        // Set own index as cureent offset
-        self.index = index_offset;
-        self.layer = layer_offset;
-
-        // The next child will have offset + 1 and return an offset representing the number of RCs beneath it as well
-        // Meaning the next child will have an offset + 1 + n
-        for (_, rc) in &self.products {
-            index_offset = rc
-                .lock()
-                .unwrap()
-                .recompute_index(index_offset + 1, layer_offset + 1);
-        }
-
-        index_offset
-    }
-
-    pub fn full_update(&mut self, leaf_values: &[Vector]) {
-        self.storage = self
-            .products
-            .iter()
-            .map(|(factors, rc)| {
-                // This is a product node consisting of
-                // First, a just now updated RC
-                let mut rc_guard = rc.lock().unwrap();
-                rc_guard.full_update(leaf_values);
-                let rc_value = rc_guard.value();
-
-                // Second, a set of leafs to be multiplied with the RC value
-                let leaf_product = factors.iter().fold(Vector::from(vec![1.0]), |acc, index| {
-                    acc * &leaf_values[*index as usize]
-                });
-
-                rc_value * leaf_product
-            })
-            // All the products are summed up into the value of this RC
-            .reduce(|a, b| a + b)
-            .unwrap_or(Vector::from(vec![0.0]));
-    }
-
-    pub fn counted_update(&mut self, leaf_values: &[Vector]) -> usize {
-        // Compute sum-product and count all additions and multiplications
-        let count;
-        (self.storage, count) = self.products.iter().fold(
-            (Vector::zeros(leaf_values[0].raw_dim()), 0),
-            |(acc_value, acc_count), (factors, sub_rc)| {
-                // Get product of leafs
-                let mut value = factors
-                    .iter()
-                    .fold(Vector::ones(leaf_values[0].raw_dim()), |acc, index| {
-                        acc * &leaf_values[*index as usize]
-                    });
-
-                // How many numbers where multiplied
-                let mut count = if factors.len() > 0 {
-                    factors.len() - 1
-                } else {
-                    0
-                };
-
-                // Factor in the result of ReactiveCircuit underneath
-                if !sub_rc.lock().unwrap().products.is_empty() {
-                    count += sub_rc.lock().unwrap().counted_update(leaf_values) + 1;
-                    value = value * sub_rc.lock().unwrap().value();
-                }
-
-                (acc_value + value, acc_count + count)
-            },
-        );
-
-        // Account for the additions separately
-        count + self.products.len() - 1
-    }
-
-    pub fn update(&mut self, leaf_values: &[Vector]) {
-        let value = self
-            .products
-            .iter()
-            .fold(Vector::from(vec![0.0]), |acc, (factors, sub_rc)| {
-                let rc_guard = sub_rc.lock().unwrap();
-                let value = rc_guard.value();
-
-                acc + factors.iter().fold(value.clone(), |acc, index| {
-                    acc * &leaf_values[*index as usize]
-                })
-            });
-
-        self.storage = value;
-    }
-
-    pub fn value(&self) -> Vector {
-        self.storage.clone()
-    }
-
-    pub fn depth(&self, offset: Option<usize>) -> usize {
-        let depth = match offset {
-            Some(offset) => offset,
-            None => 1,
-        };
-
-        self.products
-            .iter()
-            .map(|(_, rc)| {
-                let rc_guard = rc.lock().unwrap();
-                if rc_guard.products.len() == 0 {
-                    depth
-                } else {
-                    rc_guard.depth(Some(depth + 1))
-                }
-            })
-            .max()
-            .unwrap()
-    }
-
-    pub fn drop_leaf(&mut self, leaf: u16, repeat: usize) {
-        let drop_iter = self.products.iter().map(|(factors, sub_rc)| {
-            let mut factors_set = BTreeSet::from_iter(factors.clone());
-            match factors_set.remove(&leaf) {
-                true => {
-                    sub_rc.lock().unwrap().mul_leaf(leaf);
-
-                    if repeat > 0 {
-                        sub_rc.lock().unwrap().drop_leaf(leaf, repeat - 1);
-                    }
-                }
-                false => {
-                    sub_rc.lock().unwrap().drop_leaf(leaf, repeat);
-                }
+        for dependency in dependencies {
+            // If leaf is not a node within the circuit, go to next dependency
+            // (i.e., this is just an ancestor dependency)
+            let leaf_node;
+            match self
+                .structure
+                .node_weight(dependency.into())
+                .expect("Dependency was missing!")
+                .get_leaf(index)
+            {
+                Some(node) => leaf_node = node,
+                None => continue,
             }
 
-            (Vec::from_iter(factors_set), sub_rc.clone())
-        });
+            // Ensure that the dependant has at least one child, else we have no circuit to drop into
+            let children_and_edges = self.ensure_child(dependency);
 
-        self.products = HashMap::from_iter(drop_iter);
-    }
-
-    pub fn get_layer(rc: &SharedCircuit, depth: usize) -> Vec<SharedCircuit> {
-        if rc.lock().unwrap().layer == depth {
-            vec![rc.clone()]
-        } else {
-            rc.lock()
-                .unwrap()
-                .products
-                .iter()
-                .fold(vec![], |mut acc, (_, sub_rc)| {
-                    let mut layer = ReactiveCircuit::get_layer(sub_rc, depth);
-                    acc.append(&mut layer);
-                    acc
-                })
+            // Drop leaf into child via multiplication and remove from this dependency
+            for (child, _) in children_and_edges.iter() {
+                self.structure
+                    .node_weight_mut(*child)
+                    .expect("Child AlgebraicCircuit was missin!")
+                    .multiply(index);
+                self.structure
+                    .node_weight_mut(dependency.into())
+                    .expect("Dependency was missing!")
+                    .remove(&leaf_node);
+            }
         }
     }
 
-    // pub fn prune(rc: &SharedCircuit) {
-    //     let rc_depth = rc.lock().unwrap().depth(None);
-    //     for depth in 0..rc_depth {
-    //         let layer = ReactiveCircuit::get_layer(rc, depth);
+    /// Update the necessary values within the ReactiveCircuit and its output.
+    pub fn update(&mut self) {
+        for outdated_algebraic_circuit in self.queue.iter().rev() {
+            let result = self
+                .structure
+                .node_weight((*outdated_algebraic_circuit).into())
+                .expect("AlgebraicCircuit was missing!")
+                .value(self);
 
-    //         // First pass to gather equal products and merge sub-rcs
-    //         let mut pruned: HashMap<Vec<u16>, Arc<Mutex<ReactiveCircuit>>> = HashMap::new();
-    //         for layer_rc in &layer {
-    //             let rc_guard = layer_rc.lock().unwrap();
-    //             for (factors, sub_rc) in &rc_guard.products {
-    //                 if pruned.contains_key(factors) {
-    //                     pruned.get(factors).unwrap().lock().unwrap().add_rc(&sub_rc);
-    //                 } else {
-    //                     pruned.insert(factors.clone(), sub_rc.clone());
-    //                 }
-    //             }
-    //         }
+            let edges: Vec<EdgeIndex> = self
+                .structure
+                .edges_directed((*outdated_algebraic_circuit).into(), Incoming)
+                .map(|e| e.id())
+                .collect();
+            for edge in edges.iter() {
+                self.structure
+                    .edge_weight_mut(*edge)
+                    .expect("ReactiveCircuit edge was missing!")
+                    .assign(&result);
+            }
+        }
+    }
 
-    //         // Second pass to
-    //         for (factors, sub_rc) in pruned.iter() {
-    //             for layer_rc in &layer {
-    //                 let mut rc_guard = layer_rc.lock().unwrap();
-    //                 if rc_guard.products.contains_key(factors) {
-    //                     *rc_guard.products.get_mut(factors).unwrap() = sub_rc.clone();
-    //                 }
-    //             }
-    //         }
-    //     }
-    // }
+    /// Compile AlgebraicCircuit into dot format text and return as `String`.
+    pub fn to_dot_text(&self) -> String {
+        let mut dot = String::new();
 
-    // pub fn prune(&mut self) {
-    //     // Keep track of redundant and newly created products
-    //     let mut to_delete = BTreeSet::new();
+        // Start the DOT graph
+        dot.push_str("digraph ReactiveCircuit {\n");
+        dot.push_str("    node [color=\"chartreuse3\" margin=0 penwidth=2];\n");
+        dot.push_str("    edge [color=\"gray25\" penwidth=2];\n");
 
-    //     // We need to match factors between all products
-    //     let original_length = self.products.len();
-    //     for i in 0..original_length {
-    //         let mut merged_rc = ReactiveCircuit::new();
-    //         for j in i + 1..original_length {
-    //             if to_delete.contains(&j) {
-    //                 continue;
-    //             }
-
-    //             // If factors are equal, we can merge the circuits underneath
-    //             let (factors_left, rc_left) = &self.products[i];
-    //             let (factors_right, rc_right) = &self.products[j];
-    //             if BTreeSet::from_iter(factors_left) == BTreeSet::from_iter(factors_right) {
-    //                 // Add up circuits beneath each product
-    //                 if rc_left.is_some() && rc_right.is_some() {
-    //                     // Only add i's part once
-    //                     if !to_delete.contains(&i) {
-    //                         merged_rc += rc_left.as_ref().unwrap().lock().unwrap().clone();
-    //                     }
-
-    //                     // Add right half
-    //                     merged_rc += rc_right.as_ref().unwrap().lock().unwrap().clone();
-
-    //                     // Later remove both of these since they are redundant now
-    //                     to_delete.insert(i);
-    //                     to_delete.insert(j);
-    //                 }
-    //             }
-    //         }
-
-    //         if !merged_rc.products.is_empty() {
-    //             self.products.push((
-    //                 self.products[i].0.clone(),
-    //                 Some(Arc::new(Mutex::new(merged_rc))),
-    //             ));
-    //         }
-    //     }
-
-    //     // Remove all redundant products
-    //     while let Some(index) = to_delete.pop_last() {
-    //         self.products.remove(index);
-    //     }
-
-    //     // Prune all underneath
-    //     self.products.par_iter_mut().for_each(|(_, rc)| {
-    //         if rc.is_some() {
-    //             rc.as_mut().unwrap().lock().unwrap().prune();
-    //         }
-    //     })
-    // }
-
-    pub fn leafs(&self) -> BTreeSet<u16> {
-        let mut leafs = BTreeSet::new();
-        for (factors, _) in &self.products {
-            leafs.append(&mut BTreeSet::from_iter(factors.iter().cloned()));
+        // Iterate over the nodes
+        for node in self.structure.node_indices() {
+            let node_type = &self.structure[node];
+            let node_label = match node_type {
+                algebraic_circuit => format!(
+                    "ΣΠ\\n{}",
+                    algebraic_circuit
+                        .get_scope(&algebraic_circuit.root)
+                        .iter()
+                        .map(|leaf| {
+                            if let NodeType::Leaf(index) = algebraic_circuit.structure[*leaf] {
+                                format!("L{}", index)
+                            } else {
+                                "".to_string()
+                            }
+                        })
+                        .collect::<Vec<String>>()
+                        .join(" ")
+                ),
+            };
+            dot.push_str(&format!(
+                "    {} [shape=\"circle\" label=\"{}\"];\n",
+                node.index(),
+                node_label
+            ));
         }
 
-        leafs
+        // Iterate over the edges
+        for edge in self.structure.edge_indices() {
+            let (source, target) = self.structure.edge_endpoints(edge).unwrap();
+            dot.push_str(&format!(
+                "    {} -> {} [label=\"M{}\" decorate=\"true\"];\n",
+                source.index(),
+                target.index(),
+                edge.index()
+            ));
+        }
+
+        // End the DOT graph
+        dot.push_str("}\n");
+        dot
     }
 
-    pub fn size(&self) -> usize {
-        let size_underneath = self.products.iter().fold(0, |acc, (factors, sub_rc)| {
-            acc + size_of_val(factors) + size_of_val(&*factors) + sub_rc.lock().unwrap().size()
-        });
+    /// Write out the ReactiveCircuit as dot file at the given `path`.
+    pub fn to_dot(&self, path: &str) -> std::io::Result<()> {
+        // Translate graph into DOT text
+        let dot = self.to_dot_text();
 
-        size_of_val(&self.storage)
-            + size_of_val(&self.products)
-            + size_underneath
-            + size_of_val(&self.index)
-    }
-
-    pub fn to_svg(&self, path: &str, manager: &Manager) -> std::io::Result<()> {
-        let mut dot_text = String::from_str("strict digraph {\nnode [shape=circle]\n").unwrap();
-        dot_text += &self.get_dot_text(Some(0), manager).0;
-        dot_text += "}";
-
+        // Write to disk
         let mut file = File::create(path)?;
-        file.write_all(dot_text.as_bytes())?;
-        file.sync_all()?;
+        file.write_all(dot.as_bytes())?;
 
+        Ok(())
+    }
+
+    /// Write out the ReactiveCircuit as svg file at the given `path`.
+    /// If `keep_dot` is set to true, the dot text is written to `path.dot`.
+    pub fn to_svg(&self, path: &str, keep_dot: bool) -> std::io::Result<()> {
+        // Translate graph into DOT text and write to disk
+        let dot_path = if keep_dot {
+            path.to_owned() + ".dot"
+        } else {
+            path.to_owned()
+        };
+        self.to_dot(&dot_path)?;
+
+        // Compile into SVG using graphviz
         let svg_text = Command::new("dot")
-            .args(["-Tsvg", path])
+            .args(["-Tsvg", &dot_path])
             .output()
             .expect("Failed to run graphviz!");
 
-        file = File::create(path)?;
+        // Pass stdout into new file with SVG content
+        let mut file = File::create(path)?;
         file.write_all(&svg_text.stdout)?;
         file.sync_all()?;
 
         Ok(())
     }
 
-    pub fn get_dot_text(&self, index: Option<u16>, manager: &Manager) -> (String, u16) {
-        let mut dot_text = String::new();
-        let index = if index.is_some() { index.unwrap() } else { 0 };
+    /// Creates an SVG at the given `path` containing both the ReactiveCircuit as well as all contained
+    /// AlgebraicCircuits rendered by Graphviz.
+    pub fn to_combined_svg(&self, path: &str) -> std::io::Result<()> {
+        // Setup file to write to
+        let mut file = File::create(path)?;
 
-        dot_text += &format!("rc_{index} [shape=rect, label=\"RC = {}\"]\n", self.storage);
+        // Describe ReactiveCircuit itself in dot format
+        file.write_all(&self.to_dot_text().as_bytes())?;
 
-        let mut last = index;
-        for (factors_index, (factors, sub_circuit)) in self.products.iter().enumerate() {
-            let mut names = "\\[".to_owned();
-            let foliage = manager.foliage.lock().unwrap();
-            for factor in factors {
-                names += &foliage[*factor as usize].name.to_owned();
-                names += ", ";
-            }
-            drop(foliage);
-
-            // Remove trailing comma
-            if names.len() > 2 {
-                names = names[0..names.len() - 2].to_owned();
-            }
-
-            names += "\\]";
-
-            dot_text += &format!("rc_{index} -> factors_{index}_{factors_index} [dir=none]\n");
-            dot_text +=
-                &format!("factors_{index}_{factors_index} [shape=rect, label=\"Π {names}\"]\n");
-
-            if sub_circuit.lock().unwrap().products.len() > 0 {
-                let sub_text;
-                let next = last + 1;
-
-                dot_text += &format!("factors_{index}_{factors_index} -> rc_{next} [dir=none]\n");
-
-                (sub_text, last) = sub_circuit
-                    .lock()
-                    .unwrap()
-                    .get_dot_text(Some(next), manager);
-                dot_text += &sub_text;
-            }
+        // Gather dot text for all contained AlgebraicCircuits
+        for node in self.structure.node_indices() {
+            file.write_all(&self.structure[node].to_dot_text().as_bytes())?;
         }
 
-        (dot_text, last)
+        // Ensure write is complete
+        file.sync_all()?;
+
+        // Run gvpack on combined dot text, this is necessary before graphviz/dot
+        let packed_dot = Command::new("gvpack")
+            .args(["-u", path])
+            .output()
+            .expect("Failed to run graphviz!");
+
+        // Write packed result to file
+        let mut file = File::create(path)?;
+        file.write_all(&packed_dot.stdout)?;
+        file.sync_all()?;
+
+        // Compile into SVG using graphviz
+        let svg_text = Command::new("dot")
+            .args(["-Tsvg", path])
+            .output()
+            .expect("Failed to run graphviz!");
+
+        // Pass stdout into new file with SVG content
+        let mut file = File::create(path)?;
+        file.write_all(&svg_text.stdout)?;
+        file.sync_all()?;
+
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
 
-    use itertools::Itertools;
-    use ndarray_linalg::aclose;
-    use rand::prelude::*;
-    use rand::{seq::SliceRandom, thread_rng, Rng};
-    use rand_distr::{Distribution, SkewNormal};
-    use std::ops::RangeInclusive;
+    use crate::{channels::Vector, circuit::leaf::Leaf};
 
-    use super::*;
-    use crate::channels::clustering::{
-        binning, create_boundaries, frequency_adaptation, pack, partitioning,
-    };
-    use crate::channels::manager::Manager;
-    use crate::circuit::update;
+    use super::ReactiveCircuit;
 
-    fn sample_frequencies(
-        location: f64,
-        scale: f64,
-        shape: f64,
-        number_samples: usize,
-    ) -> Vec<f64> {
-        let distribution = SkewNormal::new(location, scale, shape).unwrap();
-        let mut rng = StdRng::seed_from_u64(0);
+    #[test]
+    fn test_rc() -> std::io::Result<()> {
+        let frequency = 1.0;
+        let name = "";
+        let value_size = 1;
 
-        let mut frequencies = vec![];
-        while frequencies.len() < number_samples {
-            let frequency = distribution.sample(&mut rng).clamp(0.0001, f64::MAX);
-            frequencies.push(frequency);
-        }
+        let leafs = vec![
+            Leaf::new(Vector::ones(value_size), frequency, name),
+            Leaf::new(Vector::ones(value_size), frequency, name),
+            Leaf::new(Vector::ones(value_size), frequency, name),
+        ];
+        let mut reactive_circui =
+            ReactiveCircuit::from_sum_product(value_size, &leafs, &vec![vec![0, 1], vec![0, 2]]);
 
-        frequencies
-    }
-
-    fn random_products(number_leafs: u16, number_sets: usize) -> Vec<Vec<u16>> {
-        let mut random_products = Vec::new();
-
-        let mut rng = thread_rng();
-        for _ in 0..number_sets {
-            random_products.push(
-                (0..number_leafs)
-                    .collect_vec()
-                    .choose_multiple(&mut rng, number_leafs as usize / 2)
-                    .cloned()
-                    .collect(),
+        reactive_circui.to_svg("output/test/test_rc_original.svg", false)?;
+        reactive_circui.structure.node_indices().for_each(|node| {
+            let _ = reactive_circui.structure[node].to_svg(
+                &format!("output/test/test_rc_ac_{}.svg", node.index()),
+                false,
             );
-        }
-
-        random_products
-    }
-
-    fn random_rc(
-        manager: &mut Manager,
-        number_leafs: u16,
-        number_models: usize,
-        range: RangeInclusive<f64>,
-    ) -> ReactiveCircuit {
-        // Create empty RC
-        let mut rc = ReactiveCircuit::new();
-
-        // Create leafs
-        let mut rng = thread_rng();
-        for i in 0..number_leafs {
-            manager.create_leaf(
-                &i.to_string(),
-                Vector::from(vec![rng.gen_range(range.clone())]),
-                0.0,
+        });
+        reactive_circui.lift(0);
+        reactive_circui.structure.node_indices().for_each(|node| {
+            let _ = reactive_circui.structure[node].to_svg(
+                &format!("output/test/test_rc_lift_l0_ac_{}.svg", node.index()),
+                false,
             );
-        }
-
-        // Add up random combinations of the leafs
-        let products = random_products(number_leafs, number_models);
-        for product in products {
-            rc.add_leafs(product);
-        }
-
-        rc
-    }
-
-    #[test]
-    fn test_random_rc() {
-        // Setup runtime environment
-        let mut manager = Manager::new();
-
-        // Create a decently large WMC problem
-        let number_leafs = 20;
-        let number_models = 100;
-        let mut rc = random_rc(&mut manager, number_leafs, number_models, 0.1..=1.0);
-        assert_eq!(rc.depth(None), 1);
-
-        // Compute RC value which should not change during any of the following steps
-        rc.full_update(&manager.get_values());
-        let value = rc.value();
-
-        // Make a random adapation of the tree
-        let location = 5.0;
-        let scale = 2.0;
-        let frequencies = sample_frequencies(location, scale, 0.0, number_leafs as usize);
-        let boundaries = create_boundaries(1.0, 20);
-        let bins = binning(&frequencies, &boundaries);
-
-        // Set frequencies and adapt RC
-        for (index, leaf) in manager.foliage.lock().unwrap().iter_mut().enumerate() {
-            leaf.set_frequency(&frequencies[index]);
-        }
-        let _ = rc.to_svg("output/test/random_rc_flat.svg", &manager);
-        let partitions = partitioning(&manager.get_frequencies(), &boundaries);
-        frequency_adaptation(&mut rc, &partitions);
-
-        // RC should still compute same value
-        rc.full_update(&manager.get_values());
-        let _ = rc.to_svg("output/test/random_rc_adapted.svg", &manager);
-        // aclose(rc.value(), value, 1e-14);
-        assert_eq!(rc.depth(None), *pack(&bins).iter().max().unwrap() + 1);
-
-        // Deployed RC should still compute same value
-        rc.recompute_index(0, 0);
-        let root = rc.share();
-        // let deployed = ReactiveCircuit::deploy(&root, &manager, None);
-
-        // Update a leaf with a new value
-        update(
-            &manager.foliage,
-            &manager.rc_queue,
-            1,
-            Vector::from(vec![0.0]),
-            0.0,
-        );
-
-        // There should be invalidated RCs in the queue,
-        // and the RC should still have the value from before stored
-        assert!(manager.rc_queue.lock().unwrap().len() > 0);
-        // assert!((root.lock().unwrap().value() - value).abs() < 1e-14);
-
-        // Update the necessary RCs
-        // let leaf_values = manager.get_values();
-        // while let Some(index) = manager.rc_queue.lock().unwrap().pop_last() {
-        //     deployed[index].lock().unwrap().update(&leaf_values);
-        // }
-
-        // The RC should now have a different value
-        assert_ne!(root.lock().unwrap().value(), value);
-    }
-
-    #[test]
-    fn test_wide_bin_size() {
-        // Setup runtime environment
-        let mut manager = Manager::new();
-
-        // Create a decently large WMC problem
-        let number_leafs = 20;
-        let number_models = 100;
-        let mut rc = random_rc(&mut manager, number_leafs, number_models, 0.0..=1.0);
-        assert_eq!(rc.depth(None), 1);
-
-        // Make a random adapation of the tree but choose boundaries such that only a single bin should be filled
-        let location = 5.0;
-        let scale = 2.0;
-        let frequencies = sample_frequencies(location, scale, 0.0, number_leafs as usize);
-        let boundaries = create_boundaries(10.0, 20);
-
-        // Set frequencies and adapt RC
-        for (index, leaf) in manager.foliage.lock().unwrap().iter_mut().enumerate() {
-            leaf.set_frequency(&frequencies[index]);
-        }
-        let partitions = partitioning(&manager.get_frequencies(), &boundaries);
-        frequency_adaptation(&mut rc, &partitions);
-
-        // This should still be flat
-        assert_eq!(rc.depth(None), 1);
-    }
-
-    // #[test]
-    // fn test_rc() {
-    //     let mut rc = ReactiveCircuit::new();
-    //     let mut manager = Manager::new();
-    //     let mut rng = thread_rng();
-
-    //     let mut values = vec![
-    //         Vector::from(vec![rng.gen_range(0.0..1.0)]),
-    //         Vector::from(vec![rng.gen_range(0.0..1.0)]),
-    //         Vector::from(vec![rng.gen_range(0.0..1.0)]),
-    //         Vector::from(vec![rng.gen_range(0.0..1.0)]),
-    //     ];
-
-    //     manager.create_leaf("0", values[0], 0.0);
-    //     manager.create_leaf("1", values[1], 0.0);
-    //     manager.create_leaf("2", values[2], 0.0);
-    //     manager.create_leaf("3", values[3], 0.0);
-
-    //     let desired_value = values[0] + values[1] * values[2] * values[3];
-
-    //     rc.add_leaf(0);
-    //     rc.add_leafs(vec![1, 2, 3]);
-    //     rc.update(&manager.get_values());
-    //     assert_eq!(rc.counted_update(&manager.get_values()), 3);
-    //     assert!((rc.value() - desired_value).abs() < 1e-14);
-
-    //     rc.drop_leaf(2, 0);
-    //     rc.full_update(&manager.get_values());
-    //     let _ = rc.to_svg("output/test/test_rc.svg", &manager);
-    //     assert_eq!(rc.counted_update(&manager.get_values()), 3);
-    //     assert!((rc.value() - desired_value).abs() < 1e-14);
-
-    //     rc.recompute_index(0, 0);
-    //     let root = rc.share();
-    //     let deploy = ReactiveCircuit::deploy(&root, &manager, None);
-
-    //     assert_eq!(manager.foliage.lock().unwrap()[0].indices.len(), 1);
-    //     assert_eq!(manager.foliage.lock().unwrap()[1].indices.len(), 1);
-    //     assert_eq!(manager.foliage.lock().unwrap()[2].indices.len(), 2);
-    //     assert_eq!(manager.foliage.lock().unwrap()[3].indices.len(), 1);
-
-    //     values[0] = &Vector::from(vec![rng.gen_range(0.0..1.0)]);
-    //     values[2] = &Vector::from(vec![rng.gen_range(0.0..1.0)]);
-    //     desired_value = values[0] + values[1] * values[2] * values[3];
-    //     update(&manager.foliage, &manager.rc_queue, 0, values[0], 0.0);
-    //     update(&manager.foliage, &manager.rc_queue, 2, values[2], 0.0);
-
-    //     let queue_guard = manager.rc_queue.lock().unwrap();
-    //     assert_eq!(queue_guard.len(), 2);
-    //     assert_eq!(*queue_guard.first().unwrap(), 0);
-    //     while let Some(rc_index) = queue_guard.pop_last() {
-    //         deploy[rc_index]
-    //             .lock()
-    //             .unwrap()
-    //             .update(&manager.get_values());
-    //     }
-    //     assert_eq!(deploy[0].lock().unwrap().value(), desired_value);
-    //     assert_eq!(
-    //         deploy[0]
-    //             .lock()
-    //             .unwrap()
-    //             .counted_update(&manager.get_values()),
-    //         3
-    //     );
-    //     assert_eq!(deploy[1].lock().unwrap().value(), values[2]);
-    //     assert_eq!(
-    //         deploy[1]
-    //             .lock()
-    //             .unwrap()
-    //             .counted_update(&manager.get_values()),
-    //         0
-    //     );
-
-    //     drop(queue_guard);
-    //     assert!((root.lock().unwrap().value() - desired_value).abs() < 1e-14);
-    // }
-
-    #[test]
-    fn test_dot_text() -> std::io::Result<()> {
-        // Create basic RC
-        let mut rc = ReactiveCircuit::new();
-        let mut manager = Manager::new();
-
-        manager.create_leaf("a", Vector::from(vec![0.5]), 0.0);
-        manager.create_leaf("b", Vector::from(vec![0.5]), 0.0);
-        manager.create_leaf("c", Vector::from(vec![0.5]), 0.0);
-        manager.create_leaf("d", Vector::from(vec![0.5]), 0.0);
-
-        // Test for a simple multiplication
-        rc.add_leafs(vec![0, 1]);
-        rc.add_leafs(vec![1, 2, 3]);
-        rc.add_leafs(vec![0, 2, 3]);
-        rc.full_update(&manager.get_values());
-        let mut expected_text = "\
-            rc_0 [shape=rect, label=\"RC = [0.5]\"]\n\
-            rc_0 -> factors_0_0 [dir=none]\n\
-            factors_0_0 [shape=rect, label=\"Π \\[a, b\\]\"]\n\
-            rc_0 -> factors_0_1 [dir=none]\n\
-            factors_0_1 [shape=rect, label=\"Π \\[b, c, d\\]\"]\n\
-            rc_0 -> factors_0_2 [dir=none]\n\
-            factors_0_2 [shape=rect, label=\"Π \\[a, c, d\\]\"]\n\
-        ";
-        rc.to_svg("output/plots/dot_test_1.svg", &manager)?;
-        assert_eq!(rc.get_dot_text(None, &manager).0, expected_text);
-
-        rc.drop_leaf(1, 0);
-        rc.full_update(&manager.get_values());
-        expected_text = "\
-            rc_0 [shape=rect, label=\"RC = [0.5]\"]\n\
-            rc_0 -> factors_0_0 [dir=none]\n\
-            factors_0_0 [shape=rect, label=\"Π \\[a\\]\"]\n\
-            factors_0_0 -> rc_1 [dir=none]\n\
-            rc_1 [shape=rect, label=\"RC = [0.5]\"]\n\
-            rc_1 -> factors_1_0 [dir=none]\n\
-            factors_1_0 [shape=rect, label=\"Π \\[b\\]\"]\n\
-            rc_0 -> factors_0_1 [dir=none]\n\
-            factors_0_1 [shape=rect, label=\"Π \\[c, d\\]\"]\n\
-            factors_0_1 -> rc_2 [dir=none]\n\
-            rc_2 [shape=rect, label=\"RC = [0.5]\"]\n\
-            rc_2 -> factors_2_0 [dir=none]\n\
-            factors_2_0 [shape=rect, label=\"Π \\[b\\]\"]\n\
-            rc_0 -> factors_0_2 [dir=none]\n\
-            factors_0_2 [shape=rect, label=\"Π \\[a, c, d\\]\"]\n\
-        ";
-        rc.to_svg("output/plots/dot_test_2.svg", &manager)?;
-        assert_eq!(rc.get_dot_text(None, &manager).0, expected_text);
-
-        rc.drop_leaf(0, 0);
-        rc.full_update(&manager.get_values());
-        expected_text = "\
-            rc_0 [shape=rect, label=\"RC = [0.5]\"]\n\
-            rc_0 -> factors_0_0 [dir=none]\n\
-            factors_0_0 [shape=rect, label=\"Π \\[\\]\"]\n\
-            factors_0_0 -> rc_1 [dir=none]\n\
-            rc_1 [shape=rect, label=\"RC = [0.25]\"]\n\
-            rc_1 -> factors_1_0 [dir=none]\n\
-            factors_1_0 [shape=rect, label=\"Π \\[b, a\\]\"]\n\
-            rc_0 -> factors_0_1 [dir=none]\n\
-            factors_0_1 [shape=rect, label=\"Π \\[c, d\\]\"]\n\
-            factors_0_1 -> rc_2 [dir=none]\n\
-            rc_2 [shape=rect, label=\"RC = [1]\"]\n\
-            rc_2 -> factors_2_0 [dir=none]\n\
-            factors_2_0 [shape=rect, label=\"Π \\[b\\]\"]\n\
-            rc_2 -> factors_2_1 [dir=none]\n\
-            factors_2_1 [shape=rect, label=\"Π \\[a\\]\"]\n\
-        ";
-        rc.to_svg("output/plots/dot_test_3.svg", &manager)?;
-        assert_eq!(rc.get_dot_text(None, &manager).0, expected_text);
-
-        // Value should be unchanged
-        assert_eq!(rc.value(), Vector::from(vec![0.5]));
+        });
+        reactive_circui.to_svg("output/test/test_rc_lift_l1_rc.svg", false)?;
 
         Ok(())
     }

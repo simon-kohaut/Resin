@@ -1,9 +1,9 @@
-pub use crate::circuit::leaf::{update, Foliage, Leaf};
-pub use crate::circuit::reactive::ReactiveCircuit;
+// pub use crate::circuit::leaf::{update, Foliage, Leaf};
+// pub use crate::circuit::reactive::ReactiveCircuit;
 
+pub mod algebraic;
 pub mod category;
 pub mod leaf;
-pub mod rc;
 pub mod reactive;
 
 use ndarray::{ArcArray1, ArcArray2};
