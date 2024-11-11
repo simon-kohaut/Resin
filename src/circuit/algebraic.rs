@@ -219,7 +219,7 @@ impl AlgebraicCircuit {
     }
 
     /// Get all the grandparent nodes of the given `node` within this circuit.
-    fn get_grandparents(&self, node: &NodeIndex) -> Vec<NodeIndex> {
+    pub fn get_grandparents(&self, node: &NodeIndex) -> Vec<NodeIndex> {
         let parents = self.get_parents(node);
 
         let mut grandparents = BTreeSet::new();
@@ -231,7 +231,7 @@ impl AlgebraicCircuit {
     }
 
     /// Get all the child nodes of the given `node` within this circuit.
-    fn get_children(&self, node: &NodeIndex) -> Vec<NodeIndex> {
+    pub fn get_children(&self, node: &NodeIndex) -> Vec<NodeIndex> {
         self.structure
             .edges_directed(*node, Outgoing)
             .map(|edge| edge.target())
@@ -250,7 +250,7 @@ impl AlgebraicCircuit {
     }
 
     /// Remove all edges that may connect nodes `a` and `b`.
-    fn disconnect_nodes(&mut self, a: &NodeIndex, b: &NodeIndex) {
+    pub fn disconnect_nodes(&mut self, a: &NodeIndex, b: &NodeIndex) {
         let mut ids: Vec<EdgeIndex> = self
             .structure
             .edges_connecting(*a, *b)
@@ -267,7 +267,7 @@ impl AlgebraicCircuit {
         }
     }
 
-    fn disconnect_from_parents(&mut self, node: &NodeIndex) {
+    pub fn disconnect_from_parents(&mut self, node: &NodeIndex) {
         let parents = self.get_parents(node);
         for parent in parents.iter() {
             self.structure.remove_edge(
@@ -281,12 +281,12 @@ impl AlgebraicCircuit {
     }
 
     /// Check if `node` is of type `node_tupe`.
-    fn check_node_type(&self, node: &NodeIndex, node_type: &NodeType) -> bool {
+    pub fn check_node_type(&self, node: &NodeIndex, node_type: &NodeType) -> bool {
         discriminant(self.structure.node_weight(*node).unwrap()) == discriminant(node_type)
     }
 
     /// Filters the list of all `nodes` for the ones that have the given `node_type`.
-    fn filter_nodes_by_type(&self, nodes: &[NodeIndex], node_type: &NodeType) -> Vec<NodeIndex> {
+    pub fn filter_nodes_by_type(&self, nodes: &[NodeIndex], node_type: &NodeType) -> Vec<NodeIndex> {
         nodes
             .iter()
             .filter(|node| self.check_node_type(node, node_type))
@@ -295,7 +295,7 @@ impl AlgebraicCircuit {
     }
 
     /// Returns a list of those nodes in `nodes` that have `leaf` in scope.
-    fn filter_nodes_by_scope(
+    pub fn filter_nodes_by_scope(
         &self,
         nodes: &[NodeIndex],
         leaf: &NodeIndex,
