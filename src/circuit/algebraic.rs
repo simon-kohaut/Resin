@@ -1,4 +1,3 @@
-use core::panic;
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Write;
@@ -286,7 +285,11 @@ impl AlgebraicCircuit {
     }
 
     /// Filters the list of all `nodes` for the ones that have the given `node_type`.
-    pub fn filter_nodes_by_type(&self, nodes: &[NodeIndex], node_type: &NodeType) -> Vec<NodeIndex> {
+    pub fn filter_nodes_by_type(
+        &self,
+        nodes: &[NodeIndex],
+        node_type: &NodeType,
+    ) -> Vec<NodeIndex> {
         nodes
             .iter()
             .filter(|node| self.check_node_type(node, node_type))

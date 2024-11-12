@@ -1,16 +1,12 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{
-    collections::BTreeSet,
     collections::HashMap,
     sync::{Arc, Mutex},
 };
 
 use super::ipc::{IpcReader, IpcWriter, TimedIpcWriter};
 use super::Vector;
-use crate::circuit::{
-    leaf::{Foliage, Leaf},
-    reactive::RcQueue,
-};
+use crate::circuit::{leaf::Leaf, reactive::ReactiveCircuit};
 
 use rclrs::{spin, spin_once, Context, Node, RclrsError};
 
@@ -24,42 +20,41 @@ use rclrs::{spin, spin_once, Context, Node, RclrsError};
 // }
 
 pub struct Manager {
-    pub foliage: Foliage,
-    pub rc_queue: RcQueue,
+    pub reactive_circuit: Arc<Mutex<ReactiveCircuit>>,
     readers: Vec<IpcReader>,
     writers: Vec<TimedIpcWriter>,
     node: Arc<Node>,
 }
 
 impl Manager {
-    pub fn new() -> Self {
+    pub fn new(value_size: usize) -> Self {
         Self {
-            foliage: Arc::new(Mutex::new(vec![])),
-            rc_queue: Arc::new(Mutex::new(BTreeSet::new())),
+            reactive_circuit: Arc::new(Mutex::new(ReactiveCircuit::new(value_size))),
             readers: vec![],
             writers: vec![],
             node: Node::new(&Context::new(vec![]).unwrap(), "resin_ipc").unwrap(),
         }
     }
 
-    pub fn create_leaf(&mut self, name: &str, value: Vector, frequency: f64) -> u16 {
-        // This should never grow beyong u16.MAX since we use that range for indexing
-        assert!(self.foliage.lock().unwrap().len() + 1 < u16::MAX.into());
+    pub fn create_leaf(&mut self, name: &str, value: Vector, frequency: f64) -> u32 {
+        // This should never grow beyong u32.MAX since we use that range for indexing
+        assert!(self.reactive_circuit.lock().unwrap().leafs.len() + 1 < u32::MAX as usize);
 
         // Create a new leaf with given parameters and return the index
-        self.foliage
+        self.reactive_circuit
             .lock()
             .unwrap()
+            .leafs
             .push(Leaf::new(value, frequency, name));
-        self.foliage.lock().unwrap().len() as u16 - 1
+        self.reactive_circuit.lock().unwrap().leafs.len() as u32 - 1
     }
 
     pub fn clear_dependencies(&mut self) {
-        for leaf in self.foliage.lock().unwrap().iter_mut() {
+        for leaf in self.reactive_circuit.lock().unwrap().leafs.iter_mut() {
             leaf.clear_dependencies();
         }
 
-        self.rc_queue.lock().unwrap().clear();
+        self.reactive_circuit.lock().unwrap().queue.clear();
     }
 
     pub fn spin(self) {
@@ -72,11 +67,10 @@ impl Manager {
         let _ = spin_once(self.node.clone(), Some(Duration::from_millis(0)));
     }
 
-    pub fn read(&mut self, receiver: u16, channel: &str, invert: bool) -> Result<(), RclrsError> {
+    pub fn read(&mut self, receiver: u32, channel: &str, invert: bool) -> Result<(), RclrsError> {
         let reader = IpcReader::new(
             self.node.clone(),
-            self.foliage.clone(),
-            self.rc_queue.clone(),
+            self.reactive_circuit.clone(),
             receiver,
             channel,
             invert,
@@ -109,7 +103,7 @@ impl Manager {
     }
 
     pub fn prune_frequencies(&self, threshold: f64, timestamp: Option<f64>) {
-        let mut foliage_guard = self.foliage.lock().unwrap();
+        let mut reactive_circuit_guard = self.reactive_circuit.lock().unwrap();
 
         let timestamp = if timestamp.is_none() {
             SystemTime::now()
@@ -120,33 +114,36 @@ impl Manager {
             timestamp.unwrap()
         };
 
-        for leaf in &mut foliage_guard.iter_mut() {
+        for leaf in &mut reactive_circuit_guard.leafs.iter_mut() {
             leaf.prune_frequency(timestamp, threshold);
         }
     }
 
     pub fn get_frequencies(&self) -> Vec<f64> {
-        let foliage_guard = self.foliage.lock().unwrap();
+        let reactive_circuit_guard = self.reactive_circuit.lock().unwrap();
 
-        foliage_guard
+        reactive_circuit_guard
+            .leafs
             .iter()
             .map(|leaf| leaf.get_frequency())
             .collect()
     }
 
     pub fn get_values(&self) -> Vec<Vector> {
-        let foliage_guard = self.foliage.lock().unwrap();
+        let reactive_circuit_guard = self.reactive_circuit.lock().unwrap();
 
-        foliage_guard
+        reactive_circuit_guard
+            .leafs
             .iter()
             .map(|leaf| leaf.get_value().clone())
             .collect()
     }
 
     pub fn get_names(&self) -> Vec<String> {
-        let foliage_guard = self.foliage.lock().unwrap();
+        let reactive_circuit_guard = self.reactive_circuit.lock().unwrap();
 
-        foliage_guard
+        reactive_circuit_guard
+            .leafs
             .iter()
             .map(|leaf| leaf.name.to_owned())
             .collect()
@@ -183,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_read_write() -> Result<(), RclrsError> {
-        let mut manager = Manager::new();
+        let mut manager = Manager::new(1);
 
         // Create a leaf and connect it with a reader and writer
         let receiver = manager.create_leaf("tester_1", Vector::from(vec![0.0]), 0.0);
@@ -209,7 +206,7 @@ mod tests {
 
     #[test]
     fn test_context_management() -> Result<(), RclrsError> {
-        let mut manager = Manager::new();
+        let mut manager = Manager::new(1);
 
         // Create a leaf and connect it with a reader and writer
         let receiver = manager.create_leaf("tester_2", Vector::from(vec![0.0]), 0.0);

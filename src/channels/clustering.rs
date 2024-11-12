@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
-// use crate::circuit::reactive::ReactiveCircuit;
+use crate::circuit::reactive::ReactiveCircuit;
 
 pub fn binning(frequencies: &[f64], boundaries: &[f64]) -> Vec<usize> {
     // Append MAX for edge case of value being larger than any boundary
@@ -76,61 +76,61 @@ pub fn partitioning(frequencies: &[f64], boundaries: &[f64]) -> Vec<usize> {
     flip(&pack(&binning(&frequencies, boundaries)))
 }
 
-// pub fn frequency_adaptation(rc: &mut ReactiveCircuit, partitioning: &[usize]) -> i32 {
-// let mut indexed_frequencies_pairs: Vec<(usize, Leaf)> = vec![];
-// for (i, leaf) in foliage.lock().unwrap().iter().enumerate() {
-//     let position = indexed_frequencies_pairs.binary_search_by(|pair| {
-//         pair.1
-//             .get_frequency()
-//             .partial_cmp(&leaf.get_frequency())
-//             .unwrap()
-//     });
-//     match position {
-//         Ok(position) => indexed_frequencies_pairs.insert(position, (i, leaf.clone())),
-//         Err(position) => indexed_frequencies_pairs.insert(position, (i, leaf.clone())),
-//     }
-// }
+pub fn frequency_adaptation(rc: &mut ReactiveCircuit, partitioning: &[usize]) -> i32 {
+    // let mut indexed_frequencies_pairs: Vec<(usize, Leaf)> = vec![];
+    // for (i, leaf) in foliage.lock().unwrap().iter().enumerate() {
+    //     let position = indexed_frequencies_pairs.binary_search_by(|pair| {
+    //         pair.1
+    //             .get_frequency()
+    //             .partial_cmp(&leaf.get_frequency())
+    //             .unwrap()
+    //     });
+    //     match position {
+    //         Ok(position) => indexed_frequencies_pairs.insert(position, (i, leaf.clone())),
+    //         Err(position) => indexed_frequencies_pairs.insert(position, (i, leaf.clone())),
+    //     }
+    // }
 
-// let frequencies: Vec<f64> = indexed_frequencies_pairs
-//     .iter()
-//     .map(|(_, leaf)| leaf.get_frequency())
-//     .collect();
+    // let frequencies: Vec<f64> = indexed_frequencies_pairs
+    //     .iter()
+    //     .map(|(_, leaf)| leaf.get_frequency())
+    //     .collect();
 
-// let mut cluster_steps = vec![];
-// let mut foliage_guard = foliage.lock().unwrap();
-// for (index, frequency) in frequencies.iter().enumerate() {
-//     for (cluster, boundary) in boundaries.iter().enumerate() {
-//         if *frequency <= *boundary {
-//             cluster_steps.push(
-//                 foliage_guard[indexed_frequencies_pairs[index].0]
-//                     .set_cluster(&(cluster as i32)),
-//             );
-//             break;
-//         }
-//     }
-// }
+    // let mut cluster_steps = vec![];
+    // let mut foliage_guard = foliage.lock().unwrap();
+    // for (index, frequency) in frequencies.iter().enumerate() {
+    //     for (cluster, boundary) in boundaries.iter().enumerate() {
+    //         if *frequency <= *boundary {
+    //             cluster_steps.push(
+    //                 foliage_guard[indexed_frequencies_pairs[index].0]
+    //                     .set_cluster(&(cluster as i32)),
+    //             );
+    //             break;
+    //         }
+    //     }
+    // }
 
-// drop(foliage_guard);
+    // drop(foliage_guard);
 
-// if cluster_steps.iter().all(|step| *step == 0) {
-//     return;
-// }
+    // if cluster_steps.iter().all(|step| *step == 0) {
+    //     return;
+    // }
 
-// let min_cluster = cluster_steps.iter().min().unwrap().clone();
-// for step in &mut cluster_steps {
-//     *step -= min_cluster;
-// }
+    // let min_cluster = cluster_steps.iter().min().unwrap().clone();
+    // for step in &mut cluster_steps {
+    //     *step -= min_cluster;
+    // }
 
-//     let mut number_of_adaptations = 0;
-//     for (index, cluster_step) in partitioning.iter().enumerate() {
-//         if *cluster_step != 0 {
-//             rc.drop_leaf(index as u16, *cluster_step - 1);
-//             number_of_adaptations += 1;
-//         }
-//     }
+    let mut number_of_adaptations = 0;
+    for (index, cluster_step) in partitioning.iter().enumerate() {
+        if *cluster_step != 0 {
+            rc.drop(index as u32);
+            number_of_adaptations += 1;
+        }
+    }
 
-//     number_of_adaptations
-// }
+    number_of_adaptations
+}
 
 #[cfg(test)]
 mod tests {

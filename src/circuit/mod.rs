@@ -1,5 +1,5 @@
-// pub use crate::circuit::leaf::{update, Foliage, Leaf};
-// pub use crate::circuit::reactive::ReactiveCircuit;
+pub use crate::circuit::leaf::{update, Leaf};
+pub use crate::circuit::reactive::ReactiveCircuit;
 
 pub mod algebraic;
 pub mod category;

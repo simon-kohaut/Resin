@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 
 use crate::channels::FoCEstimator;
-// use crate::circuit::reactive::RcQueue;
 
 use super::reactive::ReactiveCircuit;
 use super::Vector;

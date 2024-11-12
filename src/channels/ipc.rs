@@ -6,8 +6,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rclrs::{Node, Publisher, QoSHistoryPolicy, RclrsError, Subscription, QOS_PROFILE_DEFAULT};
 use std_msgs::msg::Float64MultiArray;
 
-use crate::circuit::leaf::{update, Foliage};
-use crate::circuit::reactive::RcQueue;
+use crate::circuit::leaf::update;
+use crate::circuit::ReactiveCircuit;
 
 use super::Vector;
 
@@ -32,9 +32,8 @@ pub struct TimedIpcWriter {
 impl IpcReader {
     pub fn new(
         node: Arc<Node>,
-        foliage: Foliage,
-        rc_queue: RcQueue,
-        index: u16,
+        shared_reactive_circuit: Arc<Mutex<ReactiveCircuit>>,
+        index: u32,
         channel: &str,
         invert: bool,
     ) -> Result<Self, RclrsError> {
@@ -46,7 +45,12 @@ impl IpcReader {
                 let data = Vector::from_iter(msg.data.clone().into_iter().skip(1));
                 let value = if invert { 1.0 - data } else { data };
 
-                update(&foliage, &rc_queue, index, value, msg.data[0]);
+                update(
+                    shared_reactive_circuit.lock().as_mut().unwrap(),
+                    index,
+                    value,
+                    msg.data[0],
+                );
             })?;
 
         Ok(Self {
