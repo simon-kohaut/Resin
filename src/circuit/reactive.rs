@@ -1,19 +1,16 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
 use std::process::Command;
 
-<<<<<<< HEAD
-// Crate
-use crate::Manager;
-=======
 use itertools::Itertools;
-use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableGraph};
+use petgraph::{algo::toposort, stable_graph::{EdgeIndex, NodeIndex, StableGraph}};
 use petgraph::visit::{EdgeRef, NodeRef};
 use petgraph::Direction::{Incoming, Outgoing};
 
+use crate::circuit::leaf::force_invalidate_dependencies;
+
 use super::{algebraic::AlgebraicCircuit, algebraic::NodeType, leaf::Leaf, Vector};
->>>>>>> origin/graph-based-rc
 
 /// A dynamic computation graph where each node contains an `AlgebraicCircuit` for which the result is
 /// stored as weight of the incoming edges.
@@ -26,42 +23,11 @@ use super::{algebraic::AlgebraicCircuit, algebraic::NodeType, leaf::Leaf, Vector
 /// of a contained `leaf` or one of its decendants.
 #[derive(Debug, Clone)]
 pub struct ReactiveCircuit {
-<<<<<<< HEAD
-    pub storage: f64,
-    pub products: HashMap<Vec<u16>, SharedCircuit>,
-    pub index: usize,
-    pub layer: usize,
-}
-
-pub struct DeployedCircuit {
-    pub index: usize,
-    pub products: HashMap<Vec<u16>, usize>,
-}
-
-impl DeployedCircuit {
-    pub fn new(index: usize, products: HashMap<Vec<u16>, usize>) -> Self {
-        Self { index, products }
-    }
-
-    pub fn update(&self, leafs: &[f64], storage: &mut Vec<f64>) -> f64 {
-        // Empty Circuits return a neutral element
-        if self.products.is_empty() {
-            return 1.0;
-        }
-
-        self.products.iter().fold(0.0, |acc, (factors, rc)| {
-            acc + factors
-                .iter()
-                .fold(storage[*rc], |acc, index| acc * leafs[*index as usize])
-        })
-    }
-=======
     pub structure: StableGraph<AlgebraicCircuit, Vector>,
     pub value_size: usize,
     pub leafs: Vec<Leaf>,
-    pub queue: BTreeSet<u32>,
+    pub queue: HashSet<u32>,
     pub targets: HashMap<String, NodeIndex>,
->>>>>>> origin/graph-based-rc
 }
 
 impl ReactiveCircuit {
@@ -71,7 +37,7 @@ impl ReactiveCircuit {
             structure: StableGraph::new(),
             value_size,
             leafs: Vec::new(),
-            queue: BTreeSet::new(),
+            queue: HashSet::new(),
             targets: HashMap::new(),
         }
     }
@@ -117,49 +83,9 @@ impl ReactiveCircuit {
         let target_node = self.targets[target_token];
         self.structure[target_node].add_sum_product(sum_product);
 
-<<<<<<< HEAD
-        let product_clone_iter = self.products.iter().map(|(factors, sub_rc)| {
-            (factors.clone(), sub_rc.lock().unwrap().deep_clone().share())
-        });
-        rc.products = HashMap::from_iter(product_clone_iter);
-
-        rc
-    }
-
-    pub fn deploy(&self) -> DeployedCircuit {
-        let products = self
-            .products
-            .iter()
-            .map(|(factors, rc)| (factors.clone(), rc.lock().unwrap().index));
-
-        DeployedCircuit::new(self.index, HashMap::from_iter(products))
-    }
-
-    pub fn add_rc(&mut self, other: &SharedCircuit) {
-        // Get locked access to other RC
-        let rhs = other.lock().unwrap();
-
-        // Store the sum of both memorized values
-        self.storage += rhs.storage;
-
-        for (factors, sub_rc) in &rhs.products {
-            // Merge sub-circuitry if factors are the same, meaning
-            // factors * a + factors * b = factors * (a + b)
-            if self.products.contains_key(factors) {
-                // Merg sub-circuitry by addition
-                self.products
-                    .get_mut(factors)
-                    .unwrap()
-                    .lock()
-                    .unwrap()
-                    .add_rc(sub_rc);
-            } else {
-                self.products.insert(factors.clone(), sub_rc.clone());
-=======
         for product in sum_product.iter() {
             for index in product {
                 self.set_dependency(*index, &target_node);
->>>>>>> origin/graph-based-rc
             }
         }
 
@@ -182,9 +108,10 @@ impl ReactiveCircuit {
     }
 
     pub fn invalidate(&mut self) {
-        for node in self.structure.node_indices() {
-            self.queue.insert(node.index() as u32);
-        }
+        // Invalidate in a bottom-up fashion so that the update queue can be processed from bottom to top
+        let sorted_nodes = toposort(&self.structure, None).expect("ReactiveCircuit should be a DAG");
+        self.queue.extend(sorted_nodes.iter().map(|node| node.index() as u32));
+        self.queue = self.queue.iter().unique().cloned().collect();
     }
 
     /// Ensure that an AlgebraicCircuit with `index` within the ReactiveCircuit has a parent, e.g., to lift a leaf into.
@@ -204,6 +131,9 @@ impl ReactiveCircuit {
                 .structure
                 .add_edge(parent, index.into(), Vector::ones(self.value_size));
 
+            // Note that this new parent is invalid
+            self.queue.insert(parent.index() as u32);
+
             // Access the parent mutably
             let algebraic_circuit = self
                 .structure
@@ -214,124 +144,17 @@ impl ReactiveCircuit {
             let memory_index = algebraic_circuit.create_memory(edge);
             algebraic_circuit.add_to_nodes(&vec![algebraic_circuit.root], &vec![memory_index]);
 
-<<<<<<< HEAD
-            multiplied_products.insert(multiplied_factors, rc.clone());
-        }
-
-        self.products = multiplied_products;
-    }
-
-    pub fn recompute_index(&mut self, mut index_offset: usize, layer_offset: usize) -> usize {
-        // Empty RC do not get an index
-        if self.products.is_empty() {
-            return index_offset - 1;
-        }
-
-        // Set own index as cureent offset
-        self.index = index_offset;
-        self.layer = layer_offset;
-
-        // The next child will have offset + 1 and return an offset representing the number of RCs beneath it as well
-        // Meaning the next child will have an offset + 1 + n
-        for (_, rc) in &self.products {
-            index_offset = rc
-                .lock()
-                .unwrap()
-                .recompute_index(index_offset + 1, layer_offset + 1);
-        }
-
-        index_offset
-    }
-
-    pub fn full_update(&mut self, leaf_values: &[f64]) {
-        self.storage = self
-            .products
-            .iter()
-            .map(|(factors, rc)| {
-                rc.lock().unwrap().full_update(leaf_values);
-                let value = rc.lock().unwrap().value();
-
-                factors
-                    .iter()
-                    .map(|index| leaf_values[*index as usize])
-                    .product::<f64>()
-                    * value
-            })
-            .sum::<f64>();
-    }
-
-    pub fn counted_update(&mut self, leaf_values: &[f64]) -> usize {
-        // Compute sum-product and count all additions and multiplications
-        let count;
-        (self.storage, count) =
-            self.products
-                .iter()
-                .fold((0.0, 0), |(acc_value, acc_count), (factors, sub_rc)| {
-                    // Get product of leafs
-                    let mut value = factors
-                        .iter()
-                        .fold(1.0, |acc, factor| acc * leaf_values[*factor as usize]);
-
-                    // How many numbers where multiplied
-                    let mut count = if factors.len() > 0 {
-                        factors.len() - 1
-                    } else {
-                        0
-                    };
-
-                    // Factor in the result of ReactiveCircuit underneath
-                    if !sub_rc.lock().unwrap().products.is_empty() {
-                        count += sub_rc.lock().unwrap().counted_update(leaf_values) + 1;
-                        value *= sub_rc.lock().unwrap().value();
-                    }
-
-                    (acc_value + value, acc_count + count)
-                });
-
-        // Account for the additions separately
-        count + self.products.len() - 1
-    }
-
-    pub fn update(&mut self, leaf_values: &[f64]) {
-        let value = self.products.iter().fold(0.0, |acc, (factors, sub_rc)| {
-            let value = sub_rc.lock().unwrap().value();
-
-            acc + factors
-                .iter()
-                .fold(value, |acc, index| acc * leaf_values[*index as usize])
-        });
-
-        self.storage = value;
-    }
-
-    pub fn value(&self) -> f64 {
-        self.storage
-    }
-
-    pub fn depth(&self, offset: Option<usize>) -> usize {
-        let depth = match offset {
-            Some(offset) => offset,
-            None => 1,
-        };
-
-        self.products
-            .iter()
-            .map(|(_, rc)| {
-                let rc_guard = rc.lock().unwrap();
-                if rc_guard.products.len() == 0 {
-                    depth
-=======
             // Update targets if this node was one before
-            let mut new_targets = self.targets.clone();
-            for (token, node) in self.targets.iter() {
-                if node.index() == index as usize {
-                    new_targets.insert(token.to_owned(), parent);
->>>>>>> origin/graph-based-rc
-                } else {
-                    new_targets.insert(token.to_owned(), *node);
-                }
+            let tokens_to_update: Vec<String> = self
+                .targets
+                .iter()
+                .filter(|(_, &node_index)| node_index.index() == index as usize)
+                .map(|(token, _)| token.clone())
+                .collect();
+
+            for token in tokens_to_update {
+                self.targets.insert(token, parent);
             }
-            self.targets = new_targets;
 
             return vec![(parent, edge)];
         }
@@ -355,6 +178,9 @@ impl ReactiveCircuit {
             let edge = self
                 .structure
                 .add_edge(index.into(), child, Vector::ones(self.value_size));
+
+            // Note that this new child is invalid
+            self.queue.insert(child.index() as u32);
 
             // Access the parent mutably
             let algebraic_circuit = self
@@ -440,24 +266,10 @@ impl ReactiveCircuit {
                     .unwrap()
                     .remove(&leaf_node);
 
-                // Remove old dependency
+                // Remove old dependency and invalidate
                 self.leafs[index as usize].remove_dependency(dependency);
+                self.queue.insert(dependency.into());
 
-<<<<<<< HEAD
-    pub fn get_layer(rc: &SharedCircuit, depth: usize) -> Vec<SharedCircuit> {
-        if rc.lock().unwrap().layer == depth {
-            vec![rc.clone()]
-        } else {
-            rc.lock()
-                .unwrap()
-                .products
-                .iter()
-                .fold(vec![], |mut acc, (_, sub_rc)| {
-                    let mut layer = ReactiveCircuit::get_layer(sub_rc, depth);
-                    acc.append(&mut layer);
-                    acc
-                })
-=======
                 // All parents that depend on this need to have their respective memory node be multiplied with the leaf
                 // i.e., this is lifting the leaf into the parents
                 for (parent, edge) in &parents_and_edges {
@@ -469,8 +281,9 @@ impl ReactiveCircuit {
                     self.leafs[index as usize].add_dependency(parent.index() as u32);
                 }
             }
->>>>>>> origin/graph-based-rc
         }
+
+        force_invalidate_dependencies(self, index);
     }
 
     /// Drop the leaf with `index` out of its current circuits into its ancestors.
@@ -550,6 +363,8 @@ impl ReactiveCircuit {
                 .unwrap()
                 .remove(&leaf_node);
         }
+
+        force_invalidate_dependencies(self, index);
     }
 
     /// Update the necessary values within the ReactiveCircuit and its output.
@@ -560,17 +375,25 @@ impl ReactiveCircuit {
         let mut target_results = HashMap::new();
 
         // For each outdated circuit, we recompute the memorized value as edge weight
-        for outdated_algebraic_circuit in self.queue.iter().rev() {
+        let mut sorted_nodes = toposort(&self.structure, None).expect("ReactiveCircuit should be a DAG");
+        while let Some(outdated_algebraic_circuit) = sorted_nodes.pop() {
+            // Check if that circuit is invalid and if not continue on
+            if !self.queue.contains(&(outdated_algebraic_circuit.index() as u32)) {
+                continue;
+            } else {
+                self.queue.remove(&(outdated_algebraic_circuit.index() as u32));
+            }
+
             // Get the new value of the AlgebraicCircuit
             let result = self
                 .structure
-                .node_weight((*outdated_algebraic_circuit).into())
+                .node_weight(outdated_algebraic_circuit.into())
                 .expect("AlgebraicCircuit was missing!")
                 .value(self);
 
             // If this dependency is a target, add to results
             for (token, index) in self.targets.iter() {
-                if index.index() == *outdated_algebraic_circuit as usize {
+                if index.index() == outdated_algebraic_circuit.index() {
                     target_results.insert(token.to_owned(), result.clone());
                 }
             }
@@ -578,7 +401,7 @@ impl ReactiveCircuit {
             // Memorize the result in all incoming edges
             let edges: Vec<EdgeIndex> = self
                 .structure
-                .edges_directed((*outdated_algebraic_circuit).into(), Incoming)
+                .edges_directed(outdated_algebraic_circuit.into(), Incoming)
                 .map(|e| e.id())
                 .collect();
             for edge in edges.iter() {
@@ -589,10 +412,13 @@ impl ReactiveCircuit {
             }
         }
 
-        // Clear queue again since now everything is updated again
-        self.queue.clear();
-
         target_results
+    }
+
+    // Full update of the Reactive Circuit independent of the current queue, but emptying the queue afterwards
+    pub fn full_update(&mut self) -> HashMap<String, Vector> {
+        self.invalidate();
+        self.update()
     }
 
     /// Compile AlgebraicCircuit into dot format text and return as `String`.
@@ -735,6 +561,7 @@ impl ReactiveCircuit {
 #[cfg(test)]
 mod tests {
 
+    use super::*;
     use std::collections::BTreeSet;
 
     use crate::channels::manager::Manager;
@@ -743,12 +570,13 @@ mod tests {
 
     #[test]
     fn test_rc() -> std::io::Result<()> {
-        let mut manager = Manager::new(1);
-        manager.create_leaf("", Vector::ones(1), 0.0);
-        manager.create_leaf("", Vector::ones(1), 0.0);
-        manager.create_leaf("", Vector::ones(1), 0.0);
-        
+        let manager = Manager::new(1);
         let reactive_circuit = &mut manager.reactive_circuit.lock().unwrap();
+        
+        reactive_circuit.leafs.push(Leaf::new(Vector::ones(1), 0.0, ""));
+        reactive_circuit.leafs.push(Leaf::new(Vector::ones(1), 0.0, ""));
+        reactive_circuit.leafs.push(Leaf::new(Vector::ones(1), 0.0, ""));
+        
         reactive_circuit.add_sum_product(&vec![vec![0, 1], vec![0, 2]], "test");
 
         assert_eq!(reactive_circuit.leafs.len(), 3);
@@ -757,20 +585,28 @@ mod tests {
         assert!(reactive_circuit.leafs.iter().all(|leaf| leaf.get_dependencies().len() == 1));
         assert!(reactive_circuit.leafs.iter().all(|leaf| leaf.get_dependencies() == BTreeSet::from_iter(vec![0])));
 
-        let mut value = reactive_circuit.update()["test"].clone();
+        let results = reactive_circuit.update();
+        let value = results.get("test").expect("The key 'test' was not found in the results").clone();
         reactive_circuit.to_combined_svg("output/test/test_rc_original.svg")?;
 
+        // Structural changes require updates
+        // Partial and full updates always gives the same result
+        println!("{:?}", reactive_circuit.queue);
         reactive_circuit.lift_leaf(0);
+        println!("{:?}", reactive_circuit.queue);
         reactive_circuit.to_combined_svg("output/test/test_rc_lift_l0_rc.svg")?;
-        assert_eq!(reactive_circuit.update()["test"], value);
+        assert_eq!(reactive_circuit.update().get("test").unwrap(), &value);
+        assert_eq!(reactive_circuit.full_update().get("test").expect("The test target was not found in the RC!"), &value);
 
         reactive_circuit.drop_leaf(0);
         reactive_circuit.to_combined_svg("output/test/test_rc_lift_drop_l0_rc.svg")?;
-        assert_eq!(reactive_circuit.update()["test"], value);
+        assert_eq!(reactive_circuit.update().get("test").unwrap(), &value);
+        assert_eq!(reactive_circuit.full_update().get("test").expect("The test target was not found in the RC!"), &value);
         
         reactive_circuit.drop_leaf(0);
         reactive_circuit.to_combined_svg("output/test/test_rc_lift_drop_drop_l0_rc.svg")?;
-        assert_eq!(reactive_circuit.update()["test"], value);
+        assert_eq!(reactive_circuit.update().get("test").unwrap(), &value);
+        assert_eq!(reactive_circuit.full_update().get("test").expect("The test target was not found in the RC!"), &value);
 
         Ok(())
     }

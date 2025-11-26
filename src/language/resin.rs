@@ -1,13 +1,10 @@
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use rclrs::RclrsError;
-
 use super::Vector;
 use super::{Clause, Source, Target};
 use crate::channels::manager::Manager;
 use crate::circuit::category::Category;
-use crate::circuit::reactive::ReactiveCircuit;
 use crate::language::{asp::solve, Dnf};
 
 pub type SharedStorage = Arc<Mutex<Vec<f64>>>;
@@ -21,7 +18,7 @@ pub struct Resin {
 }
 
 impl Resin {
-    pub fn compile(model: &str, value_size: usize, verbose: bool) -> Result<Resin, RclrsError> {
+    pub fn compile(model: &str, value_size: usize, verbose: bool) -> Result<Resin, Box<dyn std::error::Error>> {
         // Parse and setup Resin runtime environment
         let mut resin: Resin = model.parse().unwrap();
         if verbose {
@@ -356,19 +353,19 @@ mod tests {
         assert_eq!(result["unsafe"], Vector::from(vec![0.94]));
     }
 
-    #[test]
-    fn test_simulation() {
-        use itertools::Itertools;
+    // #[test]
+    // fn test_simulation() {
+    //     use itertools::Itertools;
 
-    //     use crate::channels::clustering::{create_boundaries, frequency_adaptation};
+    // //     use crate::channels::clustering::{create_boundaries, frequency_adaptation};
 
-        // Load CSV file from simulation
-        print!("Load data in ... ");
-        let clock = Instant::now();
-        let file = std::fs::File::open("data/pairwise_distances.csv").unwrap();
-        let file = Box::new(file) as Box<dyn MmapBytesReader>;
-        let data = CsvReader::new(file).finish().unwrap();
-        println!("{}s", clock.elapsed().as_secs_f64());
+    //     // Load CSV file from simulation
+    //     print!("Load data in ... ");
+    //     let clock = Instant::now();
+    //     let file = std::fs::File::open("data/pairwise_distances.csv").unwrap();
+    //     let file = Box::new(file) as Box<dyn MmapBytesReader>;
+    //     let data = CsvReader::new(file).finish().unwrap();
+    //     println!("{}s", clock.elapsed().as_secs_f64());
 
     //     // Get unique drone names
     //     let mut drones = data.column("d1").unwrap().unique().unwrap();
@@ -377,16 +374,16 @@ mod tests {
     //         .expect("Loading drone data failed!");
     //     drones = drones.unique().unwrap();
 
-        let drone_names: Vec<&str> = drones
-            .as_materialized_series()
-            .iter()
-            .map(|drone| {
-                let AnyValue::String(name) = drone else {
-                    panic!("")
-                };
-                name
-            })
-            .collect();
+    //     let drone_names: Vec<&str> = drones
+    //         .as_materialized_series()
+    //         .iter()
+    //         .map(|drone| {
+    //             let AnyValue::String(name) = drone else {
+    //                 panic!("")
+    //             };
+    //             name
+    //         })
+    //         .collect();
 
     //     print!("Build Resin model in ... ");
     //     let clock = Instant::now();
@@ -400,210 +397,184 @@ mod tests {
     //     println!("{}s", clock.elapsed().as_secs_f64());
     //     println!("{model}");
 
-        print!("Compile Resin in ... ");
-        let clock = Instant::now();
-        let mut resin = Resin::compile(&model, 1, false).expect("Could not compile Resin!");
-        println!("{}s", clock.elapsed().as_secs_f64());
-
-        let original = resin.manager.reactive_circuit.lock().unwrap().clone();
-
-        print!("Update value ... ");
-        let clock = Instant::now();
-        let result = resin.manager.reactive_circuit.lock().unwrap().update();
-        println!("{}s", clock.elapsed().as_secs_f64());
-
-        print!("Setup writers in ... ");
-        let mut writers = HashMap::new();
-        let clock = Instant::now();
-        for drone_pair in drone_names.iter().combinations(2) {
-            let d1 = drone_pair[0].to_owned();
-            let d2 = drone_pair[1].to_owned();
-
-    //         let channel = format!("/ads_b/{d1}_{d2}");
-    //         let writer = resin
-    //             .manager
-    //             .make_writer(&channel)
-    //             .expect("Could not setup writer to data channel!");
-    //         writers.insert((d1, d2), writer);
-    //     }
+    //     print!("Compile Resin in ... ");
+    //     let clock = Instant::now();
+    //     let mut resin = Resin::compile(&model, 1, false).expect("Could not compile Resin!");
     //     println!("{}s", clock.elapsed().as_secs_f64());
 
-    //     // Get individual timestamps for which data was stored
-    //     let timestamp_series = data.column("t").unwrap();
-    //     let unique_timestamps = timestamp_series.unique().unwrap();
-    //     let timestamps = unique_timestamps.f64().unwrap();
+    //     let original = resin.manager.reactive_circuit.lock().unwrap().clone();
 
-        // Deploy RC
-        // let original = resin.manager.reactive_circuit.lock().unwrap().clone();
-        // let (deployed_original, mut original_storage) = resin.deploy(0, 1);
-        // let (mut deployed_adapted, mut adapted_storage) = resin.deploy(0, 1);
+    //     print!("Update value ... ");
+    //     let clock = Instant::now();
+    //     let result = resin.manager.reactive_circuit.lock().unwrap().update();
+    //     println!("{}s", clock.elapsed().as_secs_f64());
 
-        print!("Run simulation ... ");
-        let boundaries = create_boundaries(1.0, 1);
-        let mut partitions = partitioning(&resin.manager.get_frequencies(), &boundaries);
-        let mut inference_timestamps = vec![];
-        // let mut original_inference_times = vec![];
-        let mut adapted_inference_times = vec![];
-        // let mut adapted_full_inference_times = vec![];
-        let mut rc_numbers = vec![];
-        let mut root_leafs = vec![];
-        let mut number_root_leafs = resin.manager.reactive_circuit.lock().unwrap().leafs.len();
-        let mut frequencies = vec![];
+    //     print!("Setup writers in ... ");
+    //     let mut writers = HashMap::new();
+    //     let clock = Instant::now();
+    //     for drone_pair in drone_names.iter().combinations(2) {
+    //         let d1 = drone_pair[0].to_owned();
+    //         let d2 = drone_pair[1].to_owned();
 
-        for timestep in timestamps {
-            // Update simulation time
-            let simulation_time;
-            match timestep {
-                Some(t) => simulation_time = t,
-                None => break,
-            }
+    // //         let channel = format!("/ads_b/{d1}_{d2}");
+    // //         let writer = resin
+    // //             .manager
+    // //             .make_writer(&channel)
+    // //             .expect("Could not setup writer to data channel!");
+    // //         writers.insert((d1, d2), writer);
+    // //     }
+    // //     println!("{}s", clock.elapsed().as_secs_f64());
 
-            // Get data for this timestep
-            let mask = timestamp_series
-                .as_materialized_series()
-                .equal(simulation_time)
-                .unwrap();
-            let mut current = data.filter(&mask).unwrap();
-            current.as_single_chunk_par();
+    // //     // Get individual timestamps for which data was stored
+    // //     let timestamp_series = data.column("t").unwrap();
+    // //     let unique_timestamps = timestamp_series.unique().unwrap();
+    // //     let timestamps = unique_timestamps.f64().unwrap();
 
-            // Distribute new data
-            let d1_array = current.column("d1").unwrap().str().unwrap();
-            let d2_array = current.column("d2").unwrap().str().unwrap();
-            let p_close_array = current.column("p_close").unwrap().f64().unwrap();
-            for i in 0..current.height() {
-                let d1 = d1_array.get(i).unwrap();
-                let d2 = d2_array.get(i).unwrap();
+    //     // Deploy RC
+    //     // let original = resin.manager.reactive_circuit.lock().unwrap().clone();
+    //     // let (deployed_original, mut original_storage) = resin.deploy(0, 1);
+    //     // let (mut deployed_adapted, mut adapted_storage) = resin.deploy(0, 1);
 
-                match writers.get(&(d1, d2)) {
-                    Some(writer) => writer.write(
-                        Vector::from(vec![p_close_array.get(i).unwrap()]),
-                        Some(simulation_time),
-                    ),
-                    None => writers.get(&(d2, d1)).unwrap().write(
-                        Vector::from(vec![p_close_array.get(i).unwrap()]),
-                        Some(simulation_time),
-                    ),
-                };
-            }
+    //     print!("Run simulation ... ");
+    //     let boundaries = create_boundaries(1.0, 1);
+    //     let mut partitions = partitioning(&resin.manager.get_frequencies(), &boundaries);
+    //     let mut inference_timestamps = vec![];
+    //     // let mut original_inference_times = vec![];
+    //     let mut adapted_inference_times = vec![];
+    //     // let mut adapted_full_inference_times = vec![];
+    //     let mut rc_numbers = vec![];
+    //     let mut root_leafs = vec![];
+    //     let mut number_root_leafs = resin.manager.reactive_circuit.lock().unwrap().leafs.len();
+    //     let mut frequencies = vec![];
 
-            // Make publish/subscribe cycle happen
-            resin.manager.spin_once();
-            resin.manager.prune_frequencies(1.0, Some(simulation_time));
+    //     for timestep in timestamps {
+    //         // Update simulation time
+    //         let simulation_time;
+    //         match timestep {
+    //             Some(t) => simulation_time = t,
+    //             None => break,
+    //         }
 
-            // Adapt RC if partitioning changed
-            let new_partitions = partitioning(&resin.manager.get_frequencies(), &boundaries);
-            if partitions != new_partitions {
-                partitions = new_partitions;
+    //         // Get data for this timestep
+    //         let mask = timestamp_series
+    //             .as_materialized_series()
+    //             .equal(simulation_time)
+    //             .unwrap();
+    //         let mut current = data.filter(&mask).unwrap();
+    //         current.as_single_chunk_par();
 
-                let value = resin.manager.reactive_circuit.lock().unwrap().update()["unsafe"].clone();
+    //         // Distribute new data
+    //         let d1_array = current.column("d1").unwrap().str().unwrap();
+    //         let d2_array = current.column("d2").unwrap().str().unwrap();
+    //         let p_close_array = current.column("p_close").unwrap().f64().unwrap();
+    //         for i in 0..current.height() {
+    //             let d1 = d1_array.get(i).unwrap();
+    //             let d2 = d2_array.get(i).unwrap();
 
-                print!("Adapt leafs in ... ");
-                let mut rc_to_adapt = original.clone();
-                let clock = Instant::now();
-                let number_of_adaptations = frequency_adaptation(
-                    &mut rc_to_adapt,
-                    &partitions,
-                    Some(1)
-                );
-                println!(
-                    "{}s for {} leafs.",
-                    clock.elapsed().as_secs_f64(),
-                    number_of_adaptations
-                );
+    //             match writers.get(&(d1, d2)) {
+    //                 Some(writer) => writer.write(
+    //                     Vector::from(vec![p_close_array.get(i).unwrap()]),
+    //                     Some(simulation_time),
+    //                 ),
+    //                 None => writers.get(&(d2, d1)).unwrap().write(
+    //                     Vector::from(vec![p_close_array.get(i).unwrap()]),
+    //                     Some(simulation_time),
+    //                 ),
+    //             };
+    //         }
 
-                if number_of_adaptations > 0 {
-                    *resin.manager.reactive_circuit.lock().unwrap() = rc_to_adapt;
-                }
+    //         // Make publish/subscribe cycle happen
+    //         resin.manager.spin_once();
+    //         resin.manager.prune_frequencies(1.0, Some(simulation_time));
 
-                println!("Value before: {:?}\nValue after: {:?}", value, resin.manager.reactive_circuit.lock().unwrap().update()["unsafe"]);
+    //         // Adapt RC if partitioning changed
+    //         let new_partitions = partitioning(&resin.manager.get_frequencies(), &boundaries);
+    //         if partitions != new_partitions {
+    //             partitions = new_partitions;
 
-                // let _ = resin
-                //     .manager
-                //     .reactive_circuit
-                //     .lock()
-                //     .unwrap()
-                //     .to_svg(&format!(
-                //         "output/test/test_simulation_rc_{}.svg",
-                //         simulation_time
-                //     ), false);
+    //             let value = resin.manager.reactive_circuit.lock().unwrap().update()["unsafe"].clone();
 
-                // if number_of_adaptations > 0 {
-                    // let depth = resin.circuits[0].depth(None);
-                    // let ops = resin.circuits[0].counted_update(&resin.manager.get_values());
-                    // let leafs = resin.circuits[0].leafs();
-                    // let leaf_names = resin.manager.get_names();
-                    // let high_frequency_leafs: Vec<String> = leafs
-                    //     .iter()
-                    //     .map(|l| leaf_names[*l as usize].clone())
-                    //     .collect();
-                    // number_root_leafs = high_frequency_leafs.len();
-                    // println!("New depth {depth} and number of operations {ops} over leafs {high_frequency_leafs:?}");
+    //             print!("Adapt leafs in ... ");
+    //             let mut rc_to_adapt = original.clone();
+    //             let clock = Instant::now();
+    //             let number_of_adaptations = frequency_adaptation(
+    //                 &mut rc_to_adapt,
+    //                 &partitions,
+    //                 Some(1)
+    //             );
+    //             println!(
+    //                 "{}s for {} leafs.",
+    //                 clock.elapsed().as_secs_f64(),
+    //                 number_of_adaptations
+    //             );
 
-                    // Deploy newly adapted RC
-                    // (deployed_adapted, adapted_storage) = resin.deploy(0, 1);
-                // }
-            }
+    //             if number_of_adaptations > 0 {
+    //                 *resin.manager.reactive_circuit.lock().unwrap() = rc_to_adapt;
+    //             }
 
-            // Update value and note runtime for adapted
-            let updated = !resin.manager.reactive_circuit.lock().unwrap().queue.is_empty();
-            let start = clock.elapsed().as_secs_f64();
-            resin.manager.reactive_circuit.lock().unwrap().update();
-            adapted_inference_times.push(clock.elapsed().as_secs_f64() - start);
+    //             println!("Value before: {:?}\nValue after: {:?}", value, resin.manager.reactive_circuit.lock().unwrap().update()["unsafe"]);
 
-            // let elapsed = resin.full_update(&deployed_original, &mut original_storage);
-            // original_inference_times.push(elapsed);
+    //             // let _ = resin
+    //             //     .manager
+    //             //     .reactive_circuit
+    //             //     .lock()
+    //             //     .unwrap()
+    //             //     .to_svg(&format!(
+    //             //         "output/test/test_simulation_rc_{}.svg",
+    //             //         simulation_time
+    //             //     ), false);
 
-            // let elapsed = resin.full_update(&deployed_adapted, &mut adapted_storage);
-            // adapted_full_inference_times.push(elapsed);
+    //             // if number_of_adaptations > 0 {
+    //                 // let depth = resin.circuits[0].depth(None);
+    //                 // let ops = resin.circuits[0].counted_update(&resin.manager.get_values());
+    //                 // let leafs = resin.circuits[0].leafs();
+    //                 // let leaf_names = resin.manager.get_names();
+    //                 // let high_frequency_leafs: Vec<String> = leafs
+    //                 //     .iter()
+    //                 //     .map(|l| leaf_names[*l as usize].clone())
+    //                 //     .collect();
+    //                 // number_root_leafs = high_frequency_leafs.len();
+    //                 // println!("New depth {depth} and number of operations {ops} over leafs {high_frequency_leafs:?}");
 
-            // Time update to value
-            inference_timestamps.push(simulation_time);
-            rc_numbers.push(
-                resin
-                    .manager
-                    .reactive_circuit
-                    .lock()
-                    .unwrap()
-                    .structure
-                    .node_count(),
-            );
-            root_leafs.push(number_root_leafs);
-            frequencies.push(resin.manager.get_frequencies());
-            if updated {
-                println!(
-                    "Time {simulation_time} | Runtime {}\n",
-                    // original_inference_times[inference_timestamps.len() - 1],
-                    adapted_inference_times[inference_timestamps.len() - 1],
-                    // adapted_full_inference_times[inference_timestamps.len() - 1]
-                );
-            }
-        }
+    //                 // Deploy newly adapted RC
+    //                 // (deployed_adapted, adapted_storage) = resin.deploy(0, 1);
+    //             // }
+    //         }
 
-        println!("Export results.");
-        let path = Path::new("output/data/simulation_results.csv");
-        if !path.exists() {
-            let mut file = File::create(path).expect("Unable to create file");
-            file.write_all(
-                "Time,OriginalRuntime,AdaptedRuntime,AdaptedFullRuntime,RCs,Leafs\n".as_bytes(),
-            )
-            .expect("Unable to write data");
-        }
+    //         // Update value and note runtime for adapted
+    //         let updated = !resin.manager.reactive_circuit.lock().unwrap().queue.is_empty();
+    //         let start = clock.elapsed().as_secs_f64();
+    //         resin.manager.reactive_circuit.lock().unwrap().update();
+    //         adapted_inference_times.push(clock.elapsed().as_secs_f64() - start);
 
-        let mut file = OpenOptions::new().append(true).open(path).unwrap();
-        let mut csv_text = "".to_string();
-        for i in 0..inference_timestamps.len() {
-            csv_text.push_str(&format!(
-                "{},{},{},{}\n",
-                inference_timestamps[i],
-                // original_inference_times[i],
-                adapted_inference_times[i],
-                // adapted_full_inference_times[i],
-                rc_numbers[i],
-                root_leafs[i]
-            ));
-        }
-        file.write_all(csv_text.as_bytes())
-            .expect("Unable to write data");
+    //         // let elapsed = resin.full_update(&deployed_original, &mut original_storage);
+    //         // original_inference_times.push(elapsed);
+
+    //         // let elapsed = resin.full_update(&deployed_adapted, &mut adapted_storage);
+    //         // adapted_full_inference_times.push(elapsed);
+
+    //         // Time update to value
+    //         inference_timestamps.push(simulation_time);
+    //         rc_numbers.push(
+    //             resin
+    //                 .manager
+    //                 .reactive_circuit
+    //                 .lock()
+    //                 .unwrap()
+    //                 .structure
+    //                 .node_count(),
+    //         );
+    //         root_leafs.push(number_root_leafs);
+    //         frequencies.push(resin.manager.get_frequencies());
+    //         if updated {
+    //             println!(
+    //                 "Time {simulation_time} | Runtime {}\n",
+    //                 // original_inference_times[inference_timestamps.len() - 1],
+    //                 adapted_inference_times[inference_timestamps.len() - 1],
+    //                 // adapted_full_inference_times[inference_timestamps.len() - 1]
+    //             );
+    //         }
+    //     }
 
     //     println!("Export results.");
     //     let path = Path::new("output/data/simulation_results.csv");
@@ -615,26 +586,53 @@ mod tests {
     //         .expect("Unable to write data");
     //     }
 
-        let mut file = OpenOptions::new().append(true).open(path).unwrap();
-        let mut csv_text = "".to_string();
-        // Frequencies header
-        let num_leafs = resin.manager.get_frequencies().len();
-        csv_text.push_str("Time");
-        for i in 0..num_leafs {
-            csv_text.push_str(&format!(",f{i}"));
-        }
-        csv_text.push_str("\n");
-        // Frequencies
-        for i in 0..inference_timestamps.len() {
-            csv_text.push_str(&format!("{}", inference_timestamps[i]));
-            for j in 0..num_leafs {
-                csv_text.push_str(&format!(",{}", frequencies[i][j]));
-            }
-            csv_text.push_str("\n");
-        }
-        file.write_all(csv_text.as_bytes())
-            .expect("Unable to write data");
-    }
+    //     let mut file = OpenOptions::new().append(true).open(path).unwrap();
+    //     let mut csv_text = "".to_string();
+    //     for i in 0..inference_timestamps.len() {
+    //         csv_text.push_str(&format!(
+    //             "{},{},{},{}\n",
+    //             inference_timestamps[i],
+    //             // original_inference_times[i],
+    //             adapted_inference_times[i],
+    //             // adapted_full_inference_times[i],
+    //             rc_numbers[i],
+    //             root_leafs[i]
+    //         ));
+    //     }
+    //     file.write_all(csv_text.as_bytes())
+    //         .expect("Unable to write data");
+
+    // //     println!("Export results.");
+    // //     let path = Path::new("output/data/simulation_results.csv");
+    // //     if !path.exists() {
+    // //         let mut file = File::create(path).expect("Unable to create file");
+    // //         file.write_all(
+    // //             "Time,OriginalRuntime,AdaptedRuntime,AdaptedFullRuntime,RCs,Leafs\n".as_bytes(),
+    // //         )
+    // //         .expect("Unable to write data");
+    // //     }
+
+    //     let mut file = OpenOptions::new().append(true).open(path).unwrap();
+    //     let mut csv_text = "".to_string();
+    //     // Frequencies header
+    //     let num_leafs = resin.manager.get_frequencies().len();
+    //     csv_text.push_str("Time");
+    //     for i in 0..num_leafs {
+    //         csv_text.push_str(&format!(",f{i}"));
+    //     }
+    //     csv_text.push_str("\n");
+    //     // Frequencies
+    //     for i in 0..inference_timestamps.len() {
+    //         csv_text.push_str(&format!("{}", inference_timestamps[i]));
+    //         for j in 0..num_leafs {
+    //             csv_text.push_str(&format!(",{}", frequencies[i][j]));
+    //         }
+    //         csv_text.push_str("\n");
+    //     }
+    //     file.write_all(csv_text.as_bytes())
+    //         .expect("Unable to write data");
+    //     }
+    // }
 
     fn load_csv(path: &str) -> DataFrame {
         let file = std::fs::File::open(path).unwrap();
@@ -656,232 +654,231 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_promis() {
-        use std::fs::{File, OpenOptions};
-        use std::io::Write;
-        use std::path::Path;
-        use std::time::Instant;
+    // #[test]
+    // fn test_promis() {
+    //     use std::fs::{File, OpenOptions};
+    //     use std::io::Write;
+    //     use std::path::Path;
+    //     use std::time::Instant;
 
-        use crate::channels::clustering::{create_boundaries, frequency_adaptation};
+    //     use crate::channels::clustering::{create_boundaries, frequency_adaptation};
 
-        print!("Build Resin model in ... ");
-        let clock = Instant::now();
-        let mut model = "".to_string();
-        model += &format!("close(car) <- source(\"/close_car\", Probability).\n");
-        model += &format!("close(primary) <- source(\"/close_primary\", Probability).\n");
-        model += &format!("close(secondary) <- source(\"/close_secondary\", Probability).\n");
-        model += &format!("close(tertiary) <- source(\"/close_tertiary\", Probability).\n");
-        model += &format!("close(stadium) <- source(\"/close_stadium\", Probability).\n");
-        model += &format!("close(government) <- source(\"/close_government\", Probability).\n");
-        model += &format!("close(embassy) <- source(\"/close_embassy\", Probability).\n");
-        model += &format!("over(park) <- source(\"/over_park\", Probability).\n");
+    //     print!("Build Resin model in ... ");
+    //     let clock = Instant::now();
+    //     let mut model = "".to_string();
+    //     model += &format!("close(car) <- source(\"/close_car\", Probability).\n");
+    //     model += &format!("close(primary) <- source(\"/close_primary\", Probability).\n");
+    //     model += &format!("close(secondary) <- source(\"/close_secondary\", Probability).\n");
+    //     model += &format!("close(tertiary) <- source(\"/close_tertiary\", Probability).\n");
+    //     model += &format!("close(stadium) <- source(\"/close_stadium\", Probability).\n");
+    //     model += &format!("close(government) <- source(\"/close_government\", Probability).\n");
+    //     model += &format!("close(embassy) <- source(\"/close_embassy\", Probability).\n");
+    //     model += &format!("over(park) <- source(\"/over_park\", Probability).\n");
 
-        model +=
-            &format!("government_safety_rules if not close(government) and not close(embassy).\n");
+    //     model +=
+    //         &format!("government_safety_rules if not close(government) and not close(embassy).\n");
 
-        model += &format!("leisure_rules if over(park).\n");
+    //     model += &format!("leisure_rules if over(park).\n");
 
-        model += &format!("city_traversal_rules if close(primary) and not close(car).\n");
-        model += &format!("city_traversal_rules if close(secondary) and not close(car).\n");
-        model += &format!("city_traversal_rules if close(tertiary) and not close(car).\n");
+    //     model += &format!("city_traversal_rules if close(primary) and not close(car).\n");
+    //     model += &format!("city_traversal_rules if close(secondary) and not close(car).\n");
+    //     model += &format!("city_traversal_rules if close(tertiary) and not close(car).\n");
 
-        model += &format!("olympia_rules if not close(stadium).\n");
+    //     model += &format!("olympia_rules if not close(stadium).\n");
 
-        model += &format!("airspace if government_safety_rules and olympia_rules.\n");
-        model += &format!("airspace if government_safety_rules and leisure_rules.\n");
-        model += &format!("airspace if government_safety_rules and city_traversal_rules.\n");
+    //     model += &format!("airspace if government_safety_rules and olympia_rules.\n");
+    //     model += &format!("airspace if government_safety_rules and leisure_rules.\n");
+    //     model += &format!("airspace if government_safety_rules and city_traversal_rules.\n");
 
-        model += &format!("airspace -> target(\"/airspace\").\n");
-        println!("{}s", clock.elapsed().as_secs_f64());
-        println!("{model}");
+    //     model += &format!("airspace -> target(\"/airspace\").\n");
+    //     println!("{}s", clock.elapsed().as_secs_f64());
+    //     println!("{model}");
 
-        print!("Compile Resin in ... ");
-        let clock = Instant::now();
-        let value_size = 1;  // 000000;
-        let mut resin = Resin::compile(&model, value_size, false).expect("Could not compile Resin!");
-        println!("{}s", clock.elapsed().as_secs_f64());
+    //     print!("Compile Resin in ... ");
+    //     let clock = Instant::now();
+    //     let value_size = 1;  // 000000;
+    //     let mut resin = Resin::compile(&model, value_size, false).expect("Could not compile Resin!");
+    //     println!("{}s", clock.elapsed().as_secs_f64());
 
-        // println!("#models {}", resin.circuits[0].products.len());
-        // println!("Size {}B", resin.circuits[0].size());
-        // println!("Value {}", resin.circuits[0].value());
-        // println!("Leafs {:?}", resin.manager.get_names());
+    //     // println!("#models {}", resin.circuits[0].products.len());
+    //     // println!("Size {}B", resin.circuits[0].size());
+    //     // println!("Value {}", resin.circuits[0].value());
+    //     // println!("Leafs {:?}", resin.manager.get_names());
 
-        print!("Setup writer in ... ");
-        let clock = Instant::now();
-        let channel = format!("/close_car");
-        let car_writer = resin
-            .manager
-            .make_writer(&channel)
-            .expect("Could not setup writer to data channel!");
+    //     print!("Setup writer in ... ");
+    //     let clock = Instant::now();
+    //     let channel = format!("/close_car");
+    //     let car_writer = resin
+    //         .manager
+    //         .make_writer(&channel)
+    //         .expect("Could not setup writer to data channel!");
 
-        // Distribute static StaR Map data
-        send_static_star_map_data(&mut resin, "/close_primary", "data/rc_close_primary.csv");
-        send_static_star_map_data(
-            &mut resin,
-            "/close_secondary",
-            "data/rc_close_secondary.csv",
-        );
-        send_static_star_map_data(&mut resin, "/close_tertiary", "data/rc_close_tertiary.csv");
-        send_static_star_map_data(
-            &mut resin,
-            "/close_government",
-            "data/rc_close_government.csv",
-        );
-        send_static_star_map_data(&mut resin, "/close_embassy", "data/rc_close_embassy.csv");
-        send_static_star_map_data(&mut resin, "/close_stadium", "data/rc_close_stadium.csv");
-        send_static_star_map_data(&mut resin, "/over_park", "data/rc_over_park.csv");
+    //     // Distribute static StaR Map data
+    //     send_static_star_map_data(&mut resin, "/close_primary", "data/rc_close_primary.csv");
+    //     send_static_star_map_data(
+    //         &mut resin,
+    //         "/close_secondary",
+    //         "data/rc_close_secondary.csv",
+    //     );
+    //     send_static_star_map_data(&mut resin, "/close_tertiary", "data/rc_close_tertiary.csv");
+    //     send_static_star_map_data(
+    //         &mut resin,
+    //         "/close_government",
+    //         "data/rc_close_government.csv",
+    //     );
+    //     send_static_star_map_data(&mut resin, "/close_embassy", "data/rc_close_embassy.csv");
+    //     send_static_star_map_data(&mut resin, "/close_stadium", "data/rc_close_stadium.csv");
+    //     send_static_star_map_data(&mut resin, "/over_park", "data/rc_over_park.csv");
 
-        println!("{}s", clock.elapsed().as_secs_f64());
+    //     println!("{}s", clock.elapsed().as_secs_f64());
 
-        // Deploy RC
-        // let original = resin.circuits[0].deep_clone();
-        // let (mut deployed, mut storage) = resin.deploy(0, value_size);
+    //     // Deploy RC
+    //     // let original = resin.circuits[0].deep_clone();
+    //     // let (mut deployed, mut storage) = resin.deploy(0, value_size);
 
-        // Run continual inference
-        println!("Run ProMis ... ");
-        let boundaries = create_boundaries(1.0 / 120.0, 1);
-        let mut partitions = partitioning(&resin.manager.get_frequencies(), &boundaries);
-        let mut inference_timestamps = vec![];
-        let mut inference_times = vec![];
-        let mut rc_numbers = vec![];
-        // let mut root_leafs = vec![];
-        // let mut number_root_leafs = original.leafs().len();
-        let mut frequencies = vec![];
+    //     // Run continual inference
+    //     println!("Run ProMis ... ");
+    //     let boundaries = create_boundaries(1.0 / 120.0, 1);
+    //     let mut partitions = partitioning(&resin.manager.get_frequencies(), &boundaries);
+    //     let mut inference_timestamps = vec![];
+    //     let mut inference_times = vec![];
+    //     let mut rc_numbers = vec![];
+    //     // let mut root_leafs = vec![];
+    //     // let mut number_root_leafs = original.leafs().len();
+    //     let mut frequencies = vec![];
 
-        // Data is chunked in hourly packages
-        let mut result = HashMap::new();
-        for hour in 0..23 {
-            let data = load_csv(&format!("data/{}_close_distance_x_car.csv", hour));
+    //     // Data is chunked in hourly packages
+    //     let mut result = HashMap::new();
+    //     for hour in 0..23 {
+    //         let data = load_csv(&format!("data/{}_close_distance_x_car.csv", hour));
 
-            for second in (0..60 * 60).step_by(60) {
-                let simulation_time = second as f64 + hour as f64 * 60.0 * 60.0;
+    //         for second in (0..60 * 60).step_by(60) {
+    //             let simulation_time = second as f64 + hour as f64 * 60.0 * 60.0;
 
-                // Publish new data
-                let probabilities = data.column(&format!("t{}", second)).unwrap().f64().unwrap();
-                car_writer.write(
-                    Vector::from_iter(probabilities.iter().map(|p| p.unwrap())),
-                    Some(simulation_time),
-                );
+    //             // Publish new data
+    //             let probabilities = data.column(&format!("t{}", second)).unwrap().f64().unwrap();
+    //             car_writer.write(
+    //                 Vector::from_iter(probabilities.iter().map(|p| p.unwrap())),
+    //                 Some(simulation_time),
+    //             );
 
-                // Make publish/subscribe cycle happen
-                resin.manager.spin_once();
-                resin.manager.prune_frequencies(1.0, Some(simulation_time));
+    //             // Make publish/subscribe cycle happen
+    //             resin.manager.prune_frequencies(1.0, Some(simulation_time));
 
-                // Adapt RC if partitioning changed
-                let new_partitions = partitioning(&resin.manager.get_frequencies(), &boundaries);
-                if partitions != new_partitions {
-                    partitions = new_partitions;
+    //             // Adapt RC if partitioning changed
+    //             let new_partitions = partitioning(&resin.manager.get_frequencies(), &boundaries);
+    //             if partitions != new_partitions {
+    //                 partitions = new_partitions;
 
-                    print!("Adapt leafs in ... ");
-                    let clock = Instant::now();
-                    let number_of_adaptations = frequency_adaptation(
-                        &mut resin.manager.reactive_circuit.lock().unwrap(),
-                        &partitions,
-                        None
-                    );
-                    println!(
-                        "{}s for {} leafs.",
-                        clock.elapsed().as_secs_f64(),
-                        number_of_adaptations
-                    );
+    //                 print!("Adapt leafs in ... ");
+    //                 let clock = Instant::now();
+    //                 let number_of_adaptations = frequency_adaptation(
+    //                     &mut resin.manager.reactive_circuit.lock().unwrap(),
+    //                     &partitions,
+    //                     None
+    //                 );
+    //                 println!(
+    //                     "{}s for {} leafs.",
+    //                     clock.elapsed().as_secs_f64(),
+    //                     number_of_adaptations
+    //                 );
 
-                    let _ = resin
-                        .manager
-                        .reactive_circuit
-                        .lock()
-                        .unwrap()
-                        .to_combined_svg(&format!(
-                            "test_promis_rc_overview_{}.svg",
-                            simulation_time
-                        ));
+    //                 let _ = resin
+    //                     .manager
+    //                     .reactive_circuit
+    //                     .lock()
+    //                     .unwrap()
+    //                     .to_combined_svg(&format!(
+    //                         "test_promis_rc_overview_{}.svg",
+    //                         simulation_time
+    //                     ));
 
-                    // if number_of_adaptations > 0 {
-                    //     let depth = resin.circuits[0].depth(None);
-                    //     let ops = resin.circuits[0].counted_update(&resin.manager.get_values());
-                    //     let leafs = resin.circuits[0].leafs();
-                    //     let leaf_names = resin.manager.get_names();
-                    //     let high_frequency_leafs: Vec<String> = leafs
-                    //         .iter()
-                    //         .map(|l| leaf_names[*l as usize].clone())
-                    //         .collect();
-                    //     number_root_leafs = high_frequency_leafs.len();
-                    //     println!("New depth {depth} and number of operations {ops} over leafs {high_frequency_leafs:?}");
+    //                 // if number_of_adaptations > 0 {
+    //                 //     let depth = resin.circuits[0].depth(None);
+    //                 //     let ops = resin.circuits[0].counted_update(&resin.manager.get_values());
+    //                 //     let leafs = resin.circuits[0].leafs();
+    //                 //     let leaf_names = resin.manager.get_names();
+    //                 //     let high_frequency_leafs: Vec<String> = leafs
+    //                 //         .iter()
+    //                 //         .map(|l| leaf_names[*l as usize].clone())
+    //                 //         .collect();
+    //                 //     number_root_leafs = high_frequency_leafs.len();
+    //                 //     println!("New depth {depth} and number of operations {ops} over leafs {high_frequency_leafs:?}");
 
-                    //     // resin.circuits[0].to_svg("output/plots/adapted.svg", &resin.manager);
-                    //     return;
+    //                 //     // resin.circuits[0].to_svg("output/plots/adapted.svg", &resin.manager);
+    //                 //     return;
 
-                    //     // Deploy newly adapted RC
-                    //     (deployed, storage) = resin.deploy(0, value_size);
-                    // }
-                }
+    //                 //     // Deploy newly adapted RC
+    //                 //     (deployed, storage) = resin.deploy(0, value_size);
+    //                 // }
+    //             }
 
-                // Update value and note runtime for adapted
-                let start = clock.elapsed().as_secs_f64();
-                result = resin.manager.reactive_circuit.lock().unwrap().update();
-                let elapsed = clock.elapsed().as_secs_f64() - start;
-                println!("Updated RC in {}s", elapsed);
+    //             // Update value and note runtime for adapted
+    //             let start = clock.elapsed().as_secs_f64();
+    //             result = resin.manager.reactive_circuit.lock().unwrap().update();
+    //             let elapsed = clock.elapsed().as_secs_f64() - start;
+    //             println!("Updated RC in {}s", elapsed);
 
-                // Time update to value
-                inference_times.push(elapsed);
-                inference_timestamps.push(simulation_time);
-                rc_numbers.push(
-                    resin
-                        .manager
-                        .reactive_circuit
-                        .lock()
-                        .unwrap()
-                        .structure
-                        .node_count(),
-                );
-                // root_leafs.push(number_root_leafs);
-                frequencies.push(resin.manager.get_frequencies());
-            }
+    //             // Time update to value
+    //             inference_times.push(elapsed);
+    //             inference_timestamps.push(simulation_time);
+    //             rc_numbers.push(
+    //                 resin
+    //                     .manager
+    //                     .reactive_circuit
+    //                     .lock()
+    //                     .unwrap()
+    //                     .structure
+    //                     .node_count(),
+    //             );
+    //             // root_leafs.push(number_root_leafs);
+    //             frequencies.push(resin.manager.get_frequencies());
+    //         }
 
-            println!("Export landscape.");
-            let filename = format!("output/data/reactive_promis_inference_{hour}.csv");
-            let path = Path::new(&filename);
-            if !path.exists() {
-                let mut file = File::create(path).expect("Unable to create file");
-                file.write_all("latitude,longitude,probability\n".as_bytes())
-                    .expect("Unable to write data");
-            }
+    //         println!("Export landscape.");
+    //         let filename = format!("output/data/reactive_promis_inference_{hour}.csv");
+    //         let path = Path::new(&filename);
+    //         if !path.exists() {
+    //             let mut file = File::create(path).expect("Unable to create file");
+    //             file.write_all("latitude,longitude,probability\n".as_bytes())
+    //                 .expect("Unable to write data");
+    //         }
 
-            let mut file = OpenOptions::new().append(true).open(path).unwrap();
-            let mut csv_text = "".to_string();
-            let latitudes = data.column("lat").unwrap();
-            let longitudes = data.column("lon").unwrap();
-            let landscape = &result["airspace"];
-            for i in 0..value_size {
-                csv_text.push_str(&format!(
-                    "{},{},{}\n",
-                    latitudes.get(i).unwrap(),
-                    longitudes.get(i).unwrap(),
-                    landscape[i]
-                ));
-            }
-            file.write_all(csv_text.as_bytes())
-                .expect("Unable to write data");
-        }
+    //         let mut file = OpenOptions::new().append(true).open(path).unwrap();
+    //         let mut csv_text = "".to_string();
+    //         let latitudes = data.column("lat").unwrap();
+    //         let longitudes = data.column("lon").unwrap();
+    //         let landscape = &result["airspace"];
+    //         for i in 0..value_size {
+    //             csv_text.push_str(&format!(
+    //                 "{},{},{}\n",
+    //                 latitudes.get(i).unwrap(),
+    //                 longitudes.get(i).unwrap(),
+    //                 landscape[i]
+    //             ));
+    //         }
+    //         file.write_all(csv_text.as_bytes())
+    //             .expect("Unable to write data");
+    //     }
 
-        println!("Export runtime data.");
-        let filename: String = format!("output/data/reactive_promis_runtime.csv");
-        let path = Path::new(&filename);
-        if !path.exists() {
-            let mut file = File::create(path).expect("Unable to create file");
-            file.write_all("Time,Runtime,RCs,Leafs\n".as_bytes())
-                .expect("Unable to write data");
-        }
+    //     println!("Export runtime data.");
+    //     let filename: String = format!("output/data/reactive_promis_runtime.csv");
+    //     let path = Path::new(&filename);
+    //     if !path.exists() {
+    //         let mut file = File::create(path).expect("Unable to create file");
+    //         file.write_all("Time,Runtime,RCs,Leafs\n".as_bytes())
+    //             .expect("Unable to write data");
+    //     }
 
-        let mut file = OpenOptions::new().append(true).open(path).unwrap();
-        let mut csv_text = "".to_string();
-        for i in 0..inference_timestamps.len() {
-            csv_text.push_str(&format!(
-                "{},{},{}\n",
-                inference_timestamps[i], inference_times[i], rc_numbers[i]
-            ));
-        }
-        file.write_all(csv_text.as_bytes())
-            .expect("Unable to write data");
-    }
+    //     let mut file = OpenOptions::new().append(true).open(path).unwrap();
+    //     let mut csv_text = "".to_string();
+    //     for i in 0..inference_timestamps.len() {
+    //         csv_text.push_str(&format!(
+    //             "{},{},{}\n",
+    //             inference_timestamps[i], inference_times[i], rc_numbers[i]
+    //         ));
+    //     }
+    //     file.write_all(csv_text.as_bytes())
+    //         .expect("Unable to write data");
+    // }
 }

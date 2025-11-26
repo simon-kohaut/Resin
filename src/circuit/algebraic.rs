@@ -249,27 +249,30 @@ impl AlgebraicCircuit {
 
     /// Iterate over the siblings of the given `node` within this circuit.
     pub fn iter_siblings(&self, node: &NodeIndex) -> impl Iterator<Item = NodeIndex> + '_ {
-        self.iter_parents(node).flat_map(|parent| self.iter_children(&parent))
+        let node_to_exclude = *node;
+        self.iter_parents(node)
+            .flat_map(|parent| self.iter_children(&parent))
+            .filter(move |&sibling| sibling != node_to_exclude)
     }
 
     /// Get all the parent nodes of the given `node` within this circuit.
     pub fn get_parents(&self, node: &NodeIndex) -> Vec<NodeIndex> {
-        self.iter_parents(node).collect()
+        self.iter_parents(node).unique().collect()
     }
 
     /// Get all the child nodes of the given `node` within this circuit.
     pub fn get_children(&self, node: &NodeIndex) -> Vec<NodeIndex> {
-        self.iter_children(node).collect()
+        self.iter_children(node).unique().collect()
     }
 
     /// Get all the grandparent nodes of the given `node` within this circuit.
     pub fn get_grandparents(&self, node: &NodeIndex) -> Vec<NodeIndex> {
-        self.iter_grandparent(node).collect()
+        self.iter_grandparent(node).unique().collect()
     }
 
     /// Get all the sibling nodes of the given `node`, i.e., those with a shared parent, within this circuit.
     pub fn get_siblings(&self, node: &NodeIndex) -> Vec<NodeIndex> {
-        self.iter_siblings(node).collect()
+        self.iter_siblings(node).unique().collect()
     }
 
     /// Remove all edges that may connect nodes `a` and `b`.
@@ -779,9 +782,9 @@ mod tests {
         ac.add(&vec![0, 1]);
         ac.add(&vec![0, 2]);
 
-        let leaf_0 = ac.get_leaf(0).unwrap();
-        let leaf_1 = ac.get_leaf(1).unwrap();
-        let leaf_2 = ac.get_leaf(2).unwrap();
+        let a = ac.get_leaf(0).unwrap();
+        let b = ac.get_leaf(1).unwrap();
+        let c = ac.get_leaf(2).unwrap();
 
         // 3 Leafs + 2 Products + 1 Sum = 6 Nodes total with 6 edges
         assert_eq!(ac.structure.node_indices().count(), 6);
@@ -790,7 +793,7 @@ mod tests {
         // The scope should consist of the Leaf nodes 0, 1 and 2
         assert_eq!(
             ac.get_scope(&ac.root),
-            BTreeSet::from_iter(vec![leaf_0, leaf_1, leaf_2])
+            BTreeSet::from_iter(vec![a, b, c])
         );
         assert_eq!(
             ac.filter_nodes_by_type(&Vec::from_iter(ac.get_scope(&ac.root)), &NodeType::Leaf(0))
@@ -799,30 +802,28 @@ mod tests {
         );
 
         // Leaf 0 is part of 2 products, leafs 1 and 2 each have only 1 product parent
-        assert_eq!(ac.get_parents(&leaf_0).len(), 2);
-        assert_eq!(ac.get_parents(&leaf_1).len(), 1);
-        assert_eq!(ac.get_parents(&leaf_2).len(), 1);
+        assert_eq!(ac.get_parents(&a).len(), 2);
+        assert_eq!(ac.get_parents(&b).len(), 1);
+        assert_eq!(ac.get_parents(&c).len(), 1);
 
         // There is only 1 grandparent, i.e., the sum as root node
-        assert_eq!(ac.get_grandparents(&leaf_0).len(), 1);
-        assert_eq!(ac.get_grandparents(&leaf_1).len(), 1);
-        assert_eq!(ac.get_grandparents(&leaf_2).len(), 1);
-        assert_eq!(ac.get_grandparents(&leaf_2)[0], ac.root);
-        assert_eq!(ac.get_grandparents(&leaf_2)[0], ac.root);
-        assert_eq!(ac.get_grandparents(&leaf_2)[0], ac.root);
+        assert_eq!(ac.get_grandparents(&a).len(), 1);
+        assert_eq!(ac.get_grandparents(&b).len(), 1);
+        assert_eq!(ac.get_grandparents(&c).len(), 1);
+        assert_eq!(ac.get_grandparents(&c)[0], ac.root);
 
         // The children of parents are the input nodes
-        for parent in ac.get_parents(&leaf_1).iter() {
-            assert_eq!(ac.get_children(parent), vec![leaf_1, leaf_0]);
+        for parent in ac.get_parents(&b).iter() {
+            assert_eq!(ac.get_children(parent), vec![b, a]);
         }
-        for parent in ac.get_parents(&leaf_2).iter() {
-            assert_eq!(ac.get_children(parent), vec![leaf_2, leaf_0]);
+        for parent in ac.get_parents(&c).iter() {
+            assert_eq!(ac.get_children(parent), vec![c, a]);
         }
 
         // Leaf 0 is the sibling of the other 2
-        assert_eq!(ac.get_siblings(&leaf_0), vec![leaf_1, leaf_2]);
-        assert_eq!(ac.get_siblings(&leaf_1), vec![leaf_0]);
-        assert_eq!(ac.get_siblings(&leaf_2), vec![leaf_0]);
+        assert_eq!(BTreeSet::from_iter(ac.get_siblings(&a)), BTreeSet::from_iter(vec![b, c]));
+        assert_eq!(ac.get_siblings(&b), vec![a]);
+        assert_eq!(ac.get_siblings(&c), vec![a]);
 
         // Write original circuit as SVG
         ac.to_svg("output/test/test_ac_original.svg", false)?;

@@ -108,31 +108,31 @@ impl Kalman {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::{array, Array2};
+    use ndarray::array;
 
     #[test]
     fn test_kalman_new() {
         let forward_model = |dt| array![[1.0, dt], [0.0, 1.0]];
         let input_model = array![[0.0], [0.0]];
         let output_model = array![[1.0, 0.0]];
-        let prediction = array![0.0, 0.0];
-        let prediction_covariance = array![[1.0, 0.0], [0.0, 1.0]];
+        let estimate = array![0.0, 0.0];
+        let estimate_covariance = array![[1.0, 0.0], [0.0, 1.0]];
         let process_noise = array![[0.1, 0.0], [0.0, 0.1]];
         let sensor_noise = array![[0.5]];
 
         let model = LinearModel::new(forward_model, &input_model, &output_model);
         let kalman = Kalman::new(
-            &prediction,
-            &prediction_covariance,
+            &estimate,
+            &estimate_covariance,
             &process_noise,
             &sensor_noise,
             &model,
         );
 
-        assert_eq!(kalman.prediction, prediction);
-        assert_eq!(kalman.prediction_covariance, prediction_covariance);
-        assert_eq!(kalman.estimate, array![0.0, 0.0]);
-        assert_eq!(kalman.estimate_covariance, array![[0.0, 0.0], [0.0, 0.0]]);
+        assert_eq!(kalman.estimate, estimate);
+        assert_eq!(kalman.estimate_covariance, estimate_covariance);
+        assert_eq!(kalman.prediction, array![0.0, 0.0]);
+        assert_eq!(kalman.prediction_covariance, array![[0.0, 0.0], [0.0, 0.0]]);
         assert_eq!(kalman.process_noise, process_noise);
         assert_eq!(kalman.sensor_noise, sensor_noise);
     }
