@@ -2,7 +2,7 @@ use crate::tracking::Kalman;
 use crate::tracking::LinearModel;
 use ndarray::array;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FoCEstimator {
     pub kalman: Kalman,
     pub timestamp: Option<f64>,
@@ -13,22 +13,29 @@ impl FoCEstimator {
         let forward_model = |dt| array![[1.0, dt], [0.0, 1.0]];
         let input_model = array![[0.0, 0.0]];
         let output_model = array![[1.0, 0.0]];
-        let prediction = array![frequency, 0.0];
-        let prediction_covariance = array![[30.0, 0.0], [0.0, 100.0]];
+        let estimate = array![frequency, 0.0];
+        let estimate_covariance = array![[30.0, 0.0], [0.0, 100.0]];
         let process_noise = array![[0.05, 1.0], [1.0, 20.0]];
         let sensor_noise = array![[0.05]];
 
         let model = LinearModel::new(forward_model, &input_model, &output_model);
         Self {
             kalman: Kalman::new(
-                &prediction,
-                &prediction_covariance,
+                &estimate,
+                &estimate_covariance,
                 &process_noise,
                 &sensor_noise,
                 &model,
             ),
             timestamp: None,
         }
+    }
+
+    pub fn reset(&mut self) {
+        let estimate = array![0.0, 0.0];
+        let estimate_covariance = array![[30.0, 0.0], [0.0, 100.0]];
+
+        self.kalman.reset(&estimate, &estimate_covariance);
     }
 
     pub fn update(&mut self, timestamp: f64) -> f64 {

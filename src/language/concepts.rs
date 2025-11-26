@@ -23,6 +23,7 @@ pub struct Target {
     pub channel: String,
     pub message_type: ResinType,
 }
+
 pub enum ResinType {
     Number,
     Probability,

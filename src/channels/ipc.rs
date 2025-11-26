@@ -3,8 +3,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::circuit::leaf::{update, Foliage};
-use crate::circuit::reactive::RcQueue;
+use crate::circuit::leaf::update;
+use crate::circuit::ReactiveCircuit;
+
+use super::Vector;
 
 #[derive(Clone)]
 pub struct IpcReader {
@@ -52,7 +54,7 @@ impl IpcWriter {
         Ok(Self { sender })
     }
 
-    pub fn write(&self, value: f64, timestamp: Option<f64>) {
+    pub fn write(&self, value: Vector, timestamp: Option<f64>) {
         let timestamp = if timestamp.is_none() {
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

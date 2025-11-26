@@ -1,47 +1,50 @@
 use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
 
 use crate::channels::FoCEstimator;
-use crate::circuit::reactive::RcQueue;
 
-#[derive(Clone)]
+use super::reactive::ReactiveCircuit;
+use super::Vector;
+
+#[derive(Clone, Debug)]
 pub struct Leaf {
-    value: f64,
+    value: Vector,
     frequency: f64,
     cluster: i32,
     foc_estimator: FoCEstimator,
     pub name: String,
-    pub indices: BTreeSet<usize>,
+    pub dependencies: BTreeSet<u32>,
 }
 
-pub type Foliage = Arc<Mutex<Vec<Leaf>>>;
-
 impl Leaf {
-    pub fn new(value: f64, frequency: f64, name: &str) -> Self {
+    pub fn new(value: Vector, frequency: f64, name: &str) -> Self {
         Self {
-            value,
+            value: value.clone(),
             frequency,
             cluster: 0,
             foc_estimator: FoCEstimator::new(frequency),
             name: name.to_owned(),
-            indices: BTreeSet::new(),
+            dependencies: BTreeSet::new(),
         }
     }
 
-    pub fn get_value(&self) -> f64 {
-        self.value
+    pub fn get_value(&self) -> Vector {
+        self.value.clone()
     }
 
     pub fn prune_frequency(&mut self, timestamp: f64, threshold: f64) {
         if timestamp - self.foc_estimator.timestamp.unwrap_or_default() >= threshold {
-            self.foc_estimator = FoCEstimator::new(0.0);
-            self.frequency = 0.0
+            self.foc_estimator.reset();
+            self.frequency = 0.0;
         }
     }
 
-    pub fn set_value(&mut self, value: f64, timestamp: f64) -> bool {
-        if (value - self.value).abs() > 1e-3 {
-            self.value = value;
+    pub fn set_value(&mut self, value: Vector, timestamp: f64) -> bool {
+        let difference = &value - &self.value;
+
+        // Check if any difference in the value vector is larger than threshold
+        // TODO: Make threshold leaf parameter or argument
+        if difference.fold(false, |acc, value| acc | (value.abs() > 1e-3)) {
+            self.value = value.clone();
             self.frequency = self.foc_estimator.update(timestamp);
 
             true
@@ -56,6 +59,10 @@ impl Leaf {
         cluster_step
     }
 
+    pub fn get_dependencies(&self) -> BTreeSet<u32> {
+        self.dependencies.clone()
+    }
+
     pub fn get_cluster(&self) -> i32 {
         self.cluster
     }
@@ -68,32 +75,35 @@ impl Leaf {
         self.frequency = *frequency;
     }
 
-    pub fn add_dependency(&mut self, index: usize) {
-        self.indices.insert(index);
+    pub fn add_dependency(&mut self, index: u32) {
+        self.dependencies.insert(index);
     }
 
-    pub fn add_dependencies(&mut self, indices: &[usize]) {
+    pub fn add_dependencies(&mut self, indices: &[u32]) {
         for index in indices {
-            self.indices.insert(*index);
+            self.dependencies.insert(*index);
         }
     }
 
     pub fn clear_dependencies(&mut self) {
-        self.indices.clear();
+        self.dependencies.clear();
     }
 
-    pub fn remove_dependency(&mut self, index: usize) {
-        self.indices.remove(&index);
+    pub fn remove_dependency(&mut self, index: u32) {
+        self.dependencies.remove(&index);
     }
 }
 
-pub fn update(foliage: &Foliage, rc_queue: &RcQueue, index: u16, value: f64, timestamp: f64) {
-    let mut foliage_guard = foliage.lock().unwrap();
-    let mut queue_guard = rc_queue.lock().unwrap();
-
-    if foliage_guard[index as usize].set_value(value, timestamp) {
-        for rc_index in &foliage_guard[index as usize].indices {
-            queue_guard.insert(*rc_index);
+pub fn update(
+    reactive_circuit: &mut ReactiveCircuit,
+    leaf_index: u32,
+    value: Vector,
+    timestamp: f64,
+) {
+    let leaf = &mut reactive_circuit.leafs[leaf_index as usize];
+    if leaf.set_value(value, timestamp) {
+        for algebraic_circuit_index in &leaf.dependencies {
+            reactive_circuit.queue.insert(*algebraic_circuit_index);
         }
     }
 }
