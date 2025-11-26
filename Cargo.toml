@@ -28,19 +28,17 @@ codegen-units = 1
 panic = "abort"
 
 [dependencies]
-rclrs = "*"
-std_msgs = "*"
 plotly = "*"
-ndarray = "0.14"
-ndarray-rand = "*"
+ndarray = "0.17.0"
+ndarray-rand = "0.16.0"
 ndarray-npy = "*"
-ndarray-linalg = { version = "0.13", features = ["openblas-system"] }
+nalgebra = "0.34.0"
 clippy = "*"
 itertools = "*"
 nom = "*"
 regex = "*"
+rand = "*"
 lazy_static = "*"
-rand = "0.8.5"
 linfa = "0.4"
 linfa-nn = "0.5"
 linfa-clustering = "0.4"

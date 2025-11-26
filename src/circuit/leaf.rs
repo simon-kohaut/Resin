@@ -1,8 +1,6 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
-use ndarray_linalg::Scalar;
-
 use crate::channels::FoCEstimator;
 use crate::circuit::reactive::RcQueue;
 

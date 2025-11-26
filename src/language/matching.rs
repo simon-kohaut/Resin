@@ -50,38 +50,54 @@ mod tests {
     #[test]
     fn test_literal() {
         let input = "test";
-        let Some(captures) = LITERAL_REGEX.captures(input) else { panic!() };
+        let Some(captures) = LITERAL_REGEX.captures(input) else {
+            panic!()
+        };
         assert_eq!(&captures["literal"], input);
 
         let input = "test(a)";
-        let Some(captures) = LITERAL_REGEX.captures(input) else { panic!() };
+        let Some(captures) = LITERAL_REGEX.captures(input) else {
+            panic!()
+        };
         assert_eq!(&captures["literal"], input);
 
         let input = "test(a, b)";
-        let Some(captures) = LITERAL_REGEX.captures(input) else { panic!() };
+        let Some(captures) = LITERAL_REGEX.captures(input) else {
+            panic!()
+        };
         assert_eq!(&captures["literal"], input);
 
         let input = "not test(a_1, b, c)";
-        let Some(captures) = LITERAL_REGEX.captures(input) else { panic!() };
+        let Some(captures) = LITERAL_REGEX.captures(input) else {
+            panic!()
+        };
         assert_eq!(&captures["literal"], input);
     }
 
     #[test]
     fn test_body() {
         let input = "a if test.";
-        let Some(captures) = CLAUSE_REGEX.captures(input) else { panic!() };
+        let Some(captures) = CLAUSE_REGEX.captures(input) else {
+            panic!()
+        };
         assert_eq!(&captures["body"], "test");
 
         let input = "a if test and other.";
-        let Some(captures) = CLAUSE_REGEX.captures(input) else { panic!() };
+        let Some(captures) = CLAUSE_REGEX.captures(input) else {
+            panic!()
+        };
         assert_eq!(&captures["body"], "test and other");
 
         let input = "a(X, Y) if test and other.";
-        let Some(captures) = CLAUSE_REGEX.captures(input) else { panic!() };
+        let Some(captures) = CLAUSE_REGEX.captures(input) else {
+            panic!()
+        };
         assert_eq!(&captures["body"], "test and other");
 
         let input = "a_b(X, some_thing) <- P(0.4) if test(X) and other(some_thing, C).";
-        let Some(captures) = CLAUSE_REGEX.captures(input) else { panic!() };
+        let Some(captures) = CLAUSE_REGEX.captures(input) else {
+            panic!()
+        };
         assert_eq!(&captures["atom"], "a_b(X, some_thing)");
         assert_eq!(&captures["body"], "test(X) and other(some_thing, C)");
         assert_eq!(

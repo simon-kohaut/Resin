@@ -77,7 +77,9 @@ impl FromStr for Clause {
 
     fn from_str(input: &str) -> Result<Clause, Self::Err> {
         if CLAUSE_REGEX.is_match(input) {
-            let Some(captures) = CLAUSE_REGEX.captures(input) else { panic!() };
+            let Some(captures) = CLAUSE_REGEX.captures(input) else {
+                panic!()
+            };
 
             panic::set_hook(Box::new(|_info| {}));
             let mut body = "".to_string();
@@ -113,7 +115,9 @@ impl FromStr for Source {
 
     fn from_str(input: &str) -> Result<Source, Self::Err> {
         if SOURCE_REGEX.is_match(input) {
-            let Some(captures) = SOURCE_REGEX.captures(input) else { panic!() };
+            let Some(captures) = SOURCE_REGEX.captures(input) else {
+                panic!()
+            };
 
             let source = Source {
                 name: captures["atom"].to_string(),
@@ -133,7 +137,9 @@ impl FromStr for Target {
 
     fn from_str(input: &str) -> Result<Target, Self::Err> {
         if TARGET_REGEX.is_match(input) {
-            let Some(captures) = TARGET_REGEX.captures(input) else { panic!() };
+            let Some(captures) = TARGET_REGEX.captures(input) else {
+                panic!()
+            };
 
             let target = Target {
                 name: captures["atom"].to_string(),

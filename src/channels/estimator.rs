@@ -5,7 +5,7 @@ use ndarray::array;
 #[derive(Clone)]
 pub struct FoCEstimator {
     pub kalman: Kalman,
-    pub timestamp: Option<f64>
+    pub timestamp: Option<f64>,
 }
 
 impl FoCEstimator {
@@ -27,7 +27,7 @@ impl FoCEstimator {
                 &sensor_noise,
                 &model,
             ),
-            timestamp: None
+            timestamp: None,
         }
     }
 
@@ -71,7 +71,6 @@ mod tests {
         path::Path,
     };
 
-    use rand::thread_rng;
     use rand_distr::{Distribution, Normal};
 
     use super::FoCEstimator;
@@ -110,7 +109,7 @@ mod tests {
         let mut csv_text = "".to_string();
 
         // Start estimation process
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         for (i, estimator) in &mut estimators.iter_mut().enumerate() {
             for bin_size in bin_sizes {
                 let boundaries = create_boundaries(bin_size, 100);

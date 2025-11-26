@@ -7,9 +7,6 @@ use std::process::Command;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
-use rayon::iter::IntoParallelRefIterator;
-use rayon::iter::ParallelIterator;
-
 // Crate
 use crate::Manager;
 
@@ -26,15 +23,12 @@ pub struct ReactiveCircuit {
 
 pub struct DeployedCircuit {
     pub index: usize,
-    pub products: HashMap<Vec<u16>, usize>
+    pub products: HashMap<Vec<u16>, usize>,
 }
 
 impl DeployedCircuit {
     pub fn new(index: usize, products: HashMap<Vec<u16>, usize>) -> Self {
-        Self {
-            index,
-            products
-        }
+        Self { index, products }
     }
 
     pub fn update(&self, leafs: &[f64], storage: &mut Vec<f64>) -> f64 {
@@ -89,9 +83,10 @@ impl ReactiveCircuit {
     }
 
     pub fn deploy(&self) -> DeployedCircuit {
-        let products = self.products.iter().map(|(factors, rc)| {
-            (factors.clone(), rc.lock().unwrap().index)
-        });
+        let products = self
+            .products
+            .iter()
+            .map(|(factors, rc)| (factors.clone(), rc.lock().unwrap().index));
 
         DeployedCircuit::new(self.index, HashMap::from_iter(products))
     }
@@ -177,7 +172,10 @@ impl ReactiveCircuit {
         // The next child will have offset + 1 and return an offset representing the number of RCs beneath it as well
         // Meaning the next child will have an offset + 1 + n
         for (_, rc) in &self.products {
-            index_offset = rc.lock().unwrap().recompute_index(index_offset + 1, layer_offset + 1);
+            index_offset = rc
+                .lock()
+                .unwrap()
+                .recompute_index(index_offset + 1, layer_offset + 1);
         }
 
         index_offset
@@ -294,11 +292,15 @@ impl ReactiveCircuit {
         if rc.lock().unwrap().layer == depth {
             vec![rc.clone()]
         } else {
-            rc.lock().unwrap().products.iter().fold(vec![], |mut acc, (_, sub_rc)| {
-                let mut layer = ReactiveCircuit::get_layer(sub_rc, depth);
-                acc.append(&mut layer);
-                acc
-            })
+            rc.lock()
+                .unwrap()
+                .products
+                .iter()
+                .fold(vec![], |mut acc, (_, sub_rc)| {
+                    let mut layer = ReactiveCircuit::get_layer(sub_rc, depth);
+                    acc.append(&mut layer);
+                    acc
+                })
         }
     }
 
@@ -320,7 +322,7 @@ impl ReactiveCircuit {
     //             }
     //         }
 
-    //         // Second pass to 
+    //         // Second pass to
     //         for (factors, sub_rc) in pruned.iter() {
     //             for layer_rc in &layer {
     //                 let mut rc_guard = layer_rc.lock().unwrap();
@@ -476,12 +478,14 @@ impl ReactiveCircuit {
 #[cfg(test)]
 mod tests {
 
-    use itertools::Itertools;
-    use rand::{seq::SliceRandom, thread_rng, Rng};
+    use rand::Rng;
+    use rand::prelude::IndexedRandom;
     use std::ops::RangeInclusive;
 
     use super::*;
-    use crate::channels::clustering::{binning, create_boundaries, frequency_adaptation, pack, partitioning};
+    use crate::channels::clustering::{
+        binning, create_boundaries, frequency_adaptation, pack, partitioning,
+    };
     use crate::channels::manager::Manager;
     use crate::circuit::update;
     use crate::sample_frequencies;
@@ -489,12 +493,12 @@ mod tests {
     fn random_products(number_leafs: u16, number_sets: usize) -> Vec<Vec<u16>> {
         let mut random_products = Vec::new();
 
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         for _ in 0..number_sets {
             random_products.push(
                 (0..number_leafs)
-                    .collect_vec()
-                    .choose_multiple(&mut rng, number_leafs as usize / 2)
+                    .collect::<Vec<u16>>()
+                    .choose_multiple(&mut rng, number_leafs as usize / 2) // Pass as mutable reference
                     .cloned()
                     .collect(),
             );
@@ -513,9 +517,9 @@ mod tests {
         let mut rc = ReactiveCircuit::new();
 
         // Create leafs
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
         for i in 0..number_leafs {
-            manager.create_leaf(&i.to_string(), rng.gen_range(range.clone()), 0.0);
+            manager.create_leaf(&i.to_string(), rng.random_range(range.clone()), 0.0);
         }
 
         // Add up random combinations of the leafs
@@ -618,13 +622,13 @@ mod tests {
     fn test_rc() {
         let mut rc = ReactiveCircuit::new();
         let mut manager = Manager::new();
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
 
         let mut values = vec![
-            rng.gen_range(0.0..1.0),
-            rng.gen_range(0.0..1.0),
-            rng.gen_range(0.0..1.0),
-            rng.gen_range(0.0..1.0),
+            rng.random_range(0.0..1.0),
+            rng.random_range(0.0..1.0),
+            rng.random_range(0.0..1.0),
+            rng.random_range(0.0..1.0),
         ];
         manager.create_leaf("0", values[0], 0.0);
         manager.create_leaf("1", values[1], 0.0);
@@ -654,8 +658,8 @@ mod tests {
         assert_eq!(manager.foliage.lock().unwrap()[2].indices.len(), 2);
         assert_eq!(manager.foliage.lock().unwrap()[3].indices.len(), 1);
 
-        values[0] = rng.gen_range(0.0..1.0);
-        values[2] = rng.gen_range(0.0..1.0);
+        values[0] = rng.random_range(0.0..1.0);
+        values[2] = rng.random_range(0.0..1.0);
         desired_value = values[0] + values[1] * values[2] * values[3];
         update(&manager.foliage, &manager.rc_queue, 0, values[0], 0.0);
         update(&manager.foliage, &manager.rc_queue, 2, values[2], 0.0);

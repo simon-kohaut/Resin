@@ -40,7 +40,7 @@ pub fn random_set(number_leafs: u16, number_sets: usize) -> Vec<Vec<u16>> {
         random_set.push(
             (0..number_leafs)
                 .collect_vec()
-                .choose_multiple(&mut rng, number_leafs as usize / 2)
+                .choose_multiple(&mut rng, number_leafs as usize / 2) // Pass rng as a mutable reference
                 .cloned()
                 .collect(),
         );
@@ -109,8 +109,6 @@ fn randomized_study(location: f64, bin_size: f64) {
     println!("Loop original for {}s.", inference_time);
     let inference_clock = Instant::now();
     while inference_clock.elapsed().as_secs_f64() < inference_time {
-        manager.spin_once();
-
         let leaf_values = manager.get_values();
 
         let mut queue_guard = manager.rc_queue.lock().unwrap();
@@ -179,8 +177,6 @@ fn randomized_study(location: f64, bin_size: f64) {
     println!("Loop deployed for {}s.", inference_time);
     let inference_clock = Instant::now();
     while inference_clock.elapsed().as_secs_f64() < inference_time {
-        manager.spin_once();
-
         let leaf_values = manager.get_values();
         let mut queue_guard = manager.rc_queue.lock().unwrap();
         if queue_guard.len() == 0 {
@@ -231,8 +227,8 @@ fn randomized_study(location: f64, bin_size: f64) {
 
 fn sample_frequencies(location: f64, scale: f64, shape: f64, number_samples: usize) -> Vec<f64> {
     let distribution = SkewNormal::new(location, scale, shape).unwrap();
-    let mut rng = StdRng::seed_from_u64(0);
 
+    let mut rng = rand::thread_rng();
     let mut frequencies = vec![];
     while frequencies.len() < number_samples {
         let frequency = distribution.sample(&mut rng).clamp(0.0001, f64::MAX);
