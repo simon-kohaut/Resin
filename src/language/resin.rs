@@ -32,6 +32,9 @@ impl Resin {
         // Setup data distribution through signal leafs
         resin.value_size = value_size;
         resin.setup_signals()?;
+        if verbose {
+            println!("Setup {} signals.", resin.manager.reactive_circuit.lock().unwrap().leafs.len());
+        }
 
         // Pass data to Clingo and obtain stable models
         for target_index in 0..resin.targets.len() {
@@ -48,6 +51,13 @@ impl Resin {
             // Solve ASP and obtain DNF formula from which the target is removed
             let mut dnf = solve(&program, verbose);
             dnf.remove(&resin.targets[target_index].name);
+
+            if verbose {
+                println!(
+                    "Solved Resin into a DNF with {} clauses",
+                    dnf.clauses.len()
+                );
+            }
 
             // Build the RC from the DNF
             resin.circuit_from_dnf(dnf, &resin.targets[target_index].name);
@@ -212,19 +222,18 @@ impl Resin {
         let index_map = self.manager.get_index_map();
 
         // A DNF is an OR over AND, i.e., a sum over products without further hirarchy
+        let mut sum_product = Vec::new();
         for clause in &dnf.clauses {
             let mut product = vec![];
 
             for literal in clause {
-                let index = index_map.get(literal);
-                match index {
-                    Some(index) => product.push(*index as u32),
-                    None => (),
-                }
+                product.push(index_map[literal] as u32);
             }
 
-            self.manager.reactive_circuit.lock().unwrap().add(&product, target_token);
+            sum_product.push(product);
         }
+
+        self.manager.reactive_circuit.lock().unwrap().add_sum_product(&sum_product, target_token);
     }
 }
 
@@ -396,6 +405,8 @@ mod tests {
         let mut resin = Resin::compile(&model, 1, false).expect("Could not compile Resin!");
         println!("{}s", clock.elapsed().as_secs_f64());
 
+        let original = resin.manager.reactive_circuit.lock().unwrap().clone();
+
         print!("Update value ... ");
         let clock = Instant::now();
         let result = resin.manager.reactive_circuit.lock().unwrap().update();
@@ -484,11 +495,15 @@ mod tests {
             if partitions != new_partitions {
                 partitions = new_partitions;
 
+                let value = resin.manager.reactive_circuit.lock().unwrap().update()["unsafe"].clone();
+
                 print!("Adapt leafs in ... ");
+                let mut rc_to_adapt = original.clone();
                 let clock = Instant::now();
                 let number_of_adaptations = frequency_adaptation(
-                    &mut resin.manager.reactive_circuit.lock().unwrap(),
+                    &mut rc_to_adapt,
                     &partitions,
+                    Some(1)
                 );
                 println!(
                     "{}s for {} leafs.",
@@ -496,15 +511,21 @@ mod tests {
                     number_of_adaptations
                 );
 
-                let _ = resin
-                    .manager
-                    .reactive_circuit
-                    .lock()
-                    .unwrap()
-                    .to_svg(&format!(
-                        "test/test_promis_rc_overview_{}.svg",
-                        simulation_time
-                    ), false);
+                if number_of_adaptations > 0 {
+                    *resin.manager.reactive_circuit.lock().unwrap() = rc_to_adapt;
+                }
+
+                println!("Value before: {:?}\nValue after: {:?}", value, resin.manager.reactive_circuit.lock().unwrap().update()["unsafe"]);
+
+                // let _ = resin
+                //     .manager
+                //     .reactive_circuit
+                //     .lock()
+                //     .unwrap()
+                //     .to_svg(&format!(
+                //         "output/test/test_simulation_rc_{}.svg",
+                //         simulation_time
+                //     ), false);
 
                 // if number_of_adaptations > 0 {
                     // let depth = resin.circuits[0].depth(None);
@@ -524,6 +545,7 @@ mod tests {
             }
 
             // Update value and note runtime for adapted
+            let updated = !resin.manager.reactive_circuit.lock().unwrap().queue.is_empty();
             let start = clock.elapsed().as_secs_f64();
             resin.manager.reactive_circuit.lock().unwrap().update();
             adapted_inference_times.push(clock.elapsed().as_secs_f64() - start);
@@ -547,12 +569,14 @@ mod tests {
             );
             root_leafs.push(number_root_leafs);
             frequencies.push(resin.manager.get_frequencies());
-            println!(
-                "Time {simulation_time} | Runtime {}\n",
-                // original_inference_times[inference_timestamps.len() - 1],
-                adapted_inference_times[inference_timestamps.len() - 1],
-                // adapted_full_inference_times[inference_timestamps.len() - 1]
-            );
+            if updated {
+                println!(
+                    "Time {simulation_time} | Runtime {}\n",
+                    // original_inference_times[inference_timestamps.len() - 1],
+                    adapted_inference_times[inference_timestamps.len() - 1],
+                    // adapted_full_inference_times[inference_timestamps.len() - 1]
+                );
+            }
         }
 
         println!("Export results.");
@@ -749,6 +773,7 @@ mod tests {
                     let number_of_adaptations = frequency_adaptation(
                         &mut resin.manager.reactive_circuit.lock().unwrap(),
                         &partitions,
+                        None
                     );
                     println!(
                         "{}s for {} leafs.",

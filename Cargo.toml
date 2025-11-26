@@ -16,10 +16,10 @@ rustflags = ["-C", "target-cpu=native"]
 opt-level = 0
 
 [profile.test]
-opt-level = 0
-lto = "fat"
-codegen-units = 1
-panic = "abort"
+opt-level = 3
+# lto = "fat"
+# codegen-units = 1
+# panic = "abort"
 
 [profile.release]
 opt-level = 3

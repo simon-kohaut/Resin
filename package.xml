@@ -2,7 +2,7 @@
   <name>resin</name>
   <version>0.0.0</version>
   <description>The Resin probabilistic logic programming language using Reactive Circuits.</description>
-  <maintainer email="first.second@institution">First Second</maintainer>
+  <maintainer email="first.second@institution.org">First Second</maintainer>
   <license>The License</license>
 
   <depend>rclrs</depend>

@@ -1,11 +1,14 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::io::Write;
+use std::iter::{empty, Map};
 use std::mem::discriminant;
 use std::process::Command;
 
-use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableGraph};
+use itertools::Itertools;
+use petgraph::stable_graph::{EdgeIndex, Edges, NodeIndex, StableGraph};
 use petgraph::visit::EdgeRef;
+use petgraph::Directed;
 use petgraph::Direction::{Incoming, Outgoing};
 
 use rayon::iter::IntoParallelRefIterator;
@@ -26,6 +29,8 @@ pub enum NodeType {
 pub struct AlgebraicCircuit {
     pub(crate) structure: StableGraph<NodeType, ()>,
     pub(crate) root: NodeIndex,
+    leafs: HashMap<u32, NodeIndex>,
+    memories: HashMap<EdgeIndex, NodeIndex>,
     value_size: usize,
 }
 
@@ -38,6 +43,8 @@ impl AlgebraicCircuit {
         let algebraic_circuit = AlgebraicCircuit {
             structure,
             root,
+            leafs: HashMap::new(),
+            memories: HashMap::new(),
             value_size,
         };
 
@@ -47,11 +54,27 @@ impl AlgebraicCircuit {
     /// Adds a set of leaf nodes node given their `indices` to the circuit's root.
     /// If some of the leafs are not yet part of the graph, new `NodeType::Leaf` nodes are added respectively.
     pub fn add(&mut self, indices: &[u32]) {
-        let sum: Vec<NodeIndex> = indices
+        let product: Vec<NodeIndex> = indices
             .iter()
             .map(|index| self.ensure_leaf(*index))
             .collect();
-        self.add_to_nodes(&vec![self.root], &sum);
+        self.add_to_node(&self.root.clone(), &product);
+    }
+
+    /// More efficient than calling `AlgebraicCircui::add` many times, attaching an entire `sum_product` to root. 
+    pub fn add_sum_product(&mut self, sum_product: &[Vec<u32>]) {
+        // Ensure that for each index a NodeType::Leaf(index) exists
+        let indices = BTreeSet::from_iter(sum_product.iter().flatten());
+        let mut leafs = HashMap::new();
+        for index in indices {
+            leafs.insert(index, self.ensure_leaf(*index));
+        }
+
+        // Add directly to root node with known leaf NodeIndex
+        for product in sum_product {
+            let leaf_product: Vec<NodeIndex> = product.iter().map(|index| leafs[index]).collect();
+            self.add_to_node(&self.root.clone(), &leaf_product);
+        }
     }
 
     /// Multiplies the circuit's root with a leaf node given its `index`.
@@ -75,10 +98,7 @@ impl AlgebraicCircuit {
     /// If this is needed, use `multiply` instead.
     pub fn multiply_with_nodes(&mut self, nodes: &[NodeIndex], product: &[NodeIndex]) {
         for node in nodes {
-            match self
-                .structure
-                .node_weight(*node)
-                .expect("Node was not found within Algebraic Circuit!")
+            match self.structure[*node]
             {
                 NodeType::Sum => {
                     let mut children = self.get_children(node);
@@ -88,7 +108,7 @@ impl AlgebraicCircuit {
                         children.push(product_node);
                     }
 
-                    self.multiply_with_nodes(&children, product)
+                    self.multiply_with_nodes(&children, product);
                 }
                 NodeType::Product => {
                     for factor in product {
@@ -102,39 +122,43 @@ impl AlgebraicCircuit {
         }
     }
 
-    /// Adds a `sum` (slice of Leaf- or Memory-type nodes) with a set of `nodes` (Sum- or Product-type).
+    /// Adds a `product` (slice of `NodeType::Leaf` or `NodeType::Memory` nodes) to a `node` (Sum- or Product-type).
     ///
-    /// All the `nodes` will be connected to the given `sum`, either directly in the case of
-    /// `NodeType::Product` nodes or indirectly in the case of `NodeType::Sum` nodes.
+    /// The `node` will be connected to the given `product` by either adding a product node 
+    /// underneath with all the nodes in `product` attached, or add a `product` as a sibling if `node`
+    /// itself is a `NodeType::Product`.
     ///
-    /// If `nodes` contains `NodeType::Leaf` or `NodeType::Memory` nodes, they will be ignored silently.
+    /// If `node` is a `NodeType::Leaf` or `NodeType::Memory` nodes, it will be ignored silently.
     ///
-    /// This does not check if `sum` is exlusively made up of `NodeType::Leaf` or `NodeType::Memory`,
+    /// This does not check if `product` is exlusively made up of `NodeType::Leaf` or `NodeType::Memory`,
     /// hence this might invalidate the circuit.
-    /// It is also not ensured that all nodes in `sum` are currently part of the circuit.
+    /// It is also not ensured that all nodes in `product` are currently part of the circuit.
     /// If this is needed, use `multiply` instead.
-    pub fn add_to_nodes(&mut self, nodes: &[NodeIndex], sum: &[NodeIndex]) {
-        for node in nodes {
-            match self
-                .structure
-                .node_weight(*node)
-                .expect("Node was not found within Algebraic Circuit!")
-            {
-                NodeType::Sum => {
-                    let product = self.structure.add_node(NodeType::Product);
-                    self.structure.add_edge(*node, product, ());
-                    for summand in sum {
-                        self.structure.add_edge(product, *summand, ());
-                    }
+    pub fn add_to_node(&mut self, node: &NodeIndex, product: &[NodeIndex]) {
+        match self
+            .structure
+            .node_weight(*node)
+            .expect("Node was not found within Algebraic Circuit!")
+        {
+            NodeType::Sum => {
+                let product_node = self.structure.add_node(NodeType::Product);
+                self.structure.add_edge(*node, product_node, ());
+                for factor in product {
+                    self.structure.add_edge(product_node, *factor, ());
                 }
-                NodeType::Product => {
-                    let parents = self.get_parents(node);
-                    for parent in parents {
-                        self.add_to_nodes(&vec![parent], sum);
-                    }
-                }
-                _ => (),
             }
+            NodeType::Product => {
+                self.add_to_nodes(&self.get_parents(node), product);
+            }
+            _ => (),
+        }
+    }
+
+    /// Adds a `product` (slice of Leaf- or Memory-type nodes) to each node in `nodes`.
+    /// For details, check the `AlgebraicCircuit::add_to_node` method.
+    pub fn add_to_nodes(&mut self, nodes: &[NodeIndex], product: &[NodeIndex]) {
+        for node in nodes {
+            self.add_to_node(node, product);
         }
     }
 
@@ -144,10 +168,11 @@ impl AlgebraicCircuit {
     pub fn from_sum_product(value_size: usize, sum_product: &[Vec<u32>]) -> Self {
         // Initialize AlgebraicCircuit
         let mut algebraic_circuit = AlgebraicCircuit::new(value_size);
-
+        
         // Add all the product nodes
         for product in sum_product {
-            algebraic_circuit.add(product);
+            let leaf_product: Vec<NodeIndex> = product.iter().map(|index| algebraic_circuit.ensure_leaf(*index)).collect();
+            algebraic_circuit.add_to_node(&algebraic_circuit.root.clone(), &leaf_product);
         }
 
         algebraic_circuit
@@ -156,31 +181,28 @@ impl AlgebraicCircuit {
     /// Returns `Some(NodeIndex)` if a `NodeType::Leaf` with the given `index` was found in the circuit.
     /// Else, `None` is returned.
     pub fn get_leaf(&self, index: u32) -> Option<NodeIndex> {
-        // Check which NodeIndex belongs to this leaf
-        let mut leaf_index = None;
-        for node in self.structure.node_indices() {
-            if NodeType::Leaf(index) == self.structure[node] {
-                leaf_index = Some(node);
-                break;
-            }
-        }
+        self.leafs.get(&index).copied()
+    }
 
-        leaf_index
+    /// Create and return a new memory node with the given `edge`.
+    pub fn create_memory(&mut self, edge: EdgeIndex) -> NodeIndex {
+        let memory_node = self.structure.add_node(NodeType::Memory(edge));
+        self.memories.insert(edge, memory_node);
+        memory_node
     }
 
     /// Returns `Some(NodeIndex)` if a `NodeType::Memory` with the given `index` was found in the circuit.
     /// Else, `None` is returned.
     pub fn get_memory(&self, index: EdgeIndex) -> Option<NodeIndex> {
-        // Check which NodeIndex belongs to this memory
-        let mut memory_index = None;
-        for node in self.structure.node_indices() {
-            if NodeType::Memory(index) == self.structure[node] {
-                memory_index = Some(node);
-                break;
-            }
-        }
+        self.memories.get(&index).copied()
+    }
 
-        memory_index
+    /// Checks if a `NodeType::Leaf` with `index` is part of this circuit.
+    pub fn is_in_circuit(&self, index: u32) -> bool {
+        match self.leafs.get(&index) {
+            Some(_) => true,
+            None => false
+        }
     }
 
     /// Get the scope, i.e., the set of leafs and memory nodes that are part of the computation of the given `node`.
@@ -206,46 +228,48 @@ impl AlgebraicCircuit {
         scope
     }
 
-    /// Get all the parent nodes of the given `node` within this circuit.
-    pub fn get_parents(&self, node: &NodeIndex) -> Vec<NodeIndex> {
-        let parents: Vec<NodeIndex> = self
-            .structure
+    /// Iterate over the parent nodes of the given `node` within this circuit.
+    pub fn iter_parents(&self, node: &NodeIndex) -> impl Iterator<Item = NodeIndex> + '_ {
+        self.structure
             .edges_directed(*node, Incoming)
             .map(|edge| edge.source())
-            .collect();
-
-        parents
     }
 
-    /// Get all the grandparent nodes of the given `node` within this circuit.
-    pub fn get_grandparents(&self, node: &NodeIndex) -> Vec<NodeIndex> {
-        let parents = self.get_parents(node);
+    /// Iterate over the child nodes of the given `node` within this circuit.
+    pub fn iter_children(&self, node: &NodeIndex) -> impl Iterator<Item = NodeIndex> + '_ {
+        self.structure
+            .edges_directed(*node, Outgoing)
+            .map(|edge| edge.target())
+    }
 
-        let mut grandparents = BTreeSet::new();
-        for parent in &parents {
-            grandparents.extend(self.get_parents(parent));
-        }
+    /// Iterate over the granparents of the given `node` within this circuit.
+    pub fn iter_grandparent(&self, node: &NodeIndex) -> impl Iterator<Item = NodeIndex> + '_ {
+        self.iter_parents(node).flat_map(|parent| self.iter_parents(&parent))
+    }
 
-        Vec::from_iter(grandparents)
+    /// Iterate over the siblings of the given `node` within this circuit.
+    pub fn iter_siblings(&self, node: &NodeIndex) -> impl Iterator<Item = NodeIndex> + '_ {
+        self.iter_parents(node).flat_map(|parent| self.iter_children(&parent))
+    }
+
+    /// Get all the parent nodes of the given `node` within this circuit.
+    pub fn get_parents(&self, node: &NodeIndex) -> Vec<NodeIndex> {
+        self.iter_parents(node).collect()
     }
 
     /// Get all the child nodes of the given `node` within this circuit.
     pub fn get_children(&self, node: &NodeIndex) -> Vec<NodeIndex> {
-        self.structure
-            .edges_directed(*node, Outgoing)
-            .map(|edge| edge.target())
-            .collect()
+        self.iter_children(node).collect()
+    }
+
+    /// Get all the grandparent nodes of the given `node` within this circuit.
+    pub fn get_grandparents(&self, node: &NodeIndex) -> Vec<NodeIndex> {
+        self.iter_grandparent(node).collect()
     }
 
     /// Get all the sibling nodes of the given `node`, i.e., those with a shared parent, within this circuit.
     pub fn get_siblings(&self, node: &NodeIndex) -> Vec<NodeIndex> {
-        let mut siblings = BTreeSet::new();
-        for parent_node in self.get_parents(node).iter() {
-            siblings.extend(self.get_children(parent_node).iter());
-        }
-
-        siblings.remove(node);
-        Vec::from_iter(siblings)
+        self.iter_siblings(node).collect()
     }
 
     /// Remove all edges that may connect nodes `a` and `b`.
@@ -352,6 +376,7 @@ impl AlgebraicCircuit {
     // Remove the `NodeType::Leaf` node with `index` from this circuit.
     pub fn remove(&mut self, node: &NodeIndex) {
         self.structure.remove_node(*node);
+        self.leafs.retain(|_, leaf| leaf != node);
     }
 
     /// Removes a `node` and all of its descendants except `NodeTyp::Leaf` and `NodeType::Memory` nodes.
@@ -421,7 +446,11 @@ impl AlgebraicCircuit {
         let leaf = self.get_leaf(index);
         match leaf {
             Some(leaf) => leaf,
-            None => self.structure.add_node(NodeType::Leaf(index)),
+            None => {
+                let new_node = self.structure.add_node(NodeType::Leaf(index));
+                self.leafs.insert(index, new_node);
+                new_node
+            }
         }
     }
 
@@ -576,47 +605,25 @@ impl AlgebraicCircuit {
 
     /// Computes the value of a `node` given its `NodeType` and a `reactive_circuit` containing leaf and memorized values.
     pub fn node_value(&self, node: &NodeIndex, reactive_circuit: &ReactiveCircuit) -> Vector {
-        match self
-            .structure
-            .node_weight(*node)
-            .expect("Node was not found within RC!")
+        match self.structure[*node]
         {
-            NodeType::Leaf(index) => return reactive_circuit.leafs[*index as usize].get_value(),
+            NodeType::Leaf(index) => return reactive_circuit.leafs[index as usize].get_value(),
             NodeType::Product => {
                 let mut result = Vector::ones(self.value_size);
+                self.iter_children(node)
+                    .for_each(|child| result *= &self.node_value(&child, reactive_circuit));
 
-                let values: Vec<Vector> = self
-                    .get_children(node)
-                    .par_iter()
-                    .map(|child| self.node_value(&child, reactive_circuit))
-                    .collect();
-
-                for value in &values {
-                    result *= value;
-                }
-
-                return result;
+                result
             }
             NodeType::Sum => {
                 let mut result = Vector::zeros(self.value_size);
+                self.iter_children(node)
+                    .for_each(|child| result += &self.node_value(&child, reactive_circuit));
 
-                let values: Vec<Vector> = self
-                    .get_children(node)
-                    .par_iter()
-                    .map(|child| self.node_value(&child, reactive_circuit))
-                    .collect();
-                for value in &values {
-                    result += value;
-                }
-
-                return result;
+                result                
             }
             NodeType::Memory(edge) => {
-                return reactive_circuit
-                    .structure
-                    .edge_weight(*edge)
-                    .expect("Malformed Reactive Circuit!")
-                    .clone()
+                return reactive_circuit.structure[edge].clone()
             }
         }
     }
