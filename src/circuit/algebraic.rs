@@ -25,8 +25,8 @@ pub enum NodeType {
 pub struct AlgebraicCircuit {
     pub(crate) structure: StableGraph<NodeType, ()>,
     pub(crate) root: NodeIndex,
-    leafs: HashMap<u32, NodeIndex>,
-    memories: HashMap<u32, NodeIndex>,
+    pub(crate) leafs: HashMap<u32, NodeIndex>,
+    pub(crate) memories: HashMap<u32, NodeIndex>,
     value_size: usize,
 }
 
@@ -118,20 +118,10 @@ impl AlgebraicCircuit {
         }
     }
 
-    /// Adds a `product` (slice of `NodeType::Leaf` or `NodeType::Memory` nodes) to a `node` (Sum- or Product-type).
-    ///
-    /// The `node` will be connected to the given `product` by either adding a product node 
-    /// underneath with all the nodes in `product` attached, or add a `product` as a sibling if `node`
-    /// itself is a `NodeType::Product`.
-    ///
-    /// If `node` is a `NodeType::Leaf` or `NodeType::Memory` nodes, it will be ignored silently.
-    ///
-    /// This does not check if `product` is exlusively made up of `NodeType::Leaf` or `NodeType::Memory`,
-    /// hence this might invalidate the circuit.
-    /// It is also not ensured that all nodes in `product` are currently part of the circuit.
-    /// If this is needed, use `multiply` instead.
-    pub fn add_to_node(&mut self, node: &NodeIndex, product: &[NodeIndex]) {
-        match self
+    /// Adds a `product` (slice of `NodeType::Leaf` or `NodeType::Memory` nodes) to the closest sum node.
+    /// Returns the newly created product node.
+    pub fn add_to_node(&mut self, node: &NodeIndex, product: &[NodeIndex]) -> NodeIndex {
+        let product_node = match self
             .structure
             .node_weight(*node)
             .expect("Node was not found within Algebraic Circuit!")
@@ -142,12 +132,13 @@ impl AlgebraicCircuit {
                 for factor in product {
                     self.structure.add_edge(product_node, *factor, ());
                 }
+                
+                product_node
             }
-            NodeType::Product => {
-                self.add_to_nodes(&self.get_parents(node), product);
-            }
-            _ => (),
-        }
+            _ => self.add_to_node(&self.get_parents(node)[0], product)
+        };
+
+        product_node
     }
 
     /// Adds a `product` (slice of Leaf- or Memory-type nodes) to each node in `nodes`.
@@ -190,7 +181,6 @@ impl AlgebraicCircuit {
     /// Returns `Some(NodeIndex)` if a `NodeType::Memory` with the given `index` was found in the circuit.
     /// Else, `None` is returned.
     pub fn get_memory(&self, index: EdgeIndex) -> Option<NodeIndex> {
-        println!("Try to get {:?} and have {:?}.", index, self.memories);
         self.memories.get(&(index.index() as u32)).copied()
     }
 
@@ -358,8 +348,31 @@ impl AlgebraicCircuit {
 
     // Remove the `NodeType::Leaf` node with `index` from this circuit.
     pub fn remove(&mut self, node: &NodeIndex) {
-        self.structure.remove_node(*node);
         self.leafs.retain(|_, leaf| leaf != node);
+        self.memories.retain(|_, memory| memory != node);
+        self.structure.remove_node(*node);
+    }
+
+    pub fn remove_disconnected(&mut self) {
+        let mut to_be_removed = Vec::new();
+        for node in self.structure.node_indices() {
+            let number_of_incoming_edges =  self
+                .structure
+                .edges_directed(node, Incoming)
+                .count();
+            let number_of_outgoing_edges =  self
+                .structure
+                .edges_directed(node, Outgoing)
+                .count();
+
+            if number_of_incoming_edges == 0 && number_of_outgoing_edges == 0 {
+                to_be_removed.push(node);
+            }
+        }
+
+        while let Some(node) = to_be_removed.pop() {
+            self.remove(&node);
+        }
     }
 
     /// Removes a `node` and all of its descendants.
@@ -371,12 +384,11 @@ impl AlgebraicCircuit {
             match self.structure.node_weight(descendant).unwrap() {
                 NodeType::Leaf(_) | NodeType::Memory(_) => {},
                 _ => {
-                    self.structure.remove_node(descendant);
+                    self.remove(&descendant);
                 }
             }
         }
-        self.structure.remove_node(*node);
-        // self.prune();
+        self.remove(node);
     }
 
     /// Removes all edges that point towards the given `node`.
@@ -441,11 +453,13 @@ impl AlgebraicCircuit {
     /// Splits the Algebraic Circuit into one that contains the `node` and one that does not.
     pub fn split(
         &mut self,
-        node: &NodeIndex,
+        index: u32,
     ) -> (Option<AlgebraicCircuit>, Option<AlgebraicCircuit>) {
         // New structure is a sum over two products, each with just one sum of which
         // one contains the node and one doesnt
-        let (in_scope_root, out_of_scope_root) = self.split_sum(&self.root.clone(), node);
+        let leaf = self.get_leaf(index).unwrap();
+        let (in_scope_root, out_of_scope_root) = self.split_sum(&self.root.clone(), &leaf);
+        println!("{:?} {:?}", in_scope_root, out_of_scope_root);
 
         // We create a clone of the graph for each new circuit
         // If the other variant exists we delete the respective sub-graph
@@ -454,26 +468,28 @@ impl AlgebraicCircuit {
         if in_scope_root.is_some() {
             let mut new_circuit = self.clone();
             new_circuit.root = in_scope_root.unwrap();
-            new_circuit.structure.remove_node(self.root);
 
             if out_of_scope_root.is_some() {
                 new_circuit.remove_with_descendants(&out_of_scope_root.unwrap());
             }
+            new_circuit.remove_disconnected();
 
             in_scope_circuit = Some(new_circuit);
+            assert!(in_scope_circuit.as_ref().unwrap().structure.node_indices().contains(&in_scope_root.unwrap()));
         }
 
         let mut out_of_scope_circuit = None;
         if out_of_scope_root.is_some() {
             let mut new_circuit = self.clone();
             new_circuit.root = out_of_scope_root.unwrap();
-            new_circuit.structure.remove_node(self.root);
             
             if in_scope_root.is_some() {
                 new_circuit.remove_with_descendants(&in_scope_root.unwrap());
             }
+            new_circuit.remove_disconnected();
 
             out_of_scope_circuit = Some(new_circuit);
+            assert!(out_of_scope_circuit.as_ref().unwrap().structure.node_indices().contains(&out_of_scope_root.unwrap()));
         }
 
         (in_scope_circuit, out_of_scope_circuit)
@@ -523,7 +539,7 @@ impl AlgebraicCircuit {
             }
         }
 
-        self.structure.remove_node(*sum_node);
+        self.remove(sum_node);
         (in_scope_sum, out_of_scope_sum)
     }
 
@@ -583,6 +599,7 @@ impl AlgebraicCircuit {
     /// Get the value of this Algebraic Circuit, i.e., calling `node_value` on the `root` node.
     /// The `reactive_circuit` is used to read memorized results from other Algebraic Circuits and leaf values.
     pub fn value(&self, reactive_circuit: &ReactiveCircuit) -> Vector {
+        // println!("Try to get value of {:?} and have {:?}", self.root, self.structure.node_indices().collect::<Vec<_>>());
         self.node_value(&self.root, reactive_circuit)
     }
 
@@ -606,7 +623,7 @@ impl AlgebraicCircuit {
                 result                
             }
             NodeType::Memory(edge) => {
-                return reactive_circuit.structure[*edge].clone()
+                return reactive_circuit.structure.edge_weight(*edge).unwrap().clone()
             }
         }
     }
@@ -623,7 +640,7 @@ impl AlgebraicCircuit {
         }
 
         for sum in &sums {
-            self.structure.remove_node(*sum);
+            self.remove(sum);
             for product in &self.get_children(sum) {
                 self.structure.add_edge(replacement, *product, ());
 
@@ -665,7 +682,7 @@ impl AlgebraicCircuit {
 
             // Remove the nodes if necessary and repeat
             for node in nodes_to_remove {
-                self.structure.remove_node(node);
+                self.remove(&node);
             }
         }
     }
@@ -949,11 +966,10 @@ mod tests {
 
         // Third case: We apply split to the entire circuit
         let mut ac = original.clone();
-        let (in_scope_ac, out_of_scope_ac) = ac.split(&leaf_1);
+        let (in_scope_ac, out_of_scope_ac) = ac.split(1);
         let mut in_scope_ac = in_scope_ac.unwrap();
-        let mut out_of_scope_ac = out_of_scope_ac.unwrap();
-
         in_scope_ac.to_svg("output/test/test_split_in_scope_ac_leaf_1.svg", false)?;
+        let mut out_of_scope_ac = out_of_scope_ac.unwrap();
         out_of_scope_ac.to_svg("output/test/test_split_out_of_scope_ac_leaf_1.svg", false)?;
         
         let new_leaf_0 = in_scope_ac.ensure_leaf(0);
