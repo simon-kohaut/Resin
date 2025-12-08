@@ -459,7 +459,6 @@ impl AlgebraicCircuit {
         // one contains the node and one doesnt
         let leaf = self.get_leaf(index).unwrap();
         let (in_scope_root, out_of_scope_root) = self.split_sum(&self.root.clone(), &leaf);
-        println!("{:?} {:?}", in_scope_root, out_of_scope_root);
 
         // We create a clone of the graph for each new circuit
         // If the other variant exists we delete the respective sub-graph
@@ -599,7 +598,6 @@ impl AlgebraicCircuit {
     /// Get the value of this Algebraic Circuit, i.e., calling `node_value` on the `root` node.
     /// The `reactive_circuit` is used to read memorized results from other Algebraic Circuits and leaf values.
     pub fn value(&self, reactive_circuit: &ReactiveCircuit) -> Vector {
-        // println!("Try to get value of {:?} and have {:?}", self.root, self.structure.node_indices().collect::<Vec<_>>());
         self.node_value(&self.root, reactive_circuit)
     }
 

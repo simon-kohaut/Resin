@@ -212,9 +212,6 @@ impl Resin {
     }
 
     pub fn circuit_from_dnf(&self, dnf: Dnf, target_token: &str) {
-        // Add the target to the ReactiveCircuit
-        self.manager.reactive_circuit.lock().unwrap().new_target(target_token);
-
         // Get indexing from name to foliage
         let index_map = self.manager.get_index_map();
 
@@ -230,6 +227,7 @@ impl Resin {
             sum_product.push(product);
         }
 
+        // Add the target to the ReactiveCircuit
         self.manager.reactive_circuit.lock().unwrap().add_sum_product(&sum_product, target_token);
     }
 }

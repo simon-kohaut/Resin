@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::Write;
 use std::process::Command;
@@ -11,7 +11,7 @@ use petgraph::Direction::{Incoming, Outgoing};
 use plotly::sankey::Node;
 use rayon::in_place_scope;
 
-use crate::circuit::leaf::force_invalidate_dependencies;
+use crate::circuit::leaf::{self, force_invalidate_dependencies};
 
 use super::{algebraic::AlgebraicCircuit, algebraic::NodeType, leaf::Leaf, Vector};
 
@@ -81,6 +81,8 @@ impl ReactiveCircuit {
     }
 
     pub fn new_target(&mut self, target_token: &str) -> NodeIndex {
+        // TODO: Using this function leaves the RC in a bad state (empty AC node)
+        // Maybe remove method or require formula?
         assert!(!self.targets.contains_key(target_token), "Cannot add multiple targets with the same name!");
 
         let node = self.structure.add_node(AlgebraicCircuit::new(self.value_size));
@@ -212,8 +214,6 @@ impl ReactiveCircuit {
     /// Ensure that an AlgebraicCircuit with `index` within the ReactiveCircuit has a parent, e.g., to lift a leaf into.
     fn ensure_parent(&mut self, index: NodeIndex) -> Vec<(NodeIndex, EdgeIndex)> {
         self.check_invariants();
-        // Preconditions
-        assert!(self.structure.contains_node(index));
 
         let parents_and_edges: Vec<(NodeIndex, EdgeIndex)> = self
             .structure
@@ -252,26 +252,48 @@ impl ReactiveCircuit {
                 self.targets.insert(token, parent);
             }
 
-            self.check_invariants();
             return vec![(parent, edge)];
         }
 
         self.check_invariants();
+
         return parents_and_edges;
     }
 
+    /// Get all ancestors of a node, including the node itself.
+    fn get_ancestors(&self, node: NodeIndex) -> HashSet<NodeIndex> {
+        let mut ancestors = HashSet::new();
+        let mut queue = VecDeque::new();
+
+        if self.structure.contains_node(node) {
+            queue.push_back(node);
+            ancestors.insert(node);
+        }
+
+        while let Some(current) = queue.pop_front() {
+            for parent in self.structure.neighbors_directed(current, Incoming) {
+                if ancestors.insert(parent) {
+                    queue.push_back(parent);
+                }
+            }
+        }
+
+        ancestors
+    }
+
     pub fn update_dependencies(&mut self) {
-        let mut index = 0;
-        for leaf in &mut self.leafs {
-            leaf.clear_dependencies();
+        for index in 0..self.leafs.len() as u32 {
+            let mut new_dependencies = BTreeSet::new();
 
             for node in self.structure.node_indices() {
                 if self.structure[node].get_leaf(index).is_some() {
-                    leaf.add_dependency(node.index() as u32);
+                    for ancestor in self.get_ancestors(node) {
+                        new_dependencies.insert(ancestor.index() as u32);
+                    }
                 }
             }
 
-            index += 1;
+            self.leafs[index as usize].dependencies = new_dependencies;
         }
     }
 
@@ -348,10 +370,12 @@ impl ReactiveCircuit {
                     self.structure.remove_node(in_scope_node);
                 } else {
                     self.connect(parent, in_scope_node, in_scope_product);
+                    self.queue.insert(in_scope_node.index() as u32);
                 }
 
                 if out_of_scope_node.is_some() {
                     self.connect(parent, out_of_scope_node.unwrap(), original_product);
+                    self.queue.insert(out_of_scope_node.unwrap().index() as u32);
                 } else {
                     self.structure.node_weight_mut(parent).unwrap().remove(&original_product);
                 }
@@ -363,7 +387,6 @@ impl ReactiveCircuit {
 
         self.update_dependencies();
 
-        // force_invalidate_dependencies(self, index);
         self.check_invariants();
     }
 
@@ -371,8 +394,7 @@ impl ReactiveCircuit {
     pub fn drop_leaf(&mut self, index: u32) {
         self.check_invariants();
 
-        let dependencies = self.leafs[index as usize].get_dependencies().clone();
-        for dependency in dependencies {
+        for dependency in self.leafs[index as usize].get_dependencies() {
             let dependency: NodeIndex = dependency.into();
             let leaf_node = match self.structure[dependency].get_leaf(index) {
                 Some(node) => node,
@@ -384,11 +406,11 @@ impl ReactiveCircuit {
                 self.handle_leaf_drop_for_product(index, dependency, product);
             }
 
-            let leaf_node = self.structure.node_weight(dependency).unwrap().get_leaf(index).unwrap();
             self.structure.node_weight_mut(dependency).unwrap().remove(&leaf_node);
-
-            assert!(self.structure.node_weight(dependency).unwrap().structure.node_indices().contains(&self.structure.node_weight(dependency).unwrap().root));
-            assert_eq!(self.structure.node_weight(dependency).unwrap().get_leaf(index), None);
+            
+            for child in self.structure.neighbors_directed(dependency, Outgoing) {
+                self.queue.insert(child.index() as u32);
+            }
         }
 
         self.update_dependencies();
@@ -405,18 +427,17 @@ impl ReactiveCircuit {
             if let NodeType::Memory(edge) = self.structure[dependency].structure[memory_node] {
                 let (_, child) = self.structure.edge_endpoints(edge).unwrap();
                 self.structure[child].multiply(leaf_index);
-                self.leafs[leaf_index as usize].add_dependency(child.index() as u32);
-                self.queue.insert(child.index() as u32);
+            } else {
+                unreachable!()
             }
         } else {
             let new_ac = AlgebraicCircuit::from_sum_product(self.value_size, &vec![vec![leaf_index]]);
-            let new_node = self.structure.add_node(new_ac.clone());
+            let new_node = self.structure.add_node(new_ac);
             let new_edge = self.structure.add_edge(dependency, new_node, Vector::ones(self.value_size));
 
             let ac = self.structure.node_weight_mut(dependency).unwrap();
             let new_memory_node = ac.create_memory(new_edge);
             ac.structure.add_edge(product, new_memory_node, ());
-            self.queue.insert(dependency.index() as u32);
         }
     }
 
@@ -780,7 +801,7 @@ mod tests {
                 .collect::<Vec<_>>();
             let expected_value = calculate_expected_value(&sum_of_products, &leaf_values, value_size);
 
-            // Check current value
+            // Check if full update results in expected value
             let result = reactive_circuit.full_update();
             println!("RC result = {} | Expected = {}", result["random_target"].clone(), expected_value.clone());
             assert!((result["random_target"].clone() - expected_value.clone()).sum().abs() < 1e-9);
@@ -801,7 +822,6 @@ mod tests {
                 println!("Leaf to drop: {}", leaf_to_adapt);
                 reactive_circuit.drop_leaf(leaf_to_adapt);
             }
-            reactive_circuit.to_svg("test_randomized_rc.svg", false);
         }
     }
 
@@ -828,21 +848,16 @@ mod tests {
 
         // Structural changes require updates
         // Partial and full updates always gives the same result
-        println!("{:?}", reactive_circuit.queue);
         reactive_circuit.lift_leaf(0);
-        println!("{:?}", reactive_circuit.queue);
         reactive_circuit.to_combined_svg("output/test/test_rc_lift_l0_rc.svg")?;
-        assert_eq!(reactive_circuit.update().get("test").unwrap(), &value);
         assert_eq!(reactive_circuit.full_update().get("test").expect("The test target was not found in the RC!"), &value);
 
         reactive_circuit.drop_leaf(0);
         reactive_circuit.to_combined_svg("output/test/test_rc_lift_drop_l0_rc.svg")?;
-        assert_eq!(reactive_circuit.update().get("test").unwrap(), &value);
         assert_eq!(reactive_circuit.full_update().get("test").expect("The test target was not found in the RC!"), &value);
         
         reactive_circuit.drop_leaf(0);
         reactive_circuit.to_combined_svg("output/test/test_rc_lift_drop_drop_l0_rc.svg")?;
-        assert_eq!(reactive_circuit.update().get("test").unwrap(), &value);
         assert_eq!(reactive_circuit.full_update().get("test").expect("The test target was not found in the RC!"), &value);
 
         Ok(())

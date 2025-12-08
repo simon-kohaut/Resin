@@ -92,10 +92,6 @@ impl Leaf {
     pub fn remove_dependency(&mut self, index: u32) {
         self.dependencies.remove(&index);
     }
-
-    pub fn force_invalidate_dependencies(&mut self) {
-        self.dependencies.clear();
-    }
 }
 
 pub fn update(
@@ -106,9 +102,7 @@ pub fn update(
 ) {
     let leaf = &mut reactive_circuit.leafs[leaf_index as usize];
     if leaf.set_value(value, timestamp) {
-        for algebraic_circuit_index in &leaf.dependencies {
-            reactive_circuit.queue.insert(*algebraic_circuit_index);
-        }
+        reactive_circuit.queue.extend(&leaf.dependencies);
     }
 }
 
@@ -117,7 +111,5 @@ pub fn force_invalidate_dependencies(
     leaf_index: u32,
 ) {
     let leaf = &mut reactive_circuit.leafs[leaf_index as usize];
-    for algebraic_circuit_index in &leaf.dependencies {
-        reactive_circuit.queue.insert(*algebraic_circuit_index);
-    }
+    reactive_circuit.queue.extend(&leaf.dependencies);
 }
