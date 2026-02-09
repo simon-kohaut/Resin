@@ -24,8 +24,12 @@ opt-level = 3
 [profile.release]
 opt-level = 3
 lto = "fat"
-codegen-units = 1
-panic = "abort"
+#codegen-units = 1
+#panic = "abort"
+
+[lib]
+name = "resin"
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 petgraph = "*"
@@ -46,7 +50,7 @@ linfa-clustering = "0.4"
 linfa-datasets = { version = "0.4", features = ["iris"] }
 rand_xoshiro = "*"
 approx = "*"
-clingo = { version = "0.7.2", features = ["derive", "static-linking"] }
+clingo = { version = "0.7.2", features = ["derive"] }
 clap = { version = "4.4.1", features = ["derive"] }
 rayon = "*"
 chashmap = "*"
@@ -56,3 +60,7 @@ cpu-time = "*"
 rand_chacha = "*"
 polars = { version = "*", features = ["rows"] }
 tempfile = "*"
+pyo3 = { version = "0.27", features = ["extension-module"], optional = true }
+
+[features]
+python-bindings = ["dep:pyo3"]

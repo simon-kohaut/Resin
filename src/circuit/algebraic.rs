@@ -603,9 +603,9 @@ impl AlgebraicCircuit {
 
     /// Computes the value of a `node` given its `NodeType` and a `reactive_circuit` containing leaf and memorized values.
     pub fn node_value(&self, node: &NodeIndex, reactive_circuit: &ReactiveCircuit) -> Vector {
-        match self.structure.node_weight(*node).expect(&format!("Node {:?} was not found within Algebraic Circuit!", node))
+        match self.structure[*node]
         {
-            NodeType::Leaf(index) => return reactive_circuit.leafs[*index as usize].get_value(),
+            NodeType::Leaf(index) => return reactive_circuit.leafs[index as usize].get_value(),
             NodeType::Product => {
                 let mut result = Vector::ones(self.value_size);
                 self.iter_children(node)
@@ -621,7 +621,7 @@ impl AlgebraicCircuit {
                 result                
             }
             NodeType::Memory(edge) => {
-                return reactive_circuit.structure.edge_weight(*edge).unwrap().clone()
+                return reactive_circuit.structure[edge].clone()
             }
         }
     }

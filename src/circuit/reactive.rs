@@ -11,6 +11,7 @@ use petgraph::Direction::{Incoming, Outgoing};
 use plotly::sankey::Node;
 use rayon::in_place_scope;
 
+use crate::channels::clustering::partitioning;
 use crate::circuit::leaf::{self, force_invalidate_dependencies};
 
 use super::{algebraic::AlgebraicCircuit, algebraic::NodeType, leaf::Leaf, Vector};
@@ -31,6 +32,7 @@ pub struct ReactiveCircuit {
     pub leafs: Vec<Leaf>,
     pub queue: HashSet<u32>,
     pub targets: HashMap<String, NodeIndex>,
+    pub partitioning: Vec<usize>,
 }
 
 impl ReactiveCircuit {
@@ -44,6 +46,7 @@ impl ReactiveCircuit {
             leafs: Vec::new(),
             queue: HashSet::new(),
             targets: HashMap::new(),
+            partitioning: Vec::new(),
         }
     }
 
@@ -126,6 +129,43 @@ impl ReactiveCircuit {
 
     pub fn set_dependency(&mut self, index: u32, node: &NodeIndex) {
         self.leafs[index as usize].add_dependency(node.index() as u32);
+    }
+
+    pub fn adapt(&mut self, boundaries: &[f64]) {
+        self.check_invariants();
+
+        let frequencies = self.leafs.iter().map(|leaf| leaf.get_frequency()).collect::<Vec<f64>>();
+        let partitioning = partitioning(&frequencies, boundaries);
+        println!("{:?}", partitioning);
+
+        if self.partitioning.is_empty() {
+            for index in 0..partitioning.len() {
+                for _ in 0..partitioning[index] {
+                   self.drop_leaf(index as u32);
+                }
+            }
+        } else {
+            for index in 0..self.partitioning.len() {
+                let difference = self.partitioning[index] as i32 - partitioning[index] as i32;
+                match difference.signum() {
+                    -1 => {
+                        for _ in 0..-difference {
+                            self.lift_leaf(index as u32);
+                        }
+                    }
+                    1 => {
+                        for _ in 0..difference {
+                            self.drop_leaf(index as u32);
+                        }
+                    }
+                    _ => unreachable!()
+                }
+            }
+        }
+
+        self.partitioning = partitioning;
+
+        self.check_invariants();
     }
 
     /// Returns a list of all descendant nodes, grouped by their depth relative to the given `node`.
@@ -633,7 +673,7 @@ impl ReactiveCircuit {
         for edge in self.structure.edge_indices() {
             let (source, target) = self.structure.edge_endpoints(edge).unwrap();
             dot.push_str(&format!(
-                "    {} -> {} [label=\"M{}={}\" decorate=\"true\"];\n",
+                "    {} -> {} [label=\"M{}={:.2}\" decorate=\"true\"];\n",
                 source.index(),
                 target.index(),
                 edge.index(),
@@ -801,17 +841,20 @@ mod tests {
                 .collect::<Vec<_>>();
             let expected_value = calculate_expected_value(&sum_of_products, &leaf_values, value_size);
 
+            // Check if reactive update results in expected value
+            let result = reactive_circuit.update();
+            println!("RC result = {} | Expected = {}", result["random_target"].clone(), expected_value.clone());
+            assert!((result["random_target"].clone() - expected_value.clone()).sum().abs() < 1e-9);
+
             // Check if full update results in expected value
             let result = reactive_circuit.full_update();
             println!("RC result = {} | Expected = {}", result["random_target"].clone(), expected_value.clone());
             assert!((result["random_target"].clone() - expected_value.clone()).sum().abs() < 1e-9);
 
             // Randomly update a leaf
-            if rng.random_bool(0.5) {
-                let leaf_to_update = rng.random_range(0..number_leafs) as u32;
-                let new_value = Vector::from(vec![rng.random_range(0.0..1.0)]);
-                update(&mut reactive_circuit, leaf_to_update, new_value, step as f64);
-            }
+            let leaf_to_update = rng.random_range(0..number_leafs) as u32;
+            let new_value = Vector::from(vec![rng.random_range(0.0..1.0)]);
+            update(&mut reactive_circuit, leaf_to_update, new_value, step as f64);
 
             // Randomly adapt structure
             let leaf_to_adapt = rng.random_range(0..number_leafs) as u32;
