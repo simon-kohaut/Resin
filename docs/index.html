@@ -5,36 +5,39 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   
   <!-- Primary Meta Tags -->
-  <meta name="title" content="CycliST: A Video Language Model Benchmark for Reasoning on Cyclical State Transitions">
-  <meta name="description" content="We present CycliST, a novel benchmark dataset designed to evaluate Video Language Models (VLM) on their ability for textual reasoning over cyclical state transitions.">
-  <meta name="keywords" content="Video Question Answering, Scene Understanding, Spatio-Temporal Reasoning, Benchmark Dataset">
-  <meta name="author" content="Simon Kohaut, Daniel Ochs, Shun Zhang, Benedict Flade, Julian Eggert, Kristian Kersting, Devendra Singh Dhami">
+  <meta name="title" content="Reactive Knowledge Representation and Asynchronous Reasoning">
+  <meta name="description" content="We present the asynchronous probabilistic logic language Resin (Reactive Signal Inference) and Reactive Circuits for online adaptive, reactive inference.">
+  <meta name="keywords" content="Probabilistic Logic, Algebraic Model Counting, Reactive Programming">
+  <meta name="author" content="Simon Kohaut, Benedict Flade, Julian Eggert, Kristian Kersting, Devendra Singh Dhami">
   <meta name="robots" content="index, follow">
   <meta name="language" content="English">
   
   <!-- Open Graph / Facebook -->
   <meta property="og:type" content="article">
   <meta property="og:site_name" content="Artificial Intelligence and Machine Learning">
-  <meta property="og:title" content="CycliST: A Video Language Model Benchmark for Reasoning on Cyclical State Transitions">
-  <meta property="og:description" content="We present CycliST, a novel benchmark dataset designed to evaluate Video Language Models (VLM) on their ability for textual reasoning over cyclical state transitions.">
-  <meta property="og:url" content="https://simon-kohaut.github.io/CycliST/">
-  <meta property="og:image" content="https://raw.githubusercontent.com/simon-kohaut/CycliST/main/docs/static/images/architecture.jpg">
+  <meta property="og:title" content="Reactive Knowledge Representation and Asynchronous Reasoning">
+  <meta property="og:description" content="We present the asynchronous probabilistic logic language Resin (Reactive Signal Inference) and Reactive Circuits for online adaptive, reactive inference.">
+  <meta property="og:url" content="https://simon-kohaut.github.io/Resin/">
+  <meta property="og:image" content=""> <!-- TODO -->
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
-  <meta property="og:image:alt" content="CycliST: A Video Language Model Benchmark for Reasoning on Cyclical State Transitions - Research Preview">
-  <meta property="article:published_time" content="2025-11-30T00:00:00.000Z">
+  <meta property="og:image:alt" content="Reactive Knowledge Representation and Asynchronous Reasoning - Research Preview">
+  <meta property="article:published_time" content="2026-0205T00:00:00.000Z">
   <meta property="article:author" content="Simon Kohaut">
   <meta property="article:section" content="Research">
-  <meta property="article:tag" content="Video Question Answering">
-  <meta property="article:tag" content="Scene Understanding">
+  <meta property="article:tag" content="Probabilistic Logic">
+  <meta property="article:tag" content="Algebraic Model Counting">
 
   <!-- Academic/Research Specific -->
-  <meta name="citation_title" content="PAPER_TITLE">
+  <meta name="citation_title" content="Reactive Knowledge Representation and Asynchronous Reasoning">
   <meta name="citation_author" content="Kohaut, Simon">
-  <meta name="citation_author" content="Ochs, Daniel">
+  <meta name="citation_author" content="Flade, Benedict">
+  <meta name="citation_author" content="Eggert, Julian">
+  <meta name="citation_author" content="Kersting, Kristian">
+  <meta name="citation_author" content="Dhami, Devendra Singh">
   <meta name="citation_publication_date" content="2026">
   <meta name="citation_conference_title" content="arXiv">
-  <meta name="citation_pdf_url" content="https://arxiv.org/pdf/2512.01095">
+  <meta name="citation_pdf_url" content="https://arxiv.org/pdf/2602.05625">
   
   <!-- Additional SEO -->
   <meta name="theme-color" content="#2563eb">
@@ -49,7 +52,7 @@
   <link rel="preconnect" href="https://documentcloud.adobe.com">
   <link rel="preconnect" href="https://cdn.jsdelivr.net">
 
-  <title>CycliST: A Video Language Model Benchmark for Reasoning on Cyclical State Transitions - Simon Kohaut, Daniel Ochs, Shun Zhang, Benedict Flade, Julian Eggert, Kristian Kersting, Devendra Singh Dhami</title>
+  <title>Reactive Knowledge Representation and Asynchronous Reasoning - Simon Kohaut, Benedict Flade, Julian Eggert, Kristian Kersting, Devendra Singh Dhami</title>
   
   <!-- Favicon and App Icons -->
   <link rel="icon" type="image/x-icon" href="static/images/favicon.ico">
@@ -89,8 +92,8 @@
   {
     "@context": "https://schema.org",
     "@type": "ScholarlyArticle",
-    "headline": "CycliST: A Video Language Model Benchmark for Reasoning on Cyclical State Transitions",
-    "description": "We present CycliST, a novel benchmark dataset designed to evaluate Video Language Models (VLM) on their ability for textual reasoning over cyclical state transitions.",
+    "headline": "Reactive Knowledge Representation and Asynchronous Reasoning",
+    "description": "We present the asynchronous probabilistic logic language Resin (Reactive Signal Inference) and Reactive Circuits for online adaptive, reactive inference.",
     "author": [
       {
         "@type": "Person",
@@ -99,33 +102,25 @@
           "@type": "Organization",
           "name": "TU Darmstadt"
         }
-      },
-      {
-        "@type": "Person",
-        "name": "Daniel Ochs",
-        "affiliation": {
-          "@type": "Organization",
-          "name": "TU Darmstadt"
-        }
       }
     ],
-    "datePublished": "2025-11-30",
+    "datePublished": "2026-02-05",
     "publisher": {
       "@type": "Organization",
       "name": "arXiv"
     },
-    "url": "https://huggingface.co/datasets/AIML-TUDA/CycliST",
-    "image": "https://raw.githubusercontent.com/simon-kohaut/CycliST/main/docs/static/images/architecture.jpg",
-    "keywords": ["Video Question Answering", "Scene Understanding", "Spatio-Temporal Reasoning", "Benchmark Dataset"],
-    "abstract": "We present CycliST, a novel benchmark dataset designed to evaluate Video Language Models (VLM) on their ability for textual reasoning over cyclical state transitions. CycliST captures fundamental aspects of real-world processes by generating synthetic, richly structured video sequences featuring periodic patterns in object motion and visual attributes. CycliST employs a tiered evaluation system that progressively increases difficulty through variations in the number of cyclic objects, scene clutter, and lighting conditions, challenging state-of-the-art models on their spatio-temporal cognition. We conduct extensive experiments with current state-of-the-art VLMs, both open-source and proprietary, and reveal their limitations in generalizing to cyclical dynamics such as linear and orbital motion, as well as time-dependent changes in visual attributes like color and scale. Our results demonstrate that present-day VLMs struggle to reliably detect and exploit cyclic patterns, lack a notion of temporal understanding, and are unable to extract quantitative insights from scenes, such as the number of objects in motion, highlighting a significant technical gap that needs to be addressed. More specifically, we find no single model consistently leads in performance: neither size nor architecture correlates strongly with outcomes, and no model succeeds equally well across all tasks. By providing a targeted challenge and a comprehensive evaluation framework, CycliST paves the way for visual reasoning models that surpass the state-of-the-art in understanding periodic patterns.",
-    "citation": "@misc{kohaut2025cyclistvideolanguagemodel,
-      title={CycliST: A Video Language Model Benchmark for Reasoning on Cyclical State Transitions}, 
-      author={Simon Kohaut and Daniel Ochs and Shun Zhang and Benedict Flade and Julian Eggert and Kristian Kersting and Devendra Singh Dhami},
-      year={2025},
-      eprint={2512.01095},
+    "url": "https://github.com/simon-kohaut/Resin",
+    "image": "",
+    "keywords": ["Probabilistic Logic", "Algebraic Model Counting", "Reactive Programming"],
+    "abstract": "We present the asynchronous probabilistic logic language Resin (Reactive Signal Inference) and Reactive Circuits for online adaptive, reactive inference. CycliST captures fundamental aspects of real-world processes by generating synthetic, richly structured video sequences featuring periodic patterns in object motion and visual attributes. CycliST employs a tiered evaluation system that progressively increases difficulty through variations in the number of cyclic objects, scene clutter, and lighting conditions, challenging state-of-the-art models on their spatio-temporal cognition. We conduct extensive experiments with current state-of-the-art VLMs, both open-source and proprietary, and reveal their limitations in generalizing to cyclical dynamics such as linear and orbital motion, as well as time-dependent changes in visual attributes like color and scale. Our results demonstrate that present-day VLMs struggle to reliably detect and exploit cyclic patterns, lack a notion of temporal understanding, and are unable to extract quantitative insights from scenes, such as the number of objects in motion, highlighting a significant technical gap that needs to be addressed. More specifically, we find no single model consistently leads in performance: neither size nor architecture correlates strongly with outcomes, and no model succeeds equally well across all tasks. By providing a targeted challenge and a comprehensive evaluation framework, CycliST paves the way for visual reasoning models that surpass the state-of-the-art in understanding periodic patterns.",
+    "citation": "@misc{kohaut2026reactiveknowledgerepresentationasynchronous,
+      title={Reactive Knowledge Representation and Asynchronous Reasoning}, 
+      author={Simon Kohaut and Benedict Flade and Julian Eggert and Kristian Kersting and Devendra Singh Dhami},
+      year={2026},
+      eprint={2602.05625},
       archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2512.01095}",
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2602.05625}}",
     "isAccessibleForFree": true,
     "license": "https://creativecommons.org/licenses/by/4.0/",
     "mainEntity": {
@@ -135,11 +130,11 @@
     "about": [
       {
         "@type": "Thing",
-        "name": "Computer Vision"
+        "name": "Probabilistic Logic"
       },
       {
         "@type": "Thing", 
-        "name": "Video Language Models"
+        "name": "Reactive Programming"
       }
     ]
   }
@@ -196,10 +191,10 @@
           </div>
           <i class="fas fa-external-link-alt"></i>
         </a>
-        <a href="https://arxiv.org/abs/2602.05625" class="work-item" target="_blank">
+        <a href="https://arxiv.org/abs/2512.01095" class="work-item" target="_blank">
           <div class="work-info">
-            <h5>Reactive Knowledge Representation and Asynchronous Reasoning</h5>
-            <p>Reactive and asynchronous probabilistic logic programming for real-time inference systems.</p>
+            <h5>CycliST: A Video Language Model Benchmark for Reasoning on Cyclical State Transitions</h5>
+            <p>A video language model benchmark for reasoning on cyclical state transitions.</p>
             <span class="work-venue">Preprint</span>
           </div>
           <i class="fas fa-external-link-alt"></i>
@@ -214,13 +209,10 @@
       <div class="container is-max-desktop">
         <div class="columns is-centered">
           <div class="column has-text-centered">
-            <h1 class="title is-1 publication-title">CycliST: A Video Language Model Benchmark for Reasoning on Cyclical State Transitions</h1>
+            <h1 class="title is-1 publication-title">Reactive Knowledge Representation and Asynchronous Reasoning</h1>
             <div class="is-size-5 publication-authors">
               <span class="author-block">
                 <a href="https://ml-research.github.io/people/skohaut/index.html" target="_blank">Simon Kohaut</a><sup>1, *</sup>,
-              </span>
-              <span class="author-block">
-                <a href="https://ml-research.github.io/people/dochs/index.html" target="_blank">Daniel Ochs</a><sup>1, *</sup>,
               </span>
               <span class="author-block">
                 <a href="https://www.honda-ri.de/" target="_blank">Benedict Flade</a><sup>2</sup>,
@@ -248,7 +240,7 @@
                   <div class="column has-text-centered">
                     <div class="publication-links">
                       <span class="link-block">
-                        <a href="https://arxiv.org/pdf/2512.01095.pdf" target="_blank"
+                        <a href="https://arxiv.org/pdf/2602.05625" target="_blank"
                         class="external-link button is-normal is-rounded is-dark">
                         <span class="icon">
                           <i class="fas fa-file-pdf"></i>
@@ -258,7 +250,7 @@
                     </span>
 
                   <span class="link-block">
-                    <a href="https://github.com/simon-kohaut/CycliST" target="_blank"
+                    <a href="https://github.com/simon-kohaut/Resin" target="_blank"
                     class="external-link button is-normal is-rounded is-dark">
                     <span class="icon">
                       <i class="fab fa-github"></i>
@@ -268,7 +260,7 @@
                 </span>
 
                 <span class="link-block">
-                  <a href="https://arxiv.org/abs/2512.01095" target="_blank"
+                  <a href="https://arxiv.org/abs/2602.05625" target="_blank"
                   class="external-link button is-normal is-rounded is-dark">
                   <span class="icon">
                     <i class="ai ai-arxiv"></i>
@@ -289,10 +281,10 @@
   <div class="container is-max-desktop">
     <div class="hero-body">
       <video poster="" id="tree" autoplay controls muted loop height="100%" preload="metadata">
-        <source src="static/videos/tricycle.mp4" type="video/mp4">
+        <source src="static/videos/adapting_rc.mp4" type="video/mp4">
       </video>
       <h2 class="subtitle has-text-centered">
-        A Tricycle scene from CycliST.
+        A Reactive Circuit adapting over time.
       </h2>
     </div>
   </div>
@@ -307,13 +299,7 @@
         <h2 class="title is-3">Abstract</h2>
         <div class="content has-text-justified">
           <p>
-            We present CycliST, a novel benchmark dataset designed to evaluate Video Language Models (VLM) on their ability for textual reasoning over cyclical state transitions. 
-            CycliST captures fundamental aspects of real-world processes by generating synthetic, richly structured video sequences featuring periodic patterns in object motion and visual attributes. 
-            CycliST employs a tiered evaluation system that progressively increases difficulty through variations in the number of cyclic objects, scene clutter, and lighting conditions, challenging state-of-the-art models on their spatio-temporal cognition.
-            We conduct extensive experiments with current state-of-the-art VLMs, both open-source and proprietary, and reveal their limitations in generalizing to cyclical dynamics such as linear and orbital motion, as well as time-dependent changes in visual attributes like color and scale.
-            Our results demonstrate that present-day VLMs struggle to reliably detect and exploit cyclic patterns, lack a notion of temporal understanding, and are unable to extract quantitative insights from scenes, such as the number of objects in motion, highlighting a significant technical gap that needs to be addressed.
-            More specifically, we find no single model consistently leads in performance: neither size nor architecture correlates strongly with outcomes, and no model succeeds equally well across all tasks.
-            By providing a targeted challenge and a comprehensive evaluation framework, CycliST paves the way for visual reasoning models that surpass the state-of-the-art in understanding periodic patterns. 
+            Exact inference in complex probabilistic models often incurs prohibitive computational costs. This challenge is particularly acute for autonomous agents in dynamic environments that require frequent, real-time belief updates. Existing methods are often inefficient for ongoing reasoning, as they re-evaluate the entire model upon any change, failing to exploit that real-world information streams have heterogeneous update rates. To address this, we approach the problem from a reactive, asynchronous, probabilistic reasoning perspective. We first introduce Resin (Reactive Signal Inference), a probabilistic programming language that merges probabilistic logic with reactive programming. Furthermore, to provide efficient and exact semantics for Resin, we propose Reactive Circuits (RCs). Formulated as a meta-structure over Algebraic Circuits and asynchronous data streams, RCs are time-dynamic Directed Acyclic Graphs that autonomously adapt themselves based on the volatility of input signals. In high-fidelity drone swarm simulations, our approach achieves several orders of magnitude of speedup over frequency-agnostic inference. We demonstrate that RCs' structural adaptations successfully capture environmental dynamics, significantly reducing latency and facilitating reactive real-time reasoning. By partitioning computations based on the estimated Frequency of Change in the asynchronous inputs, large inference tasks can be decomposed into individually memoized sub-problems. This ensures that only the specific components of a model affected by new information are re-evaluated, drastically reducing redundant computation in streaming contexts. 
           </p>
         </div>
       </div>
@@ -330,25 +316,25 @@
        <div class="item">
         <img src="static/images/architecture.jpg" alt="CycliST architecture" loading="lazy"/>
         <h2 class="subtitle has-text-centered">
-          CycliST's architecture.
+          Reactive Reasoning architecture.
         </h2>
       </div>
       <div class="item">
-        <img src="static/images/cycle_functions.jpg" alt="Cycle functions" loading="lazy"/>
+        <img src="static/images/from_program_to_formulas.jpg" alt="Cycle functions" loading="lazy"/>
         <h2 class="subtitle has-text-centered">
-          Time dynamic objects in CycliST.
+          From a Resin program to Reactive Circuits and compartmentalized formulas.
         </h2>
       </div>
       <div class="item">
-        <img src="static/images/spatial_cycles.jpg" alt="Spatial cycles" loading="lazy"/>
+        <img src="static/images/adaptation.jpg" alt="Spatial cycles" loading="lazy"/>
         <h2 class="subtitle has-text-centered">
-          CycliST's motion cycles lead to varied and periodic spatial relations. 
+          Frequency adaptation of a Reactive Circuit. 
        </h2>
      </div>
      <div class="item">
-      <img src="static/images/vqa_pipeline.jpg" alt="VQA pipeline" loading="lazy"/>
+      <img src="static/images/runtime.jpg" alt="VQA pipeline" loading="lazy"/>
       <h2 class="subtitle has-text-centered">
-        CycliST's question generation pipelines for existential and universal temporal descriptive VQA.
+        Reactive Circuits facilitate structural adaptations and runtime optimizations.
       </h2>
     </div>
   </div>
@@ -356,43 +342,6 @@
 </div>
 </section>
 <!-- End image carousel -->
-    
-<!-- Video carousel -->
-<section class="hero is-small">
-  <div class="hero-body">
-    <div class="container">
-      <h2 class="title is-3">CycliST's tiered benchmarking: Unicycle, Unicycle-cluttered, Bicycle, Tricycle, and Nightrider</h2>
-      <div id="results-carousel" class="carousel results-carousel">
-        <div class="item item-video1">
-          <video poster="" id="video1" controls muted loop height="100%" preload="metadata">
-            <source src="static/videos/unicycle.mp4" type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-video1">
-          <video poster="" id="video1" controls muted loop height="100%" preload="metadata">
-            <source src="static/videos/unicycle_cluttered.mp4" type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-video2">
-          <video poster="" id="video2" controls muted loop height="100%" preload="metadata">
-            <source src="static/videos/bycicle.mp4" type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-video3">
-          <video poster="" id="video3" controls muted loop height="100%" preload="metadata">
-            <source src="static/videos/tricycle.mp4" type="video/mp4">
-          </video>
-        </div>
-        <div class="item item-video4">
-          <video poster="" id="video4" controls muted loop height="100%" preload="metadata">
-            <source src="static/videos/nightrider.mp4" type="video/mp4">
-          </video>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-<!-- End video carousel -->
 
 <!--BibTex citation -->
   <section class="section" id="BibTeX">
@@ -404,15 +353,14 @@
           <span class="copy-text">Copy</span>
         </button>
       </div>
-      <pre id="bibtex-code"><code>@misc{kohaut2025cyclistvideolanguagemodel,
-      title={CycliST: A Video Language Model Benchmark for Reasoning on Cyclical State Transitions}, 
-      author={Simon Kohaut and Daniel Ochs and Shun Zhang and Benedict Flade and Julian Eggert and Kristian Kersting and Devendra Singh Dhami},
-      year={2025},
-      eprint={2512.01095},
+      <pre id="bibtex-code"><code>@misc{kohaut2026reactiveknowledgerepresentationasynchronous,
+      title={Reactive Knowledge Representation and Asynchronous Reasoning}, 
+      author={Simon Kohaut and Benedict Flade and Julian Eggert and Kristian Kersting and Devendra Singh Dhami},
+      year={2026},
+      eprint={2602.05625},
       archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2512.01095}, 
-}</code></pre>
+      primaryClass={cs.AI},
+      url={https://arxiv.org/abs/2602.05625},}</code></pre>
     </div>
 </section>
 <!--End BibTex citation -->
