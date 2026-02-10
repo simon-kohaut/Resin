@@ -47,7 +47,7 @@ jobs:
           before-script-linux: |
               python3 -m pip install clingo
               CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
-              export CLINGO_LIBRARY_PATH=$CLINGO_DIR
+              cd $CLINGO_DIR; ln -s "$(ls *.so | head -n 1)" libclingo.so; export CLINGO_LIBRARY_PATH=$(pwd)
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
@@ -82,7 +82,7 @@ jobs:
           before-script-linux: |
               python3 -m pip install clingo
               CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
-              export CLINGO_LIBRARY_PATH=$CLINGO_DIR
+              cd $CLINGO_DIR; ln -s "$(ls *.so | head -n 1)" libclingo.so; export CLINGO_LIBRARY_PATH=$(pwd)
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
