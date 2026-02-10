@@ -118,8 +118,20 @@ jobs:
           python3 -m pip install clingo
       - name: Set Clingo Environment
         run: |
-          $ClingoPath = python -c "import clingo, os; print(os.path.dirname(clingo.__file__))"
-          echo "CLINGO_LIBRARY_PATH=$ClingoPath" >> $env:GITHUB_ENV
+          $ClingoDir = python -c "import clingo, os; print(os.path.dirname(clingo.__file__))"
+          
+          $OriginalLib = Join-Path $ClingoDir "clingo.lib"
+          $TargetLib = Join-Path $ClingoDir "import_clingo.lib"
+          
+          if (Test-Path $OriginalLib) {
+              Copy-Item $OriginalLib $TargetLib
+              Write-Host "Created alias: $TargetLib"
+          } else {
+              Write-Error "Could not find clingo.lib in $ClingoDir"
+              exit 1
+          }
+
+          echo "CLINGO_LIBRARY_PATH=$ClingoDir" >> $env:GITHUB_ENV
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
