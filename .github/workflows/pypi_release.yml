@@ -47,13 +47,9 @@ jobs:
           before-script-linux: |
               python3 -m pip install clingo
               CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
-              ln -sf "$CLINGO_DIR"/clingo*.so "$CLINGO_DIR"/libclingo.so
+              LIB_PATH=$(ls "$CLINGO_DIR" | grep "cpython" | head -n 1)
+              ln -sf $LIB_PATH "$CLINGO_DIR"/libclingo.so
               export CLINGO_LIBRARY_PATH="$CLINGO_DIR"
-              export LIBRARY_PATH=$CLINGO_DIR
-
-              echo $CLINGO_LIBRARY_PATH
-              echo $LIBRARY_PATH
-              ls -l $CLINGO_LIBRARY_PATH/libclingo.so
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
@@ -88,13 +84,9 @@ jobs:
           before-script-linux: |
               python3 -m pip install clingo
               CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
-              ln -sf "$CLINGO_DIR"/clingo*.so "$CLINGO_DIR"/libclingo.so
+              LIB_PATH=$(ls "$CLINGO_DIR" | grep "cpython" | head -n 1)
+              ln -sf $LIB_PATH "$CLINGO_DIR"/libclingo.so
               export CLINGO_LIBRARY_PATH="$CLINGO_DIR"
-              export LIBRARY_PATH=$CLINGO_DIR
-
-              echo $CLINGO_LIBRARY_PATH
-              echo $LIBRARY_PATH
-              ls -l $CLINGO_LIBRARY_PATH/libclingo.so
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
