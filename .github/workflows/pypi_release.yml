@@ -48,10 +48,10 @@ jobs:
           args: --release --out dist --find-interpreter
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
-        before-script-linux: |
-            pip install clingo
-            CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
-            echo "CLINGO_LIBRARY_PATH=$CLINGO_DIR" >> $GITHUB_ENV
+          before-script-linux: |
+              pip install clingo
+              CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
+              echo "CLINGO_LIBRARY_PATH=$CLINGO_DIR" >> $GITHUB_ENV
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
@@ -88,10 +88,10 @@ jobs:
           args: --release --out dist --find-interpreter
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
-        before-script-linux: |
-            pip install clingo
-            CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
-            echo "CLINGO_LIBRARY_PATH=$CLINGO_DIR" >> $GITHUB_ENV
+          before-script-linux: |
+              pip install clingo
+              CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
+              echo "CLINGO_LIBRARY_PATH=$CLINGO_DIR" >> $GITHUB_ENV
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
