@@ -118,7 +118,7 @@ jobs:
           python3 -m pip install clingo
       - name: Set Clingo Environment
         run: |
-          CLINGO_PREFIX=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
+          $CLINGO_PREFIX=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
           echo "CLINGO_LIBRARY_PATH=${CLINGO_PREFIX}/lib" >> $GITHUB_ENV
           echo "Points to: ${CLINGO_PREFIX}/lib"
       - name: Build wheels
@@ -160,8 +160,6 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --find-interpreter
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        env:
-          CLINGO_LIBRARY_PATH: ${{ env.CLINGO_LIBRARY_PATH }}
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
