@@ -51,7 +51,7 @@ jobs:
           before-script-linux: |
               pip install clingo
               CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
-              echo "CLINGO_LIBRARY_PATH=$CLINGO_DIR" >> $GITHUB_ENV
+              export CLINGO_LIBRARY_PATH=$CLINGO_DIR
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
@@ -91,7 +91,7 @@ jobs:
           before-script-linux: |
               pip install clingo
               CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
-              echo "CLINGO_LIBRARY_PATH=$CLINGO_DIR" >> $GITHUB_ENV
+              export CLINGO_LIBRARY_PATH=$CLINGO_DIR
       - name: Upload wheels
         uses: actions/upload-artifact@v5
         with:
