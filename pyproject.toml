@@ -5,3 +5,6 @@ build-backend = "maturin"
 [project]
 name = "pyresin"
 dynamic = ["version", "description"]
+
+[tool.maturin]
+module-name = "resin"
