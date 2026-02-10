@@ -408,6 +408,12 @@ impl PyReactiveCircuit {
         })
     }
 
+    fn to_dot(&self, py: Python<'_>, path: &str) -> PyResult<()> {
+        let path = path.to_string();
+        py.detach(move || self.circuit.lock().unwrap().to_dot(&path))
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
+    }
+
     fn to_svg(&self, py: Python<'_>, path: &str, keep_dot: bool) -> PyResult<()> {
         let path = path.to_string();
         py.detach(move || self.circuit.lock().unwrap().to_svg(&path, keep_dot))
