@@ -42,8 +42,17 @@ impl IpcReader {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let handle = std::thread::spawn(move || {
             while let Ok((value, timestamp)) = receiver.recv() {
-                let final_value = if invert { Vector::ones(value.len()) - value } else { value };
-                update(&mut shared_reactive_circuit.lock().unwrap(), index, final_value, timestamp);
+                let final_value = if invert {
+                    Vector::ones(value.len()) - value
+                } else {
+                    value
+                };
+                update(
+                    &mut shared_reactive_circuit.lock().unwrap(),
+                    index,
+                    final_value,
+                    timestamp,
+                );
             }
         });
 
@@ -67,7 +76,12 @@ impl IpcDualReader {
                 let inverted_value = (Vector::ones(value.len()) - &*value).into();
                 let mut circuit_guard = shared_reactive_circuit.lock().unwrap();
                 update(&mut circuit_guard, index_normal, value.clone(), timestamp);
-                update(&mut circuit_guard, index_inverted, inverted_value, timestamp);
+                update(
+                    &mut circuit_guard,
+                    index_inverted,
+                    inverted_value,
+                    timestamp,
+                );
             }
         });
 
@@ -101,7 +115,7 @@ impl TimedIpcWriter {
     pub fn new(
         frequency: f64,
         sender: Sender<(Vector, f64)>,
-        value: Vector
+        value: Vector,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let writer = IpcWriter::new(sender)?;
 
@@ -158,9 +172,7 @@ impl TimedIpcWriter {
                 let _ = sender.send(());
             }
             if let Some(handle) = self.handle.take() {
-                handle
-                    .join()
-                    .expect("Could not join with writer thread!");
+                handle.join().expect("Could not join with writer thread!");
             }
         }
     }
@@ -231,7 +243,13 @@ mod tests {
         sleep(Duration::from_millis(20));
 
         // The value should be 1.0 - 0.8
-        assert!((reactive_circuit.lock().unwrap().leafs[0].get_value() - array![0.2]).sum().abs() < 1e-9, "Inversion failed");
+        assert!(
+            (reactive_circuit.lock().unwrap().leafs[0].get_value() - array![0.2])
+                .sum()
+                .abs()
+                < 1e-9,
+            "Inversion failed"
+        );
 
         Ok(())
     }

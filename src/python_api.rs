@@ -1,16 +1,15 @@
+use petgraph::stable_graph::NodeIndex;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use petgraph::stable_graph::NodeIndex;
 
 use crate::channels::ipc::IpcWriter;
 use crate::channels::manager::Manager;
 use crate::circuit::leaf::{self, Leaf};
 use crate::circuit::reactive::ReactiveCircuit;
-use crate::language::Resin;
 use crate::circuit::Vector;
-
+use crate::language::Resin;
 
 /// A wrapper around a shared, mutable `Vector` for timed writers.
 #[pyclass(name = "SharedVector")]
@@ -29,9 +28,7 @@ impl PySharedVector {
 
     /// Gets the current value of the shared vector.
     pub fn get(&self, py: Python<'_>) -> Vec<f64> {
-        py.detach(|| {
-            self.vec.lock().unwrap().iter().copied().collect()
-        })
+        py.detach(|| self.vec.lock().unwrap().iter().copied().collect())
     }
 }
 
@@ -71,7 +68,10 @@ impl PyManager {
         let name = name.to_string();
         py.detach(move || {
             let vector_value = Vector::from(value);
-            self.manager.lock().unwrap().create_leaf(&name, vector_value, frequency)
+            self.manager
+                .lock()
+                .unwrap()
+                .create_leaf(&name, vector_value, frequency)
         })
     }
 
@@ -79,14 +79,23 @@ impl PyManager {
     fn read(&self, py: Python<'_>, receiver_idx: u32, channel: &str, invert: bool) -> PyResult<()> {
         let channel = channel.to_string();
         py.detach(move || {
-            self.manager.lock().unwrap().read(receiver_idx, &channel, invert)
+            self.manager
+                .lock()
+                .unwrap()
+                .read(receiver_idx, &channel, invert)
                 .map_err(|e| e.to_string())
         })
         .map_err(|e_str| pyo3::exceptions::PyIOError::new_err(e_str))
     }
 
     /// Creates a dual reader for a channel that updates two leaves (normal and inverted).
-    fn read_dual(&self, py: Python<'_>, receiver_idx_normal: u32, receiver_idx_inverted: u32, channel: &str) -> PyResult<()> {
+    fn read_dual(
+        &self,
+        py: Python<'_>,
+        receiver_idx_normal: u32,
+        receiver_idx_inverted: u32,
+        channel: &str,
+    ) -> PyResult<()> {
         let channel = channel.to_string();
         py.detach(move || {
             self.manager
@@ -101,22 +110,35 @@ impl PyManager {
     /// Creates a writer for a given channel.
     fn make_writer(&self, py: Python<'_>, channel: &str) -> PyResult<PyIpcWriter> {
         let channel = channel.to_string();
-        let writer = py.detach(move || {
-            self.manager.lock().unwrap().make_writer(&channel)
-                .map_err(|e| e.to_string())
-        })
-        .map_err(|e_str| pyo3::exceptions::PyIOError::new_err(e_str))?;
+        let writer = py
+            .detach(move || {
+                self.manager
+                    .lock()
+                    .unwrap()
+                    .make_writer(&channel)
+                    .map_err(|e| e.to_string())
+            })
+            .map_err(|e_str| pyo3::exceptions::PyIOError::new_err(e_str))?;
         Ok(PyIpcWriter { writer })
     }
 
     /// Creates a timed writer that sends its value at a given frequency.
-    fn make_timed_writer(&self, py: Python<'_>, channel: &str, frequency: f64) -> PyResult<PySharedVector> {
+    fn make_timed_writer(
+        &self,
+        py: Python<'_>,
+        channel: &str,
+        frequency: f64,
+    ) -> PyResult<PySharedVector> {
         let channel = channel.to_string();
-        let value_arc = py.detach(move || {
-            self.manager.lock().unwrap().make_timed_writer(&channel, frequency)
-                .map_err(|e| e.to_string())
-        })
-        .map_err(|e_str| pyo3::exceptions::PyIOError::new_err(e_str))?;
+        let value_arc = py
+            .detach(move || {
+                self.manager
+                    .lock()
+                    .unwrap()
+                    .make_timed_writer(&channel, frequency)
+                    .map_err(|e| e.to_string())
+            })
+            .map_err(|e_str| pyo3::exceptions::PyIOError::new_err(e_str))?;
         Ok(PySharedVector { vec: value_arc })
     }
 
@@ -129,15 +151,16 @@ impl PyManager {
 
     /// Returns a list of the frequencies of all leaves.
     fn get_frequencies(&self, py: Python<'_>) -> Vec<f64> {
-        py.detach(|| {
-            self.manager.lock().unwrap().get_frequencies()
-        })
+        py.detach(|| self.manager.lock().unwrap().get_frequencies())
     }
 
     /// Returns a list of the values of all leaves.
     fn get_values(&self, py: Python<'_>) -> Vec<Vec<f64>> {
         py.detach(|| {
-            self.manager.lock().unwrap().get_values()
+            self.manager
+                .lock()
+                .unwrap()
+                .get_values()
                 .into_iter()
                 .map(|v| v.iter().copied().collect())
                 .collect()
@@ -146,9 +169,7 @@ impl PyManager {
 
     /// Returns a list of the names of all leaves.
     fn get_names(&self, py: Python<'_>) -> Vec<String> {
-        py.detach(|| {
-            self.manager.lock().unwrap().get_names()
-        })
+        py.detach(|| self.manager.lock().unwrap().get_names())
     }
 }
 
@@ -165,11 +186,9 @@ impl PyResin {
     fn compile(py: Python<'_>, model: &str, value_size: usize, verbose: bool) -> PyResult<Self> {
         let model = model.to_string();
         // Compilation can be CPU-intensive, so we release the GIL.
-        let compiled_resin = py.detach(move || {
-            Resin::compile(&model, value_size, verbose)
-                .map_err(|e| e.to_string())
-        })
-        .map_err(|e_str| pyo3::exceptions::PyRuntimeError::new_err(e_str))?;
+        let compiled_resin = py
+            .detach(move || Resin::compile(&model, value_size, verbose).map_err(|e| e.to_string()))
+            .map_err(|e_str| pyo3::exceptions::PyRuntimeError::new_err(e_str))?;
 
         // We move the manager, which holds the runtime state, into its own Arc<Mutex>.
         // The rest of the compiled data (clauses, etc.) is discarded as it's not
@@ -183,7 +202,9 @@ impl PyResin {
     fn get_reactive_circuit(&self) -> PyReactiveCircuit {
         // We only need to lock the manager briefly to clone the Arc to the circuit.
         let circuit_arc = self.manager.lock().unwrap().reactive_circuit.clone();
-        PyReactiveCircuit { circuit: circuit_arc }
+        PyReactiveCircuit {
+            circuit: circuit_arc,
+        }
     }
 
     /// Creates a reader for a given channel that updates a leaf.
@@ -191,7 +212,10 @@ impl PyResin {
         let channel = channel.to_string();
         let manager = self.manager.clone();
         py.detach(move || {
-            manager.lock().unwrap().read(receiver_idx, &channel, invert)
+            manager
+                .lock()
+                .unwrap()
+                .read(receiver_idx, &channel, invert)
                 .map_err(|e| e.to_string())
         })
         .map_err(|e_str| pyo3::exceptions::PyIOError::new_err(e_str))
@@ -201,26 +225,39 @@ impl PyResin {
     fn make_writer(&self, py: Python<'_>, channel: &str) -> PyResult<PyIpcWriter> {
         let channel = channel.to_string();
         let manager = self.manager.clone();
-        let writer = py.detach(move || {
-            manager.lock().unwrap().make_writer(&channel)
-                .map_err(|e| e.to_string())
-        })
-        .map_err(|e_str| pyo3::exceptions::PyIOError::new_err(e_str))?;
+        let writer = py
+            .detach(move || {
+                manager
+                    .lock()
+                    .unwrap()
+                    .make_writer(&channel)
+                    .map_err(|e| e.to_string())
+            })
+            .map_err(|e_str| pyo3::exceptions::PyIOError::new_err(e_str))?;
         Ok(PyIpcWriter { writer })
     }
 
     /// Creates a timed writer that sends its value at a given frequency.
-    fn make_timed_writer(&self, py: Python<'_>, channel: &str, frequency: f64) -> PyResult<PySharedVector> {
+    fn make_timed_writer(
+        &self,
+        py: Python<'_>,
+        channel: &str,
+        frequency: f64,
+    ) -> PyResult<PySharedVector> {
         // The closure passed to `detach` must return a `Send`-able type.
         // `Box<dyn std::error::Error>` is not `Send`, so we map it to a `String`
         // inside the thread-safe closure before it is returned.
         let channel = channel.to_string();
         let manager = self.manager.clone();
-        let value_arc = py.detach(move || {
-            manager.lock().unwrap().make_timed_writer(&channel, frequency)
-                .map_err(|e| e.to_string())
-        })
-        .map_err(|e_str| pyo3::exceptions::PyIOError::new_err(e_str))?;
+        let value_arc = py
+            .detach(move || {
+                manager
+                    .lock()
+                    .unwrap()
+                    .make_timed_writer(&channel, frequency)
+                    .map_err(|e| e.to_string())
+            })
+            .map_err(|e_str| pyo3::exceptions::PyIOError::new_err(e_str))?;
         Ok(PySharedVector { vec: value_arc })
     }
 
@@ -248,9 +285,13 @@ impl PyResin {
     fn get_values(&self, py: Python<'_>) -> Vec<Vec<f64>> {
         let manager = self.manager.clone();
         py.detach(move || {
-            manager.lock().unwrap()
+            manager
+                .lock()
+                .unwrap()
                 .get_values()
-                .into_iter().map(|v| v.iter().copied().collect()).collect()
+                .into_iter()
+                .map(|v| v.iter().copied().collect())
+                .collect()
         })
     }
 }
@@ -259,7 +300,6 @@ impl PyResin {
 struct PyReactiveCircuit {
     circuit: Arc<Mutex<ReactiveCircuit>>,
 }
-
 
 #[pymethods]
 impl PyReactiveCircuit {
@@ -281,21 +321,35 @@ impl PyReactiveCircuit {
                 value_size,
                 &sum_product,
                 target_token,
-            )))
+            ))),
         })
     }
 
-    fn add_leaf(&self, py: Python<'_>, initial_value: Vec<f64>, initial_timestamp: f64, token: String) -> PyResult<usize> {
+    fn add_leaf(
+        &self,
+        py: Python<'_>,
+        initial_value: Vec<f64>,
+        initial_timestamp: f64,
+        token: String,
+    ) -> PyResult<usize> {
         Ok(py.detach(move || {
             let mut circuit = self.circuit.lock().unwrap();
             let leaf_index = circuit.leafs.len();
             let vector_value = Vector::from(initial_value);
-            circuit.leafs.push(Leaf::new(vector_value, initial_timestamp, &token));
+            circuit
+                .leafs
+                .push(Leaf::new(vector_value, initial_timestamp, &token));
             leaf_index
         }))
     }
 
-    fn update_leaf(&self, py: Python<'_>, leaf_index: u32, new_value: Vec<f64>, timestamp: f64) -> PyResult<()> {
+    fn update_leaf(
+        &self,
+        py: Python<'_>,
+        leaf_index: u32,
+        new_value: Vec<f64>,
+        timestamp: f64,
+    ) -> PyResult<()> {
         py.detach(move || {
             let mut circuit = self.circuit.lock().unwrap();
             let vector_value = Vector::from(new_value);
@@ -307,7 +361,10 @@ impl PyReactiveCircuit {
     fn add_sum_product(&self, py: Python<'_>, sum_product: Vec<Vec<u32>>, target_token: &str) {
         let target_token = target_token.to_string();
         py.detach(move || {
-            self.circuit.lock().unwrap().add_sum_product(&sum_product, &target_token);
+            self.circuit
+                .lock()
+                .unwrap()
+                .add_sum_product(&sum_product, &target_token);
         })
     }
 
@@ -353,18 +410,14 @@ impl PyReactiveCircuit {
 
     fn to_svg(&self, py: Python<'_>, path: &str, keep_dot: bool) -> PyResult<()> {
         let path = path.to_string();
-        py.detach(move || {
-            self.circuit.lock().unwrap().to_svg(&path, keep_dot)
-        })
-        .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
+        py.detach(move || self.circuit.lock().unwrap().to_svg(&path, keep_dot))
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
     }
 
     fn to_combined_svg(&self, py: Python<'_>, path: &str) -> PyResult<()> {
         let path = path.to_string();
-        py.detach(move || {
-            self.circuit.lock().unwrap().to_combined_svg(&path)
-        })
-        .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
+        py.detach(move || self.circuit.lock().unwrap().to_combined_svg(&path))
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
     }
 }
 

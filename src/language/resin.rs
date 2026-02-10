@@ -18,7 +18,11 @@ pub struct Resin {
 }
 
 impl Resin {
-    pub fn compile(model: &str, value_size: usize, verbose: bool) -> Result<Resin, Box<dyn std::error::Error>> {
+    pub fn compile(
+        model: &str,
+        value_size: usize,
+        verbose: bool,
+    ) -> Result<Resin, Box<dyn std::error::Error>> {
         // Parse and setup Resin runtime environment
         let mut resin: Resin = model.parse().unwrap();
         resin.value_size = value_size;
@@ -33,7 +37,10 @@ impl Resin {
         resin.value_size = value_size;
         resin.setup_signals()?;
         if verbose {
-            println!("Setup {} signals.", resin.manager.reactive_circuit.lock().unwrap().leafs.len());
+            println!(
+                "Setup {} signals.",
+                resin.manager.reactive_circuit.lock().unwrap().leafs.len()
+            );
         }
 
         // Pass data to Clingo and obtain stable models
@@ -53,10 +60,7 @@ impl Resin {
             dnf.remove(&resin.targets[target_index].name);
 
             if verbose {
-                println!(
-                    "Solved Resin into a DNF with {} clauses",
-                    dnf.clauses.len()
-                );
+                println!("Solved Resin into a DNF with {} clauses", dnf.clauses.len());
             }
 
             // Build the RC from the DNF
@@ -88,16 +92,17 @@ impl Resin {
     pub fn setup_signals(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         // Create all source channels and parameter leafs
         for source in &self.sources {
-            let index_normal = self
-                .manager
-                .create_leaf(&source.name, Vector::zeros(self.value_size), 0.0);
+            let index_normal =
+                self.manager
+                    .create_leaf(&source.name, Vector::zeros(self.value_size), 0.0);
 
             let index_inverted = self.manager.create_leaf(
                 &format!("-{}", source.name),
                 Vector::ones(self.value_size),
                 0.0,
             );
-            self.manager.read_dual(index_normal, index_inverted, &source.channel)?;
+            self.manager
+                .read_dual(index_normal, index_inverted, &source.channel)?;
         }
 
         for clause in &self.clauses {
@@ -137,7 +142,11 @@ impl Resin {
         }
 
         // Add the target to the ReactiveCircuit
-        self.manager.reactive_circuit.lock().unwrap().add_sum_product(&sum_product, target_token);
+        self.manager
+            .reactive_circuit
+            .lock()
+            .unwrap()
+            .add_sum_product(&sum_product, target_token);
     }
 }
 
@@ -181,12 +190,12 @@ impl FromStr for Resin {
 #[cfg(test)]
 mod tests {
 
-    use std::{collections::HashMap, fmt::Debug};
     use std::fs::{File, OpenOptions};
     use std::io::Write;
     use std::path::Path;
     use std::time::Instant;
-    
+    use std::{collections::HashMap, fmt::Debug};
+
     use polars::io::mmap::MmapBytesReader;
     use polars::prelude::*;
 
@@ -246,9 +255,17 @@ mod tests {
         let resin = resin.unwrap();
 
         // Show circuit
-        let _ = resin.manager.reactive_circuit.lock().unwrap().to_combined_svg("output/test/test_resin_model_circuits.svg");
+        let _ = resin
+            .manager
+            .reactive_circuit
+            .lock()
+            .unwrap()
+            .to_combined_svg("output/test/test_resin_model_circuits.svg");
 
-        println!("{:#?}", resin.manager.reactive_circuit.lock().unwrap().targets);
+        println!(
+            "{:#?}",
+            resin.manager.reactive_circuit.lock().unwrap().targets
+        );
 
         // Count the correct number of Resin elements
         assert_eq!(resin.clauses.len(), 3);
@@ -259,5 +276,4 @@ mod tests {
         let result = resin.manager.reactive_circuit.lock().unwrap().update();
         assert_eq!(result["unsafe"], Vector::from(vec![0.94]));
     }
-
 }

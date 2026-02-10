@@ -81,7 +81,13 @@ impl Manager {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let (tx, rx) = mpsc::channel();
         self.senders.insert(channel.to_string(), tx);
-        let reader = IpcReader::new(self.reactive_circuit.clone(), receiver_idx, channel, invert, rx)?;
+        let reader = IpcReader::new(
+            self.reactive_circuit.clone(),
+            receiver_idx,
+            channel,
+            invert,
+            rx,
+        )?;
 
         self.readers.push(reader);
         Ok(())
@@ -140,7 +146,9 @@ impl Manager {
 
         let initial_value = {
             let rc_guard = self.reactive_circuit.lock().unwrap();
-            rc_guard.leafs.iter()
+            rc_guard
+                .leafs
+                .iter()
                 .find(|l| l.name == channel.strip_prefix('/').unwrap_or(channel))
                 .map(|l| l.get_value())
                 .unwrap_or_else(|| Vector::zeros(rc_guard.value_size))
@@ -322,7 +330,10 @@ mod tests {
 
         sleep(Duration::from_millis(10));
 
-        assert_eq!(manager.get_values(), vec![array![0.5], array![0.19999999999999996]]); // 1.0 - 0.8
+        assert_eq!(
+            manager.get_values(),
+            vec![array![0.5], array![0.19999999999999996]]
+        ); // 1.0 - 0.8
 
         Ok(())
     }
@@ -345,7 +356,7 @@ mod tests {
         }
         drop(rc_guard);
 
-        // Frequency should now be about 
+        // Frequency should now be about
         assert!(manager.get_frequencies()[0] - 100.0 < 1e-3);
 
         // Prune with a threshold of 10s, should not prune

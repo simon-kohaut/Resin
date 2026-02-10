@@ -6,8 +6,8 @@ use std::process::Command;
 
 use itertools::Itertools;
 use petgraph::stable_graph::{EdgeIndex, Edges, NodeIndex, StableGraph};
-use petgraph::visit::{EdgeRef, Walker};
 use petgraph::visit::Bfs;
+use petgraph::visit::{EdgeRef, Walker};
 use petgraph::Direction::{Incoming, Outgoing};
 
 use super::reactive::ReactiveCircuit;
@@ -57,7 +57,7 @@ impl AlgebraicCircuit {
         self.add_to_node(&self.root.clone(), &product);
     }
 
-    /// More efficient than calling `AlgebraicCircui::add` many times, attaching an entire `sum_product` to root. 
+    /// More efficient than calling `AlgebraicCircui::add` many times, attaching an entire `sum_product` to root.
     pub fn add_sum_product(&mut self, sum_product: &[Vec<u32>]) {
         // Ensure that for each index a NodeType::Leaf(index) exists
         let indices = BTreeSet::from_iter(sum_product.iter().flatten());
@@ -94,8 +94,7 @@ impl AlgebraicCircuit {
     /// If this is needed, use `multiply` instead.
     pub fn multiply_with_nodes(&mut self, nodes: &[NodeIndex], product: &[NodeIndex]) {
         for node in nodes {
-            match self.structure[*node]
-            {
+            match self.structure[*node] {
                 NodeType::Sum => {
                     let mut children = self.get_children(node);
                     if children.is_empty() {
@@ -132,10 +131,10 @@ impl AlgebraicCircuit {
                 for factor in product {
                     self.structure.add_edge(product_node, *factor, ());
                 }
-                
+
                 product_node
             }
-            _ => self.add_to_node(&self.get_parents(node)[0], product)
+            _ => self.add_to_node(&self.get_parents(node)[0], product),
         };
 
         product_node
@@ -155,10 +154,13 @@ impl AlgebraicCircuit {
     pub fn from_sum_product(value_size: usize, sum_product: &[Vec<u32>]) -> Self {
         // Initialize AlgebraicCircuit
         let mut algebraic_circuit = AlgebraicCircuit::new(value_size);
-        
+
         // Add all the product nodes
         for product in sum_product {
-            let leaf_product: Vec<NodeIndex> = product.iter().map(|index| algebraic_circuit.ensure_leaf(*index)).collect();
+            let leaf_product: Vec<NodeIndex> = product
+                .iter()
+                .map(|index| algebraic_circuit.ensure_leaf(*index))
+                .collect();
             algebraic_circuit.add_to_node(&algebraic_circuit.root.clone(), &leaf_product);
         }
 
@@ -188,7 +190,7 @@ impl AlgebraicCircuit {
     pub fn is_in_circuit(&self, index: u32) -> bool {
         match self.leafs.get(&index) {
             Some(_) => true,
-            None => false
+            None => false,
         }
     }
 
@@ -199,10 +201,10 @@ impl AlgebraicCircuit {
 
         let mut bfs = Bfs::new(&self.structure, *node);
         while let Some(descendant) = bfs.next(&self.structure) {
-            match self.structure.node_weight(descendant).unwrap() { 
+            match self.structure.node_weight(descendant).unwrap() {
                 NodeType::Leaf(_) | NodeType::Memory(_) => {
                     scope.insert(descendant);
-                },
+                }
                 _ => {}
             }
         }
@@ -222,7 +224,8 @@ impl AlgebraicCircuit {
 
     /// Iterate over the granparents of the given `node` within this circuit.
     pub fn iter_grandparent(&self, node: &NodeIndex) -> impl Iterator<Item = NodeIndex> + '_ {
-        self.iter_parents(node).flat_map(|parent| self.iter_parents(&parent))
+        self.iter_parents(node)
+            .flat_map(|parent| self.iter_parents(&parent))
     }
 
     /// Iterate over the siblings of the given `node` within this circuit.
@@ -356,14 +359,8 @@ impl AlgebraicCircuit {
     pub fn remove_disconnected(&mut self) {
         let mut to_be_removed = Vec::new();
         for node in self.structure.node_indices() {
-            let number_of_incoming_edges =  self
-                .structure
-                .edges_directed(node, Incoming)
-                .count();
-            let number_of_outgoing_edges =  self
-                .structure
-                .edges_directed(node, Outgoing)
-                .count();
+            let number_of_incoming_edges = self.structure.edges_directed(node, Incoming).count();
+            let number_of_outgoing_edges = self.structure.edges_directed(node, Outgoing).count();
 
             if number_of_incoming_edges == 0 && number_of_outgoing_edges == 0 {
                 to_be_removed.push(node);
@@ -378,11 +375,13 @@ impl AlgebraicCircuit {
     /// Removes a `node` and all of its descendants.
     /// `NodeType::Leaf` and `NodeType::Memory` are only deleted if no other branch of the graph depends on them
     fn remove_with_descendants(&mut self, node: &NodeIndex) {
-        let descendants: Vec<NodeIndex> = Bfs::new(&self.structure, *node).iter(&self.structure).collect();
+        let descendants: Vec<NodeIndex> = Bfs::new(&self.structure, *node)
+            .iter(&self.structure)
+            .collect();
 
         for descendant in descendants {
             match self.structure.node_weight(descendant).unwrap() {
-                NodeType::Leaf(_) | NodeType::Memory(_) => {},
+                NodeType::Leaf(_) | NodeType::Memory(_) => {}
                 _ => {
                     self.remove(&descendant);
                 }
@@ -451,10 +450,7 @@ impl AlgebraicCircuit {
     }
 
     /// Splits the Algebraic Circuit into one that contains the `node` and one that does not.
-    pub fn split(
-        &mut self,
-        index: u32,
-    ) -> (Option<AlgebraicCircuit>, Option<AlgebraicCircuit>) {
+    pub fn split(&mut self, index: u32) -> (Option<AlgebraicCircuit>, Option<AlgebraicCircuit>) {
         // New structure is a sum over two products, each with just one sum of which
         // one contains the node and one doesnt
         let leaf = self.get_leaf(index).unwrap();
@@ -474,21 +470,31 @@ impl AlgebraicCircuit {
             new_circuit.remove_disconnected();
 
             in_scope_circuit = Some(new_circuit);
-            assert!(in_scope_circuit.as_ref().unwrap().structure.node_indices().contains(&in_scope_root.unwrap()));
+            assert!(in_scope_circuit
+                .as_ref()
+                .unwrap()
+                .structure
+                .node_indices()
+                .contains(&in_scope_root.unwrap()));
         }
 
         let mut out_of_scope_circuit = None;
         if out_of_scope_root.is_some() {
             let mut new_circuit = self.clone();
             new_circuit.root = out_of_scope_root.unwrap();
-            
+
             if in_scope_root.is_some() {
                 new_circuit.remove_with_descendants(&in_scope_root.unwrap());
             }
             new_circuit.remove_disconnected();
 
             out_of_scope_circuit = Some(new_circuit);
-            assert!(out_of_scope_circuit.as_ref().unwrap().structure.node_indices().contains(&out_of_scope_root.unwrap()));
+            assert!(out_of_scope_circuit
+                .as_ref()
+                .unwrap()
+                .structure
+                .node_indices()
+                .contains(&out_of_scope_root.unwrap()));
         }
 
         (in_scope_circuit, out_of_scope_circuit)
@@ -543,7 +549,7 @@ impl AlgebraicCircuit {
     }
 
     /// Applies the distributive law on a `node`.
-    /// 
+    ///
     /// For example, if the circuit represents the formula `a * (b + c)`, the circuit will be `(a * b) + (a * c)`.
     /// This function does not check if `node` has `NodeType::Leaf` or `NodeType::Memory`.
     /// If this is not the case, the resulting circuit will be invalid.
@@ -603,8 +609,7 @@ impl AlgebraicCircuit {
 
     /// Computes the value of a `node` given its `NodeType` and a `reactive_circuit` containing leaf and memorized values.
     pub fn node_value(&self, node: &NodeIndex, reactive_circuit: &ReactiveCircuit) -> Vector {
-        match self.structure[*node]
-        {
+        match self.structure[*node] {
             NodeType::Leaf(index) => return reactive_circuit.leafs[index as usize].get_value(),
             NodeType::Product => {
                 let mut result = Vector::ones(self.value_size);
@@ -618,11 +623,9 @@ impl AlgebraicCircuit {
                 self.iter_children(node)
                     .for_each(|child| result += &self.node_value(&child, reactive_circuit));
 
-                result                
+                result
             }
-            NodeType::Memory(edge) => {
-                return reactive_circuit.structure[edge].clone()
-            }
+            NodeType::Memory(edge) => return reactive_circuit.structure[edge].clone(),
         }
     }
 
@@ -658,13 +661,12 @@ impl AlgebraicCircuit {
             // Collect nodes without use
             let mut nodes_to_remove = Vec::new();
             for node in self.structure.node_indices() {
-                match self.structure[node]
-                {
+                match self.structure[node] {
                     NodeType::Leaf(_) | NodeType::Memory(_) => {
                         if self.structure.edges_directed(node, Incoming).count() == 0 {
                             nodes_to_remove.push(node.to_owned());
                         }
-                    },
+                    }
                     NodeType::Product | NodeType::Sum => {
                         if self.structure.edges_directed(node, Outgoing).count() == 0 {
                             nodes_to_remove.push(node.to_owned());
@@ -772,8 +774,8 @@ impl AlgebraicCircuit {
 #[cfg(test)]
 mod tests {
 
-    use std::collections::BTreeSet;
     use ndarray::array;
+    use std::collections::BTreeSet;
 
     use crate::circuit::leaf::Leaf;
     use crate::circuit::reactive::ReactiveCircuit;
@@ -796,10 +798,7 @@ mod tests {
         assert_eq!(ac.structure.edge_indices().count(), 6);
 
         // The scope should consist of the Leaf nodes 0, 1 and 2
-        assert_eq!(
-            ac.get_scope(&ac.root),
-            BTreeSet::from_iter(vec![a, b, c])
-        );
+        assert_eq!(ac.get_scope(&ac.root), BTreeSet::from_iter(vec![a, b, c]));
         assert_eq!(
             ac.filter_nodes_by_type(&Vec::from_iter(ac.get_scope(&ac.root)), &NodeType::Leaf(0))
                 .len(),
@@ -826,7 +825,10 @@ mod tests {
         }
 
         // Leaf 0 is the sibling of the other 2
-        assert_eq!(BTreeSet::from_iter(ac.get_siblings(&a)), BTreeSet::from_iter(vec![b, c]));
+        assert_eq!(
+            BTreeSet::from_iter(ac.get_siblings(&a)),
+            BTreeSet::from_iter(vec![b, c])
+        );
         assert_eq!(ac.get_siblings(&b), vec![a]);
         assert_eq!(ac.get_siblings(&c), vec![a]);
 
@@ -849,9 +851,15 @@ mod tests {
 
         // 1. Setup Reactive Circuit with leaf values
         let mut reactive_circuit = ReactiveCircuit::new(1);
-        reactive_circuit.leafs.push(Leaf::new(array![0.5].into(), 0.0, "l0"));
-        reactive_circuit.leafs.push(Leaf::new(array![0.2].into(), 0.0, "l1"));
-        reactive_circuit.leafs.push(Leaf::new(array![0.8].into(), 0.0, "l2"));
+        reactive_circuit
+            .leafs
+            .push(Leaf::new(array![0.5].into(), 0.0, "l0"));
+        reactive_circuit
+            .leafs
+            .push(Leaf::new(array![0.2].into(), 0.0, "l1"));
+        reactive_circuit
+            .leafs
+            .push(Leaf::new(array![0.8].into(), 0.0, "l2"));
 
         // 2. Create Algebraic Circuit from formula
         let ac = AlgebraicCircuit::from_sum_product(1, &sum_product);
@@ -969,7 +977,7 @@ mod tests {
         in_scope_ac.to_svg("output/test/test_split_in_scope_ac_leaf_1.svg", false)?;
         let mut out_of_scope_ac = out_of_scope_ac.unwrap();
         out_of_scope_ac.to_svg("output/test/test_split_out_of_scope_ac_leaf_1.svg", false)?;
-        
+
         let new_leaf_0 = in_scope_ac.ensure_leaf(0);
         let new_leaf_1 = in_scope_ac.ensure_leaf(1);
         let new_leaf_2 = in_scope_ac.ensure_leaf(2);

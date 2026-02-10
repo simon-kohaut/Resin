@@ -106,10 +106,7 @@ pub fn update(
     }
 }
 
-pub fn force_invalidate_dependencies(
-    reactive_circuit: &mut ReactiveCircuit,
-    leaf_index: u32,
-) {
+pub fn force_invalidate_dependencies(reactive_circuit: &mut ReactiveCircuit, leaf_index: u32) {
     let leaf = &mut reactive_circuit.leafs[leaf_index as usize];
     reactive_circuit.queue.extend(&leaf.dependencies);
 }
