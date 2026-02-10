@@ -118,9 +118,8 @@ jobs:
           python3 -m pip install clingo
       - name: Set Clingo Environment
         run: |
-          $CLINGO_PREFIX=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
-          echo "CLINGO_LIBRARY_PATH=${CLINGO_PREFIX}/lib" >> $GITHUB_ENV
-          echo "Points to: ${CLINGO_PREFIX}/lib"
+          $ClingoPath = python -c "import clingo, os; print(os.path.dirname(clingo.__file__))"
+          echo "CLINGO_LIBRARY_PATH=$ClingoPath" >> $env:GITHUB_ENV
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
