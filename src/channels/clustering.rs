@@ -76,69 +76,6 @@ pub fn partitioning(frequencies: &[f64], boundaries: &[f64]) -> Vec<usize> {
     flip(&pack(&binning(&frequencies, boundaries)))
 }
 
-pub fn frequency_adaptation(rc: &mut ReactiveCircuit, partitioning: &[usize], number_adaptations: Option<u32>) -> u32 {
-    // let mut indexed_frequencies_pairs: Vec<(usize, Leaf)> = vec![];
-    // for (i, leaf) in foliage.lock().unwrap().iter().enumerate() {
-    //     let position = indexed_frequencies_pairs.binary_search_by(|pair| {
-    //         pair.1
-    //             .get_frequency()
-    //             .partial_cmp(&leaf.get_frequency())
-    //             .unwrap()
-    //     });
-    //     match position {
-    //         Ok(position) => indexed_frequencies_pairs.insert(position, (i, leaf.clone())),
-    //         Err(position) => indexed_frequencies_pairs.insert(position, (i, leaf.clone())),
-    //     }
-    // }
-
-    // let frequencies: Vec<f64> = indexed_frequencies_pairs
-    //     .iter()
-    //     .map(|(_, leaf)| leaf.get_frequency())
-    //     .collect();
-
-    // let mut cluster_steps = vec![];
-    // let mut foliage_guard = foliage.lock().unwrap();
-    // for (index, frequency) in frequencies.iter().enumerate() {
-    //     for (cluster, boundary) in boundaries.iter().enumerate() {
-    //         if *frequency <= *boundary {
-    //             cluster_steps.push(
-    //                 foliage_guard[indexed_frequencies_pairs[index].0]
-    //                     .set_cluster(&(cluster as i32)),
-    //             );
-    //             break;
-    //         }
-    //     }
-    // }
-
-    // drop(foliage_guard);
-
-    // if cluster_steps.iter().all(|step| *step == 0) {
-    //     return;
-    // }
-
-    // let min_cluster = cluster_steps.iter().min().unwrap().clone();
-    // for step in &mut cluster_steps {
-    //     *step -= min_cluster;
-    // }
-
-    // println!("{:#?}", partitioning);
-    let before = rc.structure.node_count();
-    let mut number_of_adaptations_done = 0;
-    for (index, cluster_step) in partitioning.iter().enumerate() {
-        if *cluster_step != 0 {
-            rc.drop_leaf(index as u32);
-            number_of_adaptations_done += 1;
-        }
-
-        if number_adaptations.is_some() && number_of_adaptations_done == number_adaptations.unwrap() {
-            break;
-        }
-    }
-    println!("{} before, {} after", before, rc.structure.node_count());
-
-    number_of_adaptations_done
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

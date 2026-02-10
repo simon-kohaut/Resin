@@ -14,6 +14,12 @@ pub struct IpcReader {
     _handle: Arc<JoinHandle<()>>, // Keep handle to keep thread alive
 }
 
+#[derive(Clone)]
+pub struct IpcDualReader {
+    pub topic: String,
+    _handle: Arc<JoinHandle<()>>, // Keep handle to keep thread alive
+}
+
 pub struct IpcWriter {
     sender: Sender<(Vector, f64)>,
 }
@@ -36,8 +42,46 @@ impl IpcReader {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let handle = std::thread::spawn(move || {
             while let Ok((value, timestamp)) = receiver.recv() {
-                let final_value = if invert { 1.0 - value } else { value };
-                update(&mut shared_reactive_circuit.lock().unwrap(), index, final_value, timestamp);
+                let final_value = if invert {
+                    Vector::ones(value.len()) - value
+                } else {
+                    value
+                };
+                update(
+                    &mut shared_reactive_circuit.lock().unwrap(),
+                    index,
+                    final_value,
+                    timestamp,
+                );
+            }
+        });
+
+        Ok(Self {
+            topic: channel.to_owned(),
+            _handle: Arc::new(handle),
+        })
+    }
+}
+
+impl IpcDualReader {
+    pub fn new(
+        shared_reactive_circuit: Arc<Mutex<ReactiveCircuit>>,
+        index_normal: u32,
+        index_inverted: u32,
+        channel: &str,
+        receiver: mpsc::Receiver<(Vector, f64)>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let handle = std::thread::spawn(move || {
+            while let Ok((value, timestamp)) = receiver.recv() {
+                let inverted_value = (Vector::ones(value.len()) - &*value).into();
+                let mut circuit_guard = shared_reactive_circuit.lock().unwrap();
+                update(&mut circuit_guard, index_normal, value.clone(), timestamp);
+                update(
+                    &mut circuit_guard,
+                    index_inverted,
+                    inverted_value,
+                    timestamp,
+                );
             }
         });
 
@@ -71,7 +115,7 @@ impl TimedIpcWriter {
     pub fn new(
         frequency: f64,
         sender: Sender<(Vector, f64)>,
-        value: Vector
+        value: Vector,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let writer = IpcWriter::new(sender)?;
 
@@ -106,12 +150,12 @@ impl TimedIpcWriter {
         self.sender = Some(sender);
 
         self.handle = Some(spawn(move || loop {
-            let value = thread_value.lock().unwrap();
+            let value = thread_value.lock().unwrap().clone();
             let timestamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("Acquiring timestamp failed!")
                 .as_secs_f64();
-            let _ = thread_writer.send((value.clone(), timestamp));
+            let _ = thread_writer.send((value, timestamp));
 
             // Break if notified via channel or disconnected
             match receiver.recv_timeout(thread_timeout) {
@@ -128,9 +172,7 @@ impl TimedIpcWriter {
                 let _ = sender.send(());
             }
             if let Some(handle) = self.handle.take() {
-                handle
-                    .join()
-                    .expect("Could not join with writer thread!");
+                handle.join().expect("Could not join with writer thread!");
             }
         }
     }
@@ -201,7 +243,13 @@ mod tests {
         sleep(Duration::from_millis(20));
 
         // The value should be 1.0 - 0.8
-        assert!((reactive_circuit.lock().unwrap().leafs[0].get_value() - array![0.2]).sum().abs() < 1e-9);
+        assert!(
+            (reactive_circuit.lock().unwrap().leafs[0].get_value() - array![0.2])
+                .sum()
+                .abs()
+                < 1e-9,
+            "Inversion failed"
+        );
 
         Ok(())
     }

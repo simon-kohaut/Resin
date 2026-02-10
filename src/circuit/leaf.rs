@@ -39,18 +39,18 @@ impl Leaf {
     }
 
     pub fn set_value(&mut self, value: Vector, timestamp: f64) -> bool {
-        let difference = &value - &self.value;
+        // let difference = &value - &self.value;
 
         // Check if any difference in the value vector is larger than threshold
         // TODO: Make threshold leaf parameter or argument
-        if difference.fold(false, |acc, value| acc | (value.abs() > 1e-3)) {
-            self.value = value.clone();
-            self.frequency = self.foc_estimator.update(timestamp);
+        // if difference.fold(false, |acc, value| acc | (value.abs() > 1e-3)) {
+        self.value = value.clone();
+        self.frequency = self.foc_estimator.update(timestamp);
 
-            true
-        } else {
-            false
-        }
+        true
+        // } else {
+        //     false
+        // }
     }
 
     pub fn set_cluster(&mut self, cluster: &i32) -> i32 {
@@ -106,10 +106,7 @@ pub fn update(
     }
 }
 
-pub fn force_invalidate_dependencies(
-    reactive_circuit: &mut ReactiveCircuit,
-    leaf_index: u32,
-) {
+pub fn force_invalidate_dependencies(reactive_circuit: &mut ReactiveCircuit, leaf_index: u32) {
     let leaf = &mut reactive_circuit.leafs[leaf_index as usize];
     reactive_circuit.queue.extend(&leaf.dependencies);
 }

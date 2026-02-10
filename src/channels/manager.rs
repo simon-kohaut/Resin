@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use super::ipc::{IpcReader, IpcWriter, TimedIpcWriter};
+use super::ipc::{IpcDualReader, IpcReader, IpcWriter, TimedIpcWriter};
 use super::Vector;
 use crate::circuit::{leaf::Leaf, reactive::ReactiveCircuit};
 
@@ -19,6 +19,7 @@ use crate::circuit::{leaf::Leaf, reactive::ReactiveCircuit};
 pub struct Manager {
     pub reactive_circuit: Arc<Mutex<ReactiveCircuit>>,
     readers: Vec<IpcReader>,
+    dual_readers: Vec<IpcDualReader>,
     writers: Vec<TimedIpcWriter>,
     senders: HashMap<String, mpsc::Sender<(Vector, f64)>>,
 }
@@ -34,6 +35,7 @@ impl Manager {
         Self {
             reactive_circuit: Arc::new(Mutex::new(ReactiveCircuit::new(value_size))),
             readers: vec![],
+            dual_readers: vec![],
             writers: vec![],
             senders: HashMap::new(),
         }
@@ -79,9 +81,41 @@ impl Manager {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let (tx, rx) = mpsc::channel();
         self.senders.insert(channel.to_string(), tx);
-        let reader = IpcReader::new(self.reactive_circuit.clone(), receiver_idx, channel, invert, rx)?;
+        let reader = IpcReader::new(
+            self.reactive_circuit.clone(),
+            receiver_idx,
+            channel,
+            invert,
+            rx,
+        )?;
 
         self.readers.push(reader);
+        Ok(())
+    }
+
+    /// Creates a dual reader for a given channel that updates two leaves, one with the
+    /// original value and one with an inverted value.
+    ///
+    /// # Arguments
+    /// * `receiver_idx_normal` - The index of the leaf to be updated by this reader.
+    /// * `receiver_idx_inverted` - The index of the leaf to be updated with an inverted value.
+    /// * `channel` - The name of the IPC channel.
+    pub fn read_dual(
+        &mut self,
+        index_normal: u32,
+        index_inverted: u32,
+        channel: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (tx, rx) = mpsc::channel();
+        self.senders.insert(channel.to_string(), tx);
+        let reader = IpcDualReader::new(
+            self.reactive_circuit.clone(),
+            index_normal,
+            index_inverted,
+            channel,
+            rx,
+        )?;
+        self.dual_readers.push(reader);
         Ok(())
     }
 
@@ -110,10 +144,16 @@ impl Manager {
             .or_insert_with(|| mpsc::channel().0)
             .clone();
 
-        let initial_value = self.reactive_circuit.lock().unwrap().leafs.iter().find(|l| l.name == channel.strip_prefix('/').unwrap_or(channel)).map(|l| l.get_value()).unwrap_or_else(|| Vector::zeros(self.reactive_circuit.lock().unwrap().value_size));
+        let initial_value = {
+            let rc_guard = self.reactive_circuit.lock().unwrap();
+            rc_guard
+                .leafs
+                .iter()
+                .find(|l| l.name == channel.strip_prefix('/').unwrap_or(channel))
+                .map(|l| l.get_value())
+                .unwrap_or_else(|| Vector::zeros(rc_guard.value_size))
+        };
         let mut writer = TimedIpcWriter::new(frequency, writer_tx, initial_value)?;
-
-
 
         let value = writer.get_value_access();
 
@@ -290,7 +330,10 @@ mod tests {
 
         sleep(Duration::from_millis(10));
 
-        assert_eq!(manager.get_values(), vec![array![0.5], array![0.19999999999999996]]); // 1.0 - 0.8
+        assert_eq!(
+            manager.get_values(),
+            vec![array![0.5], array![0.19999999999999996]]
+        ); // 1.0 - 0.8
 
         Ok(())
     }
@@ -313,7 +356,7 @@ mod tests {
         }
         drop(rc_guard);
 
-        // Frequency should now be about 
+        // Frequency should now be about
         assert!(manager.get_frequencies()[0] - 100.0 < 1e-3);
 
         // Prune with a threshold of 10s, should not prune

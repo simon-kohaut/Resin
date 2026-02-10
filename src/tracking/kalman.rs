@@ -1,4 +1,4 @@
-use nalgebra::{DMatrix, linalg::try_invert_to};
+use nalgebra::{linalg::try_invert_to, DMatrix};
 
 use super::{LinearModel, Matrix, Vector};
 
@@ -77,18 +77,25 @@ impl Kalman {
             + &self.sensor_noise;
 
         // Invert the residual covariance with nalgebra
-        let mut inverse = DMatrix::zeros(self.residual_covariance.nrows(), self.residual_covariance.ncols()); 
-        let nalbebra_covaraince =         DMatrix::from_row_slice(
+        let mut inverse = DMatrix::zeros(
+            self.residual_covariance.nrows(),
+            self.residual_covariance.ncols(),
+        );
+        let nalbebra_covaraince = DMatrix::from_row_slice(
             self.residual_covariance.nrows(),
             self.residual_covariance.ncols(),
             self.residual_covariance.as_slice().unwrap(),
         );
         try_invert_to(nalbebra_covaraince, &mut inverse);
         let inverted_covariance = Matrix::from_shape_vec(
-            (self.residual_covariance.nrows(), self.residual_covariance.ncols()),
+            (
+                self.residual_covariance.nrows(),
+                self.residual_covariance.ncols(),
+            ),
             inverse.as_slice().to_vec(),
-        ).expect("Failed to invert Kalman residual covariance matrix");
-         
+        )
+        .expect("Failed to invert Kalman residual covariance matrix");
+
         // Compute the new Kalman gain
         self.kalman_gain = self
             .prediction_covariance
