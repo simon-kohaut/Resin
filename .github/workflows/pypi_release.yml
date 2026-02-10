@@ -28,10 +28,10 @@ jobs:
             target: x86_64
           - runner: ubuntu-22.04
             target: x86
-          - runner: ubuntu-22.04
-            target: aarch64
-          - runner: ubuntu-22.04
-            target: armv7
+          # - runner: ubuntu-22.04  # Currently not supported
+          #   target: aarch64
+          # - runner: ubuntu-22.04
+          #   target: armv7
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -65,10 +65,10 @@ jobs:
             target: x86_64
           - runner: ubuntu-22.04
             target: x86
-          - runner: ubuntu-22.04
-            target: aarch64
-          - runner: ubuntu-22.04
-            target: armv7
+          # - runner: ubuntu-22.04  # Currently not supported
+          #   target: aarch64
+          # - runner: ubuntu-22.04
+          #   target: armv7
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
