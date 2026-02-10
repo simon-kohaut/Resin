@@ -120,18 +120,20 @@ jobs:
         run: |
           $ClingoDir = python -c "import clingo, os; print(os.path.dirname(clingo.__file__))"
           
-          $OriginalLib = Join-Path $ClingoDir "clingo.lib"
-          $TargetLib = Join-Path $ClingoDir "import_clingo.lib"
+          $SourceLib = Get-ChildItem -Path $ClingoDir -Filter "*.lib" | Select-Object -First 1
           
-          if (Test-Path $OriginalLib) {
-              Copy-Item $OriginalLib $TargetLib
-              Write-Host "Created alias: $TargetLib"
+          if ($SourceLib) {
+              $TargetPath = Join-Path $ClingoDir "import_clingo.lib"
+              Copy-Item $SourceLib.FullName $TargetPath
+              Write-Host "Success: Mapped $($SourceLib.Name) to import_clingo.lib"
+              echo "CLINGO_LIBRARY_PATH=$ClingoDir" >> $env:GITHUB_ENV
           } else {
-              Write-Error "Could not find clingo.lib in $ClingoDir"
+              Write-Host "ERROR: Could not find any .lib file in $ClingoDir" -ForegroundColor Red
+              Write-Host "--- Directory Listing for Debugging ---"
+              Get-ChildItem $ClingoDir | Select-Object Name, Length, LastWriteTime
+              Write-Host "---------------------------------------"
               exit 1
           }
-
-          echo "CLINGO_LIBRARY_PATH=$ClingoDir" >> $env:GITHUB_ENV
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
