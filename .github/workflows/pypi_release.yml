@@ -24,8 +24,8 @@ jobs:
         platform:
           - runner: ubuntu-22.04
             target: x86_64
-          - runner: ubuntu-22.04
-            target: x86
+          # - runner: ubuntu-22.04
+          #   target: x86
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -52,16 +52,7 @@ jobs:
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
           before-script-linux: |
-            ARCH=$(uname -m)
-            if [ "$ARCH" = "x86_64" ]; then
-              MAMBA_URL="https://micro.mamba.pm/api/micromamba/linux-64/latest"
-            elif [ "$ARCH" = "i686" ]; then
-              MAMBA_URL="https://micro.mamba.pm/api/micromamba/linux-32/latest"
-            else
-              echo "Unsupported architecture: $ARCH"
-              exit 1
-            fi
-            curl -L "$MAMBA_URL" | tar -xj -C /usr/bin/ --strip-components=1 bin/micromamba
+            curl -L "https://micro.mamba.pm/api/micromamba/linux-64/latest" | tar -xj -C /usr/bin/ --strip-components=1 bin/micromamba
             
             export MAMBA_ROOT_PREFIX=/opt/conda
             micromamba create -y -n build-env -c potassco/label/dev clingo
