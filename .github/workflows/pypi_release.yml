@@ -34,9 +34,10 @@ jobs:
       - uses: mamba-org/setup-micromamba@v2
         with:
           environment-name: build-env
-          create-args: >-
-            clingo
-            conda-forge
+          create-args: clingo
+          condarc: |
+            channels:
+              - conda-forge
       - name: Build sdist
         if: matrix.platform.target == 'x86_64'  # Platform irrelevant, just do it once
         run: |
