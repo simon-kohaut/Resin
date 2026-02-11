@@ -50,9 +50,9 @@ jobs:
               export CLINGO_LIBRARY_PATH="$CLINGO_DIR"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4 # Use v4+ for automatic merging
+        uses: actions/upload-artifact@v4
         with:
-          name: release-dists
+          name: wheels-linux-${{ matrix.platform.target }}
           path: dist
 
   musllinux:
@@ -83,7 +83,7 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: release-dists
+          name: wheels-musllinux-${{ matrix.platform.target }}
           path: dist
 
   windows:
@@ -123,7 +123,7 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: release-dists
+          name: wheels-windows-${{ matrix.platform.target }}
           path: dist
 
   macos:
@@ -155,7 +155,7 @@ jobs:
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: release-dists
+          name: wheels-macos-${{ matrix.platform.target }}
           path: dist
 
   release:
@@ -173,8 +173,8 @@ jobs:
       - name: Download all wheels
         uses: actions/download-artifact@v4
         with:
-          name: release-dists
           path: dist
+          merge-multiple: true
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
