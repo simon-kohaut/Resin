@@ -55,36 +55,37 @@ jobs:
           name: wheels-linux-${{ matrix.platform.target }}
           path: dist
 
-  musllinux:
-    runs-on: ${{ matrix.platform.runner }}
-    strategy:
-      matrix:
-        platform:
-          - runner: ubuntu-22.04
-            target: x86_64
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: 3.x
-      - name: Build wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter
-          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
-          manylinux: musllinux_1_2
-          before-script-linux: |
-              python3 -m pip install clingo
-              CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
-              LIB_PATH=$(ls "$CLINGO_DIR" | grep "cpython" | head -n 1)
-              ln -sf $LIB_PATH "$CLINGO_DIR"/libclingo.so
-              export CLINGO_LIBRARY_PATH="$CLINGO_DIR"
-      - name: Upload wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-musllinux-${{ matrix.platform.target }}
-          path: dist
+  # Currently unsupported
+  # musllinux:
+  #   runs-on: ${{ matrix.platform.runner }}
+  #   strategy:
+  #     matrix:
+  #       platform:
+  #         - runner: ubuntu-22.04
+  #           target: x86_64
+  #   steps:
+  #     - uses: actions/checkout@v6
+  #     - uses: actions/setup-python@v6
+  #       with:
+  #         python-version: 3.x
+  #     - name: Build wheels
+  #       uses: PyO3/maturin-action@v1
+  #       with:
+  #         target: ${{ matrix.platform.target }}
+  #         args: --release --out dist --find-interpreter
+  #         sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  #         manylinux: musllinux_1_2
+  #         before-script-linux: |
+  #             python3 -m pip install clingo
+  #             CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
+  #             LIB_PATH=$(ls "$CLINGO_DIR" | grep "cpython" | head -n 1)
+  #             ln -sf $LIB_PATH "$CLINGO_DIR"/libclingo.so
+  #             export CLINGO_LIBRARY_PATH="$CLINGO_DIR"
+  #     - name: Upload wheels
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: wheels-musllinux-${{ matrix.platform.target }}
+  #         path: dist
 
   windows:
     runs-on: ${{ matrix.platform.runner }}
@@ -162,7 +163,7 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
-    needs: [linux, musllinux, macos, windows]
+    needs: [linux, macos, windows]  # , musllinux]
     permissions:
       id-token: write
       contents: write
