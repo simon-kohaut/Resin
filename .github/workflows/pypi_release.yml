@@ -52,10 +52,8 @@ jobs:
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
           before-script-linux: |
-            export CLINGO_LIBRARY_PATH=$HOST_MAMBA_PREFIX/envs/build-env/lib
-            export CPATH=$HOST_MAMBA_PREFIX/envs/build-env/include
-        env: 
-          HOST_MAMBA_PREFIX: ${{ env.MAMBA_ROOT_PREFIX }}
+            export CLINGO_LIBRARY_PATH="${{ env.MAMBA_ROOT_PREFIX }}/envs/build-env/lib"
+            export CPATH="${{ env.MAMBA_ROOT_PREFIX }}/envs/build-env/include"
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
