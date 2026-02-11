@@ -28,13 +28,11 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: 3.x
-      
       - name: Build sdist
         if: matrix.platform.target == 'x86_64'
         run: |
           pip install maturin
           maturin sdist --out dist
-
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -48,7 +46,7 @@ jobs:
               LIB_PATH=$(ls "$CLINGO_DIR" | grep "cpython" | head -n 1)
               ln -sf $LIB_PATH "$CLINGO_DIR"/libclingo.so
               export CLINGO_LIBRARY_PATH="$CLINGO_DIR"
-
+              export CMAKE_POLICY_VERSION_MINIMUM="3.5"
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -81,6 +79,7 @@ jobs:
   #             LIB_PATH=$(ls "$CLINGO_DIR" | grep "cpython" | head -n 1)
   #             ln -sf $LIB_PATH "$CLINGO_DIR"/libclingo.so
   #             export CLINGO_LIBRARY_PATH="$CLINGO_DIR"
+  #             export CMAKE_POLICY_VERSION_MINIMUM="3.5"
   #     - name: Upload wheels
   #       uses: actions/upload-artifact@v4
   #       with:
@@ -114,6 +113,7 @@ jobs:
               $TargetPath = Join-Path $ClingoDir "import_clingo.lib"
               Copy-Item $SourceLib.FullName $TargetPath
               echo "CLINGO_LIBRARY_PATH=$ClingoDir" >> $env:GITHUB_ENV
+              echo "CMAKE_POLICY_VERSION_MINIMUM=3.5" >> $env:GITHUB_ENV 
           }
       - name: Build wheels
         uses: PyO3/maturin-action@v1
@@ -147,6 +147,7 @@ jobs:
         run: |
           CLINGO_PREFIX=$(brew --prefix clingo)
           echo "CLINGO_LIBRARY_PATH=${CLINGO_PREFIX}/lib" >> $GITHUB_ENV
+          echo "CMAKE_POLICY_VERSION_MINIMUM=3.5" >> $GITHUB_ENV 
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
