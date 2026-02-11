@@ -61,6 +61,7 @@ jobs:
             export CPATH=/opt/conda/envs/build-env/include
             export LIBRARY_PATH=/opt/conda/envs/build-env/lib
             export LD_LIBRARY_PATH=/opt/conda/envs/build-env/lib:$LD_LIBRARY_PATH
+            export RUSTFLAGS="-L native=/opt/conda/envs/build-env/lib"
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
