@@ -8,3 +8,4 @@ dynamic = ["version", "description"]
 
 [tool.maturin]
 module-name = "resin"
+features = ["python-bindings"]
