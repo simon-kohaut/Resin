@@ -13,6 +13,9 @@ on:
 permissions:
   contents: read
 
+env:
+  CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
 jobs:
   linux:
     runs-on: ${{ matrix.platform.runner }}
@@ -21,20 +24,26 @@ jobs:
         platform:
           - runner: ubuntu-22.04
             target: x86_64
-          - runner: ubuntu-22.04
-            target: x86
+          # - runner: ubuntu-22.04
+          #   target: x86
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: 3.x
-      
+      - uses: mamba-org/setup-micromamba@v2     # Needed for sdist
+        with:
+          environment-name: build-env
+          create-args: clingo
+          condarc: |
+            channels:
+              - conda-forge
       - name: Build sdist
-        if: matrix.platform.target == 'x86_64'
+        if: matrix.platform.target == 'x86_64'  # Platform irrelevant - just do it once
         run: |
+          export CLINGO_LIBRARY_PATH=$MAMBA_ROOT_PREFIX/envs/build-env/lib
           pip install maturin
           maturin sdist --out dist
-
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -43,12 +52,16 @@ jobs:
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
           before-script-linux: |
-              python3 -m pip install clingo
-              CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
-              LIB_PATH=$(ls "$CLINGO_DIR" | grep "cpython" | head -n 1)
-              ln -sf $LIB_PATH "$CLINGO_DIR"/libclingo.so
-              export CLINGO_LIBRARY_PATH="$CLINGO_DIR"
-
+            curl -L "https://micro.mamba.pm/api/micromamba/linux-64/latest" | tar -xj -C /usr/bin/ --strip-components=1 bin/micromamba
+            
+            export MAMBA_ROOT_PREFIX=/opt/conda
+            micromamba create -y -n build-env -c potassco/label/dev -c conda-forge clingo
+            
+            export CLINGO_LIBRARY_PATH=/opt/conda/envs/build-env/lib
+            export CPATH=/opt/conda/envs/build-env/include
+            export LIBRARY_PATH=/opt/conda/envs/build-env/lib
+            export LD_LIBRARY_PATH=/opt/conda/envs/build-env/lib:$LD_LIBRARY_PATH
+            export RUSTFLAGS="-L native=/opt/conda/envs/build-env/lib"
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -76,11 +89,7 @@ jobs:
   #         sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
   #         manylinux: musllinux_1_2
   #         before-script-linux: |
-  #             python3 -m pip install clingo
-  #             CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
-  #             LIB_PATH=$(ls "$CLINGO_DIR" | grep "cpython" | head -n 1)
-  #             ln -sf $LIB_PATH "$CLINGO_DIR"/libclingo.so
-  #             export CLINGO_LIBRARY_PATH="$CLINGO_DIR"
+              # apk add clingo-dev
   #     - name: Upload wheels
   #       uses: actions/upload-artifact@v4
   #       with:
@@ -102,19 +111,21 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: 3.13
+          python-version: "3.x"
           architecture: ${{ matrix.platform.python_arch }}
-      - name: Install clingo
-        run: pip install clingo
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: build-env
+          create-args: clingo
+          condarc: |
+            channels:
+              - conda-forge
       - name: Set Clingo Environment
+        shell: bash
         run: |
-          $ClingoDir = python -c "import clingo, os; print(os.path.dirname(clingo.__file__))"
-          $SourceLib = Get-ChildItem -Path $ClingoDir -Filter "*.lib" | Select-Object -First 1
-          if ($SourceLib) {
-              $TargetPath = Join-Path $ClingoDir "import_clingo.lib"
-              Copy-Item $SourceLib.FullName $TargetPath
-              echo "CLINGO_LIBRARY_PATH=$ClingoDir" >> $env:GITHUB_ENV
-          }
+          CLINGO_LIB="$MAMBA_ROOT_PREFIX/envs/build-env/Library/lib"
+          echo "CLINGO_LIBRARY_PATH=$CLINGO_LIB" >> $GITHUB_ENV
+          echo "LIB=$CLINGO_LIB;$LIB" >> $GITHUB_ENV
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -143,10 +154,6 @@ jobs:
           python-version: 3.x
       - name: Install clingo
         run: brew install clingo
-      - name: Set Clingo Environment
-        run: |
-          CLINGO_PREFIX=$(brew --prefix clingo)
-          echo "CLINGO_LIBRARY_PATH=${CLINGO_PREFIX}/lib" >> $GITHUB_ENV
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
