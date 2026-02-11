@@ -55,7 +55,7 @@ jobs:
             curl -L "https://micro.mamba.pm/api/micromamba/linux-64/latest" | tar -xj -C /usr/bin/ --strip-components=1 bin/micromamba
             
             export MAMBA_ROOT_PREFIX=/opt/conda
-            micromamba create -y -n build-env -c potassco/label/dev clingo
+            micromamba create -y -n build-env -c potassco/label/dev -c conda-forge clingo
             
             export CLINGO_LIBRARY_PATH=/opt/conda/envs/build-env/lib
             export CPATH=/opt/conda/envs/build-env/include
