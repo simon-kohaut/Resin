@@ -2,11 +2,8 @@ name: "Release to PyPI"
 
 on:
   push:
-    branches:
-      - main
-      - master
-    tags:
-      - '*'
+    branches: [main, master]
+    tags: ['*']
   pull_request:
   workflow_dispatch:
 
@@ -28,64 +25,26 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: 3.x
-      
-      - name: Build sdist
-        if: matrix.platform.target == 'x86_64'
-        run: |
-          pip install maturin
-          maturin sdist --out dist
-
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter
+          args: --release --out dist --find-interpreter --repair
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
           before-script-linux: |
               python3 -m pip install clingo
+              
               CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
               LIB_PATH=$(ls "$CLINGO_DIR" | grep "cpython" | head -n 1)
-              ln -sf $LIB_PATH "$CLINGO_DIR"/libclingo.so
-              export CLINGO_LIBRARY_PATH="$CLINGO_DIR"
 
+              ln -sf "$CLINGO_DIR/$LIB_PATH" /usr/lib/libclingo.so
+              export CLINGO_LIBRARY_PATH=/usr/lib
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-${{ matrix.platform.target }}
           path: dist
-
-  # Currently unsupported
-  # musllinux:
-  #   runs-on: ${{ matrix.platform.runner }}
-  #   strategy:
-  #     matrix:
-  #       platform:
-  #         - runner: ubuntu-22.04
-  #           target: x86_64
-  #   steps:
-  #     - uses: actions/checkout@v6
-  #     - uses: actions/setup-python@v6
-  #       with:
-  #         python-version: 3.x
-  #     - name: Build wheels
-  #       uses: PyO3/maturin-action@v1
-  #       with:
-  #         target: ${{ matrix.platform.target }}
-  #         args: --release --out dist --find-interpreter
-  #         sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
-  #         manylinux: musllinux_1_2
-  #         before-script-linux: |
-  #             python3 -m pip install clingo
-  #             CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
-  #             LIB_PATH=$(ls "$CLINGO_DIR" | grep "cpython" | head -n 1)
-  #             ln -sf $LIB_PATH "$CLINGO_DIR"/libclingo.so
-  #             export CLINGO_LIBRARY_PATH="$CLINGO_DIR"
-  #     - name: Upload wheels
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: wheels-musllinux-${{ matrix.platform.target }}
-  #         path: dist
 
   windows:
     runs-on: ${{ matrix.platform.runner }}
@@ -102,17 +61,20 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: 3.13
+          python-version: 3.x
           architecture: ${{ matrix.platform.python_arch }}
-      - name: Install clingo
-        run: pip install clingo
-      - name: Set Clingo Environment
+      - name: Install and Prep Clingo
         run: |
+          pip install clingo
+          
           $ClingoDir = python -c "import clingo, os; print(os.path.dirname(clingo.__file__))"
+          $ClingoDll = Get-ChildItem -Path $ClingoDir -Filter "*.dll" | Select-Object -First 1
+          
+          Copy-Item $ClingoDll.FullName "./" 
+          
           $SourceLib = Get-ChildItem -Path $ClingoDir -Filter "*.lib" | Select-Object -First 1
           if ($SourceLib) {
-              $TargetPath = Join-Path $ClingoDir "import_clingo.lib"
-              Copy-Item $SourceLib.FullName $TargetPath
+              Copy-Item $SourceLib.FullName (Join-Path $ClingoDir "clingo.lib")
               echo "CLINGO_LIBRARY_PATH=$ClingoDir" >> $env:GITHUB_ENV
           }
       - name: Build wheels
@@ -141,18 +103,22 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: 3.x
-      - name: Install clingo
-        run: brew install clingo
-      - name: Set Clingo Environment
+      - name: Install dependencies
         run: |
-          CLINGO_PREFIX=$(brew --prefix clingo)
-          echo "CLINGO_LIBRARY_PATH=${CLINGO_PREFIX}/lib" >> $GITHUB_ENV
+          brew install clingo
+          pip install delocate
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --find-interpreter
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        env:
+          CLINGO_LIBRARY_PATH: /usr/local/lib
+      - name: Repair wheels (delocate)
+        run: |
+          # Embed the brew-installed dylibs into the wheel
+          delocate-wheel -v dist/*.whl
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -163,20 +129,18 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
-    needs: [linux, macos, windows]  # , musllinux]
+    needs: [linux, macos, windows]
     permissions:
       id-token: write
       contents: write
     environment:
       name: pypi
-      url: https://pypi.org/p/pyresin
     steps:
       - name: Download all wheels
         uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
