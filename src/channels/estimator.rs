@@ -101,7 +101,7 @@ mod tests {
         }
 
         // Prepare test log to be written
-        let path = Path::new("output/data/foc_estimation.csv");
+        let path = Path::new("output/test/foc_estimation.csv");
         if !path.exists() {
             let mut file = File::create(path).expect("Unable to create file");
             file.write_all(
