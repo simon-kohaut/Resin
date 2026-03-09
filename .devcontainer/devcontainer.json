@@ -1,13 +1,13 @@
 // For format details, see https://aka.ms/devcontainer.json.
 {
-	"name": "resin-container",
+	"name": "resin-devcontainer",
 
     "build": {
 	    "dockerfile": "../Dockerfile"
     },
 
-	"workspaceMount": "source=${localWorkspaceFolder},target=/home/developer/resin,type=bind",
-	"workspaceFolder": "/home/developer/resin",
+	"workspaceMount": "source=${localWorkspaceFolder},target=/Resin,type=bind",
+	"workspaceFolder": "/Resin",
 
 	"customizations": {
 		"vscode": {
@@ -17,5 +17,10 @@
 				"ms-iot.vscode-ros"
 			]
 		}
-	}
+	},
+
+	"containerEnv": {
+        "CLINGO_LIBRARY_PATH": "/usr/lib",
+        "LD_LIBRARY_PATH": "/usr/lib"
+    }
 }
