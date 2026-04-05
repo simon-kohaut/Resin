@@ -5,11 +5,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use super::ipc::{IpcDualReader, IpcReader, IpcWriter, TimedIpcWriter};
+use super::ipc::{
+    IpcBooleanWriter, IpcDensityWriter, IpcDualReader, IpcNumberWriter, IpcProbabilityWriter,
+    IpcReader, IpcWriter, TimedIpcWriter, TypedWriter,
+};
 use super::Vector;
 use crate::circuit::{leaf::Leaf, reactive::ReactiveCircuit};
 
-/// Manages the state of leaves (Foliage) and the IPC channels for updating them.
+/// Manages the state of leaves and the IPC channels for updating them.
 ///
 /// The `Manager` is a central struct that holds the collection of `Leaf` nodes,
 /// a queue for reactive circuits that need updates (`rc_queue`), and the associated
@@ -41,7 +44,7 @@ impl Manager {
         }
     }
 
-    /// Creates a new `Leaf` and adds it to the foliage.
+    /// Creates a new `Leaf`.
     ///
     /// # Returns
     /// The index of the newly created leaf as a `u16`.
@@ -119,17 +122,101 @@ impl Manager {
         Ok(())
     }
 
-    /// Creates a writer for a given channel.
-    pub fn make_writer(&mut self, channel: &str) -> Result<IpcWriter, Box<dyn std::error::Error>> {
+    /// Returns a cloned sender for `channel`, creating a dangling one if none exists yet.
+    fn get_or_create_sender(&mut self, channel: &str) -> mpsc::Sender<(Vector, f64)> {
         if let Some(sender) = self.senders.get(channel) {
-            IpcWriter::new(sender.clone())
+            sender.clone()
         } else {
             let (tx, _rx) = mpsc::channel();
             self.senders.insert(channel.to_string(), tx);
-            // This reader will be dropped if nothing reads from it, closing the channel.
-            // This is a simplification. In a real scenario you might want to handle this differently.
-            IpcWriter::new(self.senders.get(channel).unwrap().clone())
+            self.senders.get(channel).unwrap().clone()
         }
+    }
+
+    /// Creates a writer for a given channel.
+    pub fn make_writer(&mut self, channel: &str) -> Result<IpcWriter, Box<dyn std::error::Error>> {
+        let sender = self.get_or_create_sender(channel);
+        IpcWriter::new(sender)
+    }
+
+    /// Creates a typed probability writer that passes vectors straight through.
+    pub fn make_probability_writer(
+        &mut self,
+        channel: &str,
+    ) -> Result<IpcProbabilityWriter, Box<dyn std::error::Error>> {
+        Ok(IpcProbabilityWriter::new(self.get_or_create_sender(channel)))
+    }
+
+    /// Creates a single-comparison density writer for direct (non-compiler) use.
+    /// `upper_tail = false` → CDF (P(X < threshold)); `true` → SF (P(X > threshold)).
+    pub fn make_density_writer(
+        &mut self,
+        channel: &str,
+        threshold: f64,
+        upper_tail: bool,
+    ) -> Result<IpcDensityWriter, Box<dyn std::error::Error>> {
+        Ok(IpcDensityWriter::new(
+            self.get_or_create_sender(channel),
+            threshold,
+            upper_tail,
+        ))
+    }
+
+    /// Creates a single-comparison number writer for direct (non-compiler) use.
+    /// `upper_tail = false` → 1.0 when value < threshold; `true` → 1.0 when value > threshold.
+    pub fn make_number_writer(
+        &mut self,
+        channel: &str,
+        threshold: f64,
+        upper_tail: bool,
+    ) -> Result<IpcNumberWriter, Box<dyn std::error::Error>> {
+        Ok(IpcNumberWriter::new(
+            self.get_or_create_sender(channel),
+            threshold,
+            upper_tail,
+        ))
+    }
+
+    /// Creates a fan-out density writer from a set of pre-registered comparison channels.
+    /// `channels` is a slice of `(threshold, upper_tail, canonical_channel_name)` tuples
+    /// as produced by the Resin compiler's `comparison_registry`.
+    pub fn make_density_writer_for_channels(
+        &self,
+        channels: &[(f64, bool, String)],
+    ) -> IpcDensityWriter {
+        let channel_data = channels
+            .iter()
+            .filter_map(|(threshold, upper_tail, canonical)| {
+                self.senders
+                    .get(canonical)
+                    .map(|s| (*threshold, *upper_tail, s.clone()))
+            })
+            .collect();
+        IpcDensityWriter::from_channels(channel_data)
+    }
+
+    /// Creates a fan-out number writer from a set of pre-registered comparison channels.
+    pub fn make_number_writer_for_channels(
+        &self,
+        channels: &[(f64, bool, String)],
+    ) -> IpcNumberWriter {
+        let channel_data = channels
+            .iter()
+            .filter_map(|(threshold, upper_tail, canonical)| {
+                self.senders
+                    .get(canonical)
+                    .map(|s| (*threshold, *upper_tail, s.clone()))
+            })
+            .collect();
+        IpcNumberWriter::from_channels(channel_data)
+    }
+
+    /// Creates a typed boolean writer that maps `true` → 1.0 and `false` → 0.0.
+    pub fn make_boolean_writer(
+        &mut self,
+        channel: &str,
+    ) -> Result<IpcBooleanWriter, Box<dyn std::error::Error>> {
+        Ok(IpcBooleanWriter::new(self.get_or_create_sender(channel)))
     }
 
     /// Creates a timed writer that sends its value at a given frequency.

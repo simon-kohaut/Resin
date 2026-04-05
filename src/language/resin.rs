@@ -1,10 +1,13 @@
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use super::Vector;
 use super::{Clause, Source, Target};
+use crate::channels::ipc::TypedWriter;
 use crate::channels::manager::Manager;
 use crate::circuit::category::Category;
+use crate::language::concepts::{ComparisonLiteral, ResinType};
 use crate::language::{asp::solve, Dnf};
 
 pub type SharedStorage = Arc<Mutex<Vec<f64>>>;
@@ -15,6 +18,9 @@ pub struct Resin {
     pub targets: Vec<Target>,
     pub manager: Manager,
     value_size: usize,
+    /// Maps each Density/Number source atom name to its registered comparisons:
+    /// `(threshold, upper_tail, canonical_leaf_name)`.
+    comparison_registry: HashMap<String, Vec<(f64, bool, String)>>,
 }
 
 impl Resin {
@@ -78,7 +84,20 @@ impl Resin {
         let mut asp = "".to_string();
 
         for source in &self.sources {
-            asp.push_str(&source.to_asp());
+            match source.message_type {
+                // Probability and Boolean sources are simple probabilistic atoms.
+                ResinType::Probability | ResinType::Boolean => {
+                    asp.push_str(&source.to_asp());
+                }
+                // Density and Number sources manifest as one choice atom per comparison.
+                ResinType::Density | ResinType::Number => {
+                    if let Some(comparisons) = self.comparison_registry.get(&source.name) {
+                        for (_, _, canonical) in comparisons {
+                            asp.push_str(&format!("{{{}}}.\n", canonical));
+                        }
+                    }
+                }
+            }
         }
 
         for clause in &self.clauses {
@@ -90,23 +109,56 @@ impl Resin {
     }
 
     pub fn setup_signals(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        // Create all source channels and parameter leafs
         for source in &self.sources {
-            let index_normal =
-                self.manager
-                    .create_leaf(&source.name, Vector::zeros(self.value_size), 0.0);
+            match source.message_type {
+                ResinType::Probability | ResinType::Boolean => {
+                    // Single leaf pair, driven directly by the writer.
+                    let idx_normal = self.manager.create_leaf(
+                        &source.name,
+                        Vector::zeros(self.value_size),
+                        0.0,
+                    );
+                    let idx_inverted = self.manager.create_leaf(
+                        &format!("-{}", source.name),
+                        Vector::ones(self.value_size),
+                        0.0,
+                    );
+                    self.manager
+                        .read_dual(idx_normal, idx_inverted, &source.channel)?;
+                }
+                ResinType::Density | ResinType::Number => {
+                    // One leaf pair per unique comparison found in clause bodies.
+                    let comparisons = self.collect_comparisons_for(&source.name);
+                    let mut registry_entry: Vec<(f64, bool, String)> = Vec::new();
 
-            let index_inverted = self.manager.create_leaf(
-                &format!("-{}", source.name),
-                Vector::ones(self.value_size),
-                0.0,
-            );
-            self.manager
-                .read_dual(index_normal, index_inverted, &source.channel)?;
+                    for comp in comparisons {
+                        let idx_normal = self.manager.create_leaf(
+                            &comp.canonical_name,
+                            Vector::zeros(1),
+                            0.0,
+                        );
+                        let idx_inverted = self.manager.create_leaf(
+                            &format!("-{}", comp.canonical_name),
+                            Vector::ones(1),
+                            0.0,
+                        );
+                        self.manager
+                            .read_dual(idx_normal, idx_inverted, &comp.canonical_name)?;
+
+                        registry_entry.push((
+                            comp.threshold,
+                            comp.is_upper_tail(),
+                            comp.canonical_name.clone(),
+                        ));
+                    }
+
+                    self.comparison_registry
+                        .insert(source.name.clone(), registry_entry);
+                }
+            }
         }
 
         for clause in &self.clauses {
-            // Clauses that are deterministic do not need to be included in model
             if clause.probability.is_none() {
                 continue;
             }
@@ -125,6 +177,64 @@ impl Resin {
         Ok(())
     }
 
+    /// Returns all unique comparison literals across all clauses that reference `source_name`.
+    fn collect_comparisons_for(&self, source_name: &str) -> Vec<ComparisonLiteral> {
+        let mut seen = std::collections::HashSet::new();
+        let mut result = Vec::new();
+        for clause in &self.clauses {
+            for comp in &clause.comparison_literals {
+                if comp.source_atom == source_name
+                    && seen.insert(comp.canonical_name.clone())
+                {
+                    result.push(comp.clone());
+                }
+            }
+        }
+        result
+    }
+
+    /// Returns the typed writer for a declared source, pre-configured with all
+    /// comparisons found in the program's clauses.
+    pub fn make_writer_for(
+        &mut self,
+        source_name: &str,
+    ) -> Result<TypedWriter, Box<dyn std::error::Error>> {
+        let source = self
+            .sources
+            .iter()
+            .find(|s| s.name == source_name)
+            .ok_or_else(|| format!("Source '{}' not found", source_name))?;
+
+        match source.message_type {
+            ResinType::Probability => Ok(TypedWriter::Probability(
+                self.manager.make_probability_writer(&source.channel)?,
+            )),
+            ResinType::Boolean => Ok(TypedWriter::Boolean(
+                self.manager.make_boolean_writer(&source.channel)?,
+            )),
+            ResinType::Density => {
+                let channels = self
+                    .comparison_registry
+                    .get(source_name)
+                    .cloned()
+                    .unwrap_or_default();
+                Ok(TypedWriter::Density(
+                    self.manager.make_density_writer_for_channels(&channels),
+                ))
+            }
+            ResinType::Number => {
+                let channels = self
+                    .comparison_registry
+                    .get(source_name)
+                    .cloned()
+                    .unwrap_or_default();
+                Ok(TypedWriter::Number(
+                    self.manager.make_number_writer_for_channels(&channels),
+                ))
+            }
+        }
+    }
+
     pub fn circuit_from_dnf(&self, dnf: Dnf, target_token: &str) {
         // Get indexing from name to foliage
         let index_map = self.manager.get_index_map();
@@ -135,7 +245,12 @@ impl Resin {
             let mut product = vec![];
 
             for literal in clause {
-                product.push(index_map[literal] as u32);
+                // Derived atoms (e.g. intermediate rules like `permitted`)
+                // appear in stable models but have no corresponding leaf.
+                // Only choice atoms have leaves; skip everything else.
+                if let Some(&idx) = index_map.get(literal) {
+                    product.push(idx as u32);
+                }
             }
 
             sum_product.push(product);
@@ -160,6 +275,7 @@ impl FromStr for Resin {
             targets: vec![],
             manager: Manager::new(1),
             value_size: 1,
+            comparison_registry: HashMap::new(),
         };
 
         // Parse Resin source line by line into appropriate data structures
@@ -236,6 +352,146 @@ mod tests {
             clause.body,
             vec!["close(drone_1, drone_2)", "heavy(drone_1)"]
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Density / Number / Boolean source tests
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_density_source_compilation() {
+        let model = r#"
+            distance(hospital) <- source("/distance/hospital", Density).
+            safe if distance(hospital) < 20.0.
+            safe if distance(hospital) > 55.0.
+            safe -> target("/safety").
+        "#;
+
+        let mut resin = Resin::compile(model, 1, false).expect("Compile failed");
+
+        // Two comparison leaf pairs should have been created
+        let names = resin.manager.get_names();
+        assert!(names.iter().any(|n| n.contains("lt")), "lt leaf missing");
+        assert!(names.iter().any(|n| n.contains("gt")), "gt leaf missing");
+
+        // The comparison registry should have two entries for distance(hospital)
+        let registry = resin.comparison_registry.get("distance(hospital)").unwrap();
+        assert_eq!(registry.len(), 2);
+        let has_lt = registry.iter().any(|(_, upper_tail, _)| !upper_tail);
+        let has_gt = registry.iter().any(|(_, upper_tail, _)| *upper_tail);
+        assert!(has_lt, "lower-tail entry missing");
+        assert!(has_gt, "upper-tail entry missing");
+
+        // make_writer_for should return a Density writer
+        let writer = resin.make_writer_for("distance(hospital)").unwrap();
+        assert!(matches!(writer, crate::channels::ipc::TypedWriter::Density(_)));
+    }
+
+    #[test]
+    fn test_density_writer_updates_leaves() {
+        use std::thread::sleep;
+        use std::time::Duration;
+
+        let model = r#"
+            dist <- source("/dist", Density).
+            safe if dist < 20.0.
+            safe if dist > 55.0.
+            safe -> target("/safety").
+        "#;
+
+        let mut resin = Resin::compile(model, 1, false).expect("Compile failed");
+        let writer = resin.make_writer_for("dist").unwrap();
+
+        let TypedWriter::Density(density_writer) = writer else {
+            panic!("Expected Density writer");
+        };
+
+        // Write a Normal(25, 5) distribution
+        let dist = crate::channels::ipc::VectorDistribution::Normal {
+            mean: crate::circuit::Vector::from_elem(1, 25.0),
+            std: crate::circuit::Vector::from_elem(1, 5.0),
+        };
+        density_writer.write(&dist, None);
+        sleep(Duration::from_millis(30));
+
+        let values = resin.manager.get_values();
+        let names = resin.manager.get_names();
+
+        // Find the lt leaf value
+        let lt_idx = names.iter().position(|n| n.contains("lt")).unwrap();
+        let gt_idx = names.iter().position(|n| n.contains("gt")).unwrap();
+
+        // P(X < 20) for Normal(25, 5) ≈ 0.159
+        assert!((values[lt_idx][0] - 0.159).abs() < 0.001,
+            "lt leaf = {}", values[lt_idx][0]);
+        // P(X > 55) for Normal(25, 5) ≈ 0 (extremely small)
+        assert!(values[gt_idx][0] < 1e-6,
+            "gt leaf = {}", values[gt_idx][0]);
+    }
+
+    #[test]
+    fn test_number_source_compilation() {
+        let model = r#"
+            speed <- source("/speed", Number).
+            moving if speed > 5.0.
+            moving -> target("/moving").
+        "#;
+
+        let mut resin = Resin::compile(model, 1, false).expect("Compile failed");
+        let writer = resin.make_writer_for("speed").unwrap();
+        assert!(matches!(writer, crate::channels::ipc::TypedWriter::Number(_)));
+
+        let TypedWriter::Number(num_writer) = writer else {
+            panic!("Expected Number writer");
+        };
+
+        // value > 5.0 → 1.0; value < 5.0 → 0.0
+        use std::thread::sleep;
+        use std::time::Duration;
+
+        num_writer.write(Vector::from(vec![10.0]), None);
+        sleep(Duration::from_millis(30));
+        let values = resin.manager.get_values();
+        let names = resin.manager.get_names();
+        let gt_idx = names.iter().position(|n| n.contains("gt")).unwrap();
+        assert_eq!(values[gt_idx][0], 1.0, "speed=10 should be > 5");
+
+        num_writer.write(Vector::from(vec![2.0]), None);
+        sleep(Duration::from_millis(30));
+        let values = resin.manager.get_values();
+        assert_eq!(values[gt_idx][0], 0.0, "speed=2 should not be > 5");
+    }
+
+    #[test]
+    fn test_boolean_source_compilation() {
+        let model = r#"
+            active <- source("/active", Boolean).
+            alarm if active.
+            alarm -> target("/alarm").
+        "#;
+
+        let mut resin = Resin::compile(model, 1, false).expect("Compile failed");
+        let writer = resin.make_writer_for("active").unwrap();
+        assert!(matches!(writer, crate::channels::ipc::TypedWriter::Boolean(_)));
+
+        let TypedWriter::Boolean(bool_writer) = writer else {
+            panic!("Expected Boolean writer");
+        };
+
+        use std::thread::sleep;
+        use std::time::Duration;
+
+        bool_writer.write(true, None);
+        sleep(Duration::from_millis(30));
+        let values = resin.manager.get_values();
+        let names = resin.manager.get_names();
+        let active_idx = names.iter().position(|n| n == "active").unwrap();
+        assert_eq!(values[active_idx][0], 1.0);
+
+        bool_writer.write(false, None);
+        sleep(Duration::from_millis(30));
+        let values = resin.manager.get_values();
+        assert_eq!(values[active_idx][0], 0.0);
     }
 
     #[test]
