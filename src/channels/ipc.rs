@@ -184,17 +184,7 @@ impl Drop for TimedIpcWriter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Typed writers — each accepts domain-appropriate input, converts to a
-// probability Vector, then delegates to an inner IpcWriter.
-// ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Typed writers
-// ---------------------------------------------------------------------------
-
-/// Passes a probability Vector straight through. Use when the data source
-/// already produces values in [0, 1].
 pub struct IpcProbabilityWriter {
     inner: IpcWriter,
 }
@@ -211,9 +201,6 @@ impl IpcProbabilityWriter {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Vectorized distribution CDF
-// ---------------------------------------------------------------------------
 
 /// Abramowitz & Stegun 7.1.26 — max error < 1.5e-7, no external deps.
 /// LLVM can auto-vectorize the polynomial part across ndarray mapv loops.
@@ -225,15 +212,11 @@ fn erf(x: f64) -> f64 {
     let p = t * (0.254_829_592
         + t * (-0.284_496_736
             + t * (1.421_413_741 + t * (-1.453_152_027 + t * 1.061_405_429))));
+
     sign * (1.0 - p * (-x * x).exp())
 }
 
-/// A distribution whose parameters are Vectors, enabling element-wise CDF
-/// evaluation across all value-space slots in a single call.
-///
-/// Each variant stores its parameters as `Vector` so a single `write` call
-/// on an `IpcDensityWriter` fan-out handles particle-filter-sized value
-/// vectors (e.g. 10 000 particles) without per-element object construction.
+
 pub enum VectorDistribution {
     /// `params: [means, stds]`
     Normal { mean: Vector, std: Vector },
@@ -302,9 +285,6 @@ impl VectorDistribution {
     }
 }
 
-// ---------------------------------------------------------------------------
-// IpcDensityWriter
-// ---------------------------------------------------------------------------
 
 /// Fan-out density writer.  A single `write(&distribution, ts)` call dispatches
 /// to every registered comparison channel, computing CDF or SF element-wise
@@ -524,7 +504,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Vectorized distribution CDF tests (many values)
+    // Vectorized distribution CDF tests
     // -----------------------------------------------------------------------
 
     /// Reference: Normal CDF computed from the standard z-table.
@@ -689,20 +669,14 @@ mod tests {
                 "test_leaf",
             ));
         let (tx, rx) = mpsc::channel();
-
-        // Create reader
         let _reader = IpcReader::new(reactive_circuit.clone(), 0, "test_channel", false, rx)?;
-
-        // Create writer
         let writer = IpcWriter::new(tx)?;
 
-        // Initial value
         assert_eq!(
             reactive_circuit.lock().unwrap().leafs[0].get_value(),
             array![0.0]
         );
 
-        // Write a value
         writer.write(array![0.5].into(), None);
 
         // Give the reader thread time to process

@@ -12,7 +12,7 @@ use super::ipc::{
 use super::Vector;
 use crate::circuit::{leaf::Leaf, reactive::ReactiveCircuit};
 
-/// Manages the state of leaves (Foliage) and the IPC channels for updating them.
+/// Manages the state of leaves and the IPC channels for updating them.
 ///
 /// The `Manager` is a central struct that holds the collection of `Leaf` nodes,
 /// a queue for reactive circuits that need updates (`rc_queue`), and the associated
@@ -44,7 +44,7 @@ impl Manager {
         }
     }
 
-    /// Creates a new `Leaf` and adds it to the foliage.
+    /// Creates a new `Leaf`.
     ///
     /// # Returns
     /// The index of the newly created leaf as a `u16`.
