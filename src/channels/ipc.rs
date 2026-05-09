@@ -8,22 +8,32 @@ use crate::circuit::ReactiveCircuit;
 
 use super::Vector;
 
+/// Listens on an MPSC channel and writes received `(value, timestamp)` pairs
+/// to a single leaf in the reactive circuit, optionally inverting the value.
 #[derive(Clone)]
 pub struct IpcReader {
     pub topic: String,
     _handle: Arc<JoinHandle<()>>, // Keep handle to keep thread alive
 }
 
+/// Like `IpcReader` but writes to two leaves simultaneously: one with the
+/// original value and one with `1 − value`.  Used for complementary leaf pairs.
 #[derive(Clone)]
 pub struct IpcDualReader {
     pub topic: String,
     _handle: Arc<JoinHandle<()>>, // Keep handle to keep thread alive
 }
 
+/// Sends `(Vector, timestamp)` pairs to a channel via an MPSC sender.
+/// The timestamp defaults to the current Unix time when `None` is supplied.
 pub struct IpcWriter {
     sender: Sender<(Vector, f64)>,
 }
 
+/// Wraps an `IpcWriter` and sends the current value at a fixed `frequency`
+/// (Hz) from a background thread.  The shared `value` can be updated
+/// concurrently via `get_value_access`.  Call `start`/`stop` to control the
+/// background thread; the thread is stopped automatically on `Drop`.
 pub struct TimedIpcWriter {
     pub frequency: f64,
     value: Arc<Mutex<Vector>>,
@@ -33,6 +43,8 @@ pub struct TimedIpcWriter {
 }
 
 impl IpcReader {
+    /// Spawns a reader thread that forwards values from `receiver` to leaf
+    /// `index`.  If `invert` is `true`, each value is replaced by `1 − value`.
     pub fn new(
         shared_reactive_circuit: Arc<Mutex<ReactiveCircuit>>,
         index: u32,
@@ -64,6 +76,9 @@ impl IpcReader {
 }
 
 impl IpcDualReader {
+    /// Spawns a reader thread that writes each received value to leaf
+    /// `index_normal` and `1 − value` to leaf `index_inverted` atomically
+    /// (both updates hold the circuit lock together).
     pub fn new(
         shared_reactive_circuit: Arc<Mutex<ReactiveCircuit>>,
         index_normal: u32,
@@ -93,10 +108,13 @@ impl IpcDualReader {
 }
 
 impl IpcWriter {
+    /// Wraps `sender` in an `IpcWriter`.
     pub fn new(sender: Sender<(Vector, f64)>) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self { sender })
     }
 
+    /// Sends `value` with `timestamp` (or the current Unix time if `None`).
+    /// Send failures (e.g. disconnected receiver) are silently ignored.
     pub fn write(&self, value: Vector, timestamp: Option<f64>) {
         let timestamp = if timestamp.is_none() {
             SystemTime::now()
@@ -112,6 +130,8 @@ impl IpcWriter {
 }
 
 impl TimedIpcWriter {
+    /// Creates a new timed writer at the given `frequency` (Hz) with an
+    /// initial `value`.  Call `start` to begin periodic transmission.
     pub fn new(
         frequency: f64,
         sender: Sender<(Vector, f64)>,
@@ -128,10 +148,14 @@ impl TimedIpcWriter {
         })
     }
 
+    /// Returns a shared reference to the value vector so the caller can update
+    /// it while the timed writer is running.
     pub fn get_value_access(&self) -> Arc<Mutex<Vector>> {
         self.value.clone()
     }
 
+    /// Starts the background send loop.  Calling `start` on an already-running
+    /// writer is a no-op.
     pub fn start(&mut self) {
         use std::thread::spawn;
 
@@ -165,6 +189,8 @@ impl TimedIpcWriter {
         }));
     }
 
+    /// Signals the background thread to stop and joins it.  Calling `stop` when
+    /// not running is a no-op.
     pub fn stop(&mut self) {
         if self.sender.is_some() {
             if let Some(sender) = self.sender.take() {
@@ -185,17 +211,20 @@ impl Drop for TimedIpcWriter {
 }
 
 
+/// Passes a probability vector straight through to the circuit leaf.
 pub struct IpcProbabilityWriter {
     inner: IpcWriter,
 }
 
 impl IpcProbabilityWriter {
+    /// Wraps `sender` in a probability writer.
     pub fn new(sender: Sender<(Vector, f64)>) -> Self {
         Self {
             inner: IpcWriter::new(sender).unwrap(),
         }
     }
 
+    /// Sends `value` as-is with the given `timestamp`.
     pub fn write(&self, value: Vector, timestamp: Option<f64>) {
         self.inner.write(value, timestamp);
     }
@@ -297,7 +326,8 @@ pub struct IpcDensityWriter {
 }
 
 impl IpcDensityWriter {
-    /// Single-comparison constructor — convenient for direct use without the compiler.
+    /// Creates a density writer with a single comparison channel.
+    /// Convenient for direct use without the Resin compiler.
     pub fn new(sender: Sender<(Vector, f64)>, threshold: f64, upper_tail: bool) -> Self {
         Self {
             channels: vec![(threshold, upper_tail, sender)],
@@ -309,6 +339,7 @@ impl IpcDensityWriter {
         Self { channels }
     }
 
+    /// Computes CDF or SF for each registered threshold and sends the results.
     pub fn write(&self, distribution: &VectorDistribution, timestamp: Option<f64>) {
         let ts = resolve_timestamp(timestamp);
         for (threshold, upper_tail, sender) in &self.channels {
@@ -332,7 +363,7 @@ pub struct IpcNumberWriter {
 }
 
 impl IpcNumberWriter {
-    /// Single-comparison constructor.
+    /// Creates a number writer with a single comparison channel.
     pub fn new(sender: Sender<(Vector, f64)>, threshold: f64, upper_tail: bool) -> Self {
         Self {
             channels: vec![(threshold, upper_tail, sender)],
@@ -344,6 +375,8 @@ impl IpcNumberWriter {
         Self { channels }
     }
 
+    /// Maps each element of `value` to `1.0` or `0.0` based on each registered
+    /// threshold comparison and sends the results.
     pub fn write(&self, value: Vector, timestamp: Option<f64>) {
         let ts = resolve_timestamp(timestamp);
         for (threshold, upper_tail, sender) in &self.channels {
@@ -367,12 +400,14 @@ pub struct IpcBooleanWriter {
 }
 
 impl IpcBooleanWriter {
+    /// Wraps `sender` in a boolean writer.
     pub fn new(sender: Sender<(Vector, f64)>) -> Self {
         Self {
             inner: IpcWriter::new(sender).unwrap(),
         }
     }
 
+    /// Converts `value` to `1.0` (`true`) or `0.0` (`false`) and sends it.
     pub fn write(&self, value: bool, timestamp: Option<f64>) {
         self.inner
             .write(Vector::from_elem(1, if value { 1.0 } else { 0.0 }), timestamp);
@@ -387,6 +422,7 @@ pub enum TypedWriter {
     Boolean(IpcBooleanWriter),
 }
 
+/// Returns `timestamp` if `Some`, otherwise returns the current Unix time in seconds.
 fn resolve_timestamp(timestamp: Option<f64>) -> f64 {
     timestamp.unwrap_or_else(|| {
         SystemTime::now()

@@ -34,6 +34,8 @@ impl Default for Manager {
 }
 
 impl Manager {
+    /// Creates a new `Manager` with a fresh `ReactiveCircuit` of the given
+    /// `value_size` (number of parallel value slots, e.g. particles).
     pub fn new(value_size: usize) -> Self {
         Self {
             reactive_circuit: Arc::new(Mutex::new(ReactiveCircuit::new(value_size))),
@@ -284,6 +286,7 @@ impl Manager {
             .collect()
     }
 
+    /// Returns the current value vector for every leaf, in index order.
     pub fn get_values(&self) -> Vec<Vector> {
         let reactive_circuit_guard = self.reactive_circuit.lock().unwrap();
 

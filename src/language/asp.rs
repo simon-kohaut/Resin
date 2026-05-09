@@ -2,6 +2,16 @@ use clingo::{control, Part, ShowType, SolveMode};
 
 use crate::language::Dnf;
 
+/// Passes `asp` to the Clingo solver configured with `--models=0` (enumerate
+/// all stable models) and collects every stable model into a `Dnf`.
+///
+/// Each stable model becomes one conjunctive clause: positive atoms are added
+/// as-is, complementary atoms are negated with `Dnf::negate`.  If `verbose`
+/// is `true`, each model is printed to stdout.
+///
+/// # Panics
+/// Panics if Clingo fails to create, ground, or solve the program, or if the
+/// solver returns an error during iteration.
 pub fn solve(asp: &str, verbose: bool) -> Dnf {
     // Setup Clingo solver
     let mut clingo_control =

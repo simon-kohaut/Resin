@@ -2,6 +2,12 @@ use crate::tracking::Kalman;
 use crate::tracking::LinearModel;
 use ndarray::array;
 
+/// Frequency-of-Change (FoC) estimator for a single leaf.
+///
+/// Tracks the time between successive `update` calls and uses a Kalman filter
+/// to produce a smoothed estimate of the leaf's update frequency in Hz.
+/// The filter models frequency as a constant with additive noise, using a
+/// constant-velocity forward model.
 #[derive(Clone, Debug)]
 pub struct FoCEstimator {
     pub kalman: Kalman,
@@ -9,6 +15,9 @@ pub struct FoCEstimator {
 }
 
 impl FoCEstimator {
+    /// Creates a new estimator seeded with `frequency` as the initial estimate.
+    /// The Kalman model is a 2-state (inter-arrival time, drift) constant-velocity
+    /// filter observed through inter-arrival time measurements.
     pub fn new(frequency: f64) -> Self {
         let forward_model = |dt| array![[1.0, dt], [0.0, 1.0]];
         let input_model = array![[0.0, 0.0]];
@@ -31,6 +40,8 @@ impl FoCEstimator {
         }
     }
 
+    /// Resets the Kalman filter to a zero-frequency estimate with default
+    /// initial covariance, and clears the last-seen timestamp.
     pub fn reset(&mut self) {
         let estimate = array![0.0, 0.0];
         let estimate_covariance = array![[30.0, 0.0], [0.0, 100.0]];
@@ -38,6 +49,12 @@ impl FoCEstimator {
         self.kalman.reset(&estimate, &estimate_covariance);
     }
 
+    /// Records a new observation at `timestamp` (Unix seconds), runs a
+    /// predict-correct Kalman cycle using the elapsed time since the last call,
+    /// and returns the updated frequency estimate in Hz.
+    ///
+    /// Returns `0.0` on the very first call (no elapsed time available yet).
+    /// The internal estimate is clamped to `[0.0001, 100.0]` Hz.
     pub fn update(&mut self, timestamp: f64) -> f64 {
         // Very first update, do not estimate
         if self.timestamp.is_none() {
@@ -60,6 +77,9 @@ impl FoCEstimator {
         1.0 / self.kalman.estimate[0]
     }
 
+    /// Like `update`, but takes the elapsed time directly instead of a wall
+    /// timestamp.  Useful for simulation or replay.
+    /// The internal estimate is clamped to `[0.0001, 1000.0]` Hz.
     pub fn update_elapsed(&mut self, elapsed: f64) -> f64 {
         self.kalman.predict(elapsed, None);
         self.kalman.update(&array![elapsed]);

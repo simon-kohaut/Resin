@@ -1,15 +1,12 @@
-use petgraph::stable_graph::NodeIndex;
 use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::channels::ipc::{
-    IpcBooleanWriter, IpcDensityWriter, IpcNumberWriter, IpcProbabilityWriter, IpcWriter,
-    TypedWriter, VectorDistribution,
+    IpcBooleanWriter, IpcDensityWriter, IpcNumberWriter, IpcProbabilityWriter, TypedWriter,
+    VectorDistribution,
 };
-use crate::channels::manager::Manager;
 use crate::circuit::leaf::{self, Leaf};
 use crate::circuit::reactive::ReactiveCircuit;
 use crate::circuit::Vector;
@@ -33,22 +30,6 @@ impl PySharedVector {
     /// Gets the current value of the shared vector.
     pub fn get(&self, py: Python<'_>) -> Vec<f64> {
         py.detach(|| self.vec.lock().unwrap().iter().copied().collect())
-    }
-}
-
-/// A Python wrapper for `IpcWriter`.
-#[pyclass(name = "IpcWriter")]
-struct PyIpcWriter {
-    writer: IpcWriter,
-}
-
-#[pymethods]
-impl PyIpcWriter {
-    /// Writes a value to the channel.
-    pub fn write(&self, py: Python<'_>, value: Vec<f64>, timestamp: Option<f64>) {
-        py.detach(|| {
-            self.writer.write(Vector::from(value), timestamp);
-        })
     }
 }
 
@@ -170,131 +151,6 @@ impl PyBooleanWriter {
     }
 }
 
-/// Manages the state of leaves (Foliage) and the IPC channels for updating them.
-#[pyclass(name = "Manager")]
-struct PyManager {
-    manager: Mutex<Manager>,
-}
-
-#[pymethods]
-impl PyManager {
-    #[new]
-    fn new(value_size: usize) -> Self {
-        PyManager {
-            manager: Mutex::new(Manager::new(value_size)),
-        }
-    }
-
-    /// Creates a new `Leaf` and returns its index.
-    fn create_leaf(&self, py: Python<'_>, name: &str, value: Vec<f64>, frequency: f64) -> u32 {
-        let name = name.to_string();
-        py.detach(move || {
-            let vector_value = Vector::from(value);
-            self.manager
-                .lock()
-                .unwrap()
-                .create_leaf(&name, vector_value, frequency)
-        })
-    }
-
-    /// Creates a reader for a given channel that updates a leaf.
-    fn read(&self, py: Python<'_>, receiver_idx: u32, channel: &str, invert: bool) -> PyResult<()> {
-        let channel = channel.to_string();
-        py.detach(move || {
-            self.manager
-                .lock()
-                .unwrap()
-                .read(receiver_idx, &channel, invert)
-                .map_err(|e| e.to_string())
-        })
-        .map_err(|e_str| pyo3::exceptions::PyIOError::new_err(e_str))
-    }
-
-    /// Creates a dual reader for a channel that updates two leaves (normal and inverted).
-    fn read_dual(
-        &self,
-        py: Python<'_>,
-        receiver_idx_normal: u32,
-        receiver_idx_inverted: u32,
-        channel: &str,
-    ) -> PyResult<()> {
-        let channel = channel.to_string();
-        py.detach(move || {
-            self.manager
-                .lock()
-                .unwrap()
-                .read_dual(receiver_idx_normal, receiver_idx_inverted, &channel)
-                .map_err(|e| e.to_string())
-        })
-        .map_err(|e_str| pyo3::exceptions::PyIOError::new_err(e_str))
-    }
-
-    /// Creates a writer for a given channel.
-    fn make_writer(&self, py: Python<'_>, channel: &str) -> PyResult<PyIpcWriter> {
-        let channel = channel.to_string();
-        let writer = py
-            .detach(move || {
-                self.manager
-                    .lock()
-                    .unwrap()
-                    .make_writer(&channel)
-                    .map_err(|e| e.to_string())
-            })
-            .map_err(|e_str| pyo3::exceptions::PyIOError::new_err(e_str))?;
-        Ok(PyIpcWriter { writer })
-    }
-
-    /// Creates a timed writer that sends its value at a given frequency.
-    fn make_timed_writer(
-        &self,
-        py: Python<'_>,
-        channel: &str,
-        frequency: f64,
-    ) -> PyResult<PySharedVector> {
-        let channel = channel.to_string();
-        let value_arc = py
-            .detach(move || {
-                self.manager
-                    .lock()
-                    .unwrap()
-                    .make_timed_writer(&channel, frequency)
-                    .map_err(|e| e.to_string())
-            })
-            .map_err(|e_str| pyo3::exceptions::PyIOError::new_err(e_str))?;
-        Ok(PySharedVector { vec: value_arc })
-    }
-
-    /// Stops and removes all active timed writers.
-    fn stop_timed_writers(&self, py: Python<'_>) {
-        py.detach(|| {
-            self.manager.lock().unwrap().stop_timed_writers();
-        })
-    }
-
-    /// Returns a list of the frequencies of all leaves.
-    fn get_frequencies(&self, py: Python<'_>) -> Vec<f64> {
-        py.detach(|| self.manager.lock().unwrap().get_frequencies())
-    }
-
-    /// Returns a list of the values of all leaves.
-    fn get_values(&self, py: Python<'_>) -> Vec<Vec<f64>> {
-        py.detach(|| {
-            self.manager
-                .lock()
-                .unwrap()
-                .get_values()
-                .into_iter()
-                .map(|v| v.iter().copied().collect())
-                .collect()
-        })
-    }
-
-    /// Returns a list of the names of all leaves.
-    fn get_names(&self, py: Python<'_>) -> Vec<String> {
-        py.detach(|| self.manager.lock().unwrap().get_names())
-    }
-}
-
 /// A Python wrapper for the high-level `Resin` language compiler and runtime.
 #[pyclass(name = "Resin")]
 struct PyResin {
@@ -340,21 +196,36 @@ impl PyResin {
         .map_err(|e_str| PyIOError::new_err(e_str))
     }
 
-    /// Creates a raw probability writer for a given internal channel name.
-    fn make_writer(&self, py: Python<'_>, channel: &str) -> PyResult<PyIpcWriter> {
+    /// Returns the correctly typed writer for the source whose IPC channel
+    /// matches `channel`.  The returned object is one of `ProbabilityWriter`,
+    /// `DensityWriter`, `NumberWriter`, or `BooleanWriter`.
+    fn make_writer(&self, py: Python<'_>, channel: &str) -> PyResult<PyObject> {
         let channel = channel.to_string();
         let resin = self.resin.clone();
-        let writer = py
+        let typed_writer = py
             .detach(move || {
                 resin
                     .lock()
                     .unwrap()
-                    .manager
                     .make_writer(&channel)
                     .map_err(|e| e.to_string())
             })
-            .map_err(|e_str| PyIOError::new_err(e_str))?;
-        Ok(PyIpcWriter { writer })
+            .map_err(|e_str| PyRuntimeError::new_err(e_str))?;
+
+        match typed_writer {
+            TypedWriter::Probability(w) => {
+                Ok(Py::new(py, PyProbabilityWriter { writer: w })?.into_any())
+            }
+            TypedWriter::Density(w) => {
+                Ok(Py::new(py, PyDensityWriter { writer: w })?.into_any())
+            }
+            TypedWriter::Number(w) => {
+                Ok(Py::new(py, PyNumberWriter { writer: w })?.into_any())
+            }
+            TypedWriter::Boolean(w) => {
+                Ok(Py::new(py, PyBooleanWriter { writer: w })?.into_any())
+            }
+        }
     }
 
     /// Returns the correctly typed writer for a declared source atom.
@@ -582,9 +453,7 @@ impl PyReactiveCircuit {
 fn resin(_py: Python<'_>, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyResin>()?;
     m.add_class::<PyReactiveCircuit>()?;
-    m.add_class::<PyManager>()?;
     m.add_class::<PySharedVector>()?;
-    m.add_class::<PyIpcWriter>()?;
     m.add_class::<PyProbabilityWriter>()?;
     m.add_class::<PyDensityWriter>()?;
     m.add_class::<PyNumberWriter>()?;

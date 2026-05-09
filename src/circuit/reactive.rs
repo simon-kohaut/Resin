@@ -90,6 +90,11 @@ impl ReactiveCircuit {
         reactive_circuit
     }
 
+    /// Adds a new empty target node with the given token.
+    ///
+    /// **Warning:** the resulting node contains an empty `AlgebraicCircuit`
+    /// and will fail the circuit invariants until a formula is added via
+    /// `add_sum_product`.  Prefer `add_sum_product` directly.
     pub fn new_target(&mut self, target_token: &str) -> NodeIndex {
         // TODO: Using this function leaves the RC in a bad state (empty AC node)
         // Maybe remove method or require formula?
@@ -106,6 +111,9 @@ impl ReactiveCircuit {
         node
     }
 
+    /// Appends `sum_product` to the `AlgebraicCircuit` for `target_token`,
+    /// creating the target node if it does not yet exist, and registers every
+    /// leaf index in `sum_product` as a dependency of that node.
     pub fn add_sum_product(&mut self, sum_product: &[Vec<u32>], target_token: &str) {
         self.check_invariants();
 
@@ -130,6 +138,8 @@ impl ReactiveCircuit {
         self.check_invariants();
     }
 
+    /// Adds a single conjunctive `product` to the target node's `AlgebraicCircuit`
+    /// and registers the leaf dependencies.
     pub fn add(&mut self, product: &[u32], target_token: &str) {
         self.check_invariants();
         let target_node = self.targets[target_token];
@@ -143,10 +153,13 @@ impl ReactiveCircuit {
         self.check_invariants();
     }
 
+    /// Registers `node` as a dependent of the leaf at `index`.
     pub fn set_dependency(&mut self, index: u32, node: &NodeIndex) {
         self.leafs[index as usize].add_dependency(node.index() as u32);
     }
 
+    /// Re-partitions leaves by their current FoC using `boundaries` as bin
+    /// edges, then lifts or drops leaves to match the new partitioning.
     pub fn adapt(&mut self, boundaries: &[f64]) {
         self.check_invariants();
 
@@ -225,6 +238,8 @@ impl ReactiveCircuit {
         descendants_by_depth
     }
 
+    /// Marks every node in the circuit as outdated by adding all node indices
+    /// to the queue, so the next `update` call recomputes the entire circuit.
     pub fn invalidate(&mut self) {
         // Invalidate in a bottom-up fashion so that the update queue can be processed from bottom to top
         let sorted_nodes =
@@ -234,6 +249,8 @@ impl ReactiveCircuit {
         self.queue = self.queue.iter().unique().cloned().collect();
     }
 
+    /// Removes nodes whose `AlgebraicCircuit` is empty (no leafs and no
+    /// memories), cleaning up any dangling memory references in peer nodes first.
     pub fn prune(&mut self) {
         // Collect nodes that seem safe to remove
         let mut nodes_to_remove = Vec::new();
@@ -351,6 +368,8 @@ impl ReactiveCircuit {
         ancestors
     }
 
+    /// Recomputes the dependency set for every leaf by walking all circuit nodes
+    /// and collecting the ancestors of any node that contains the leaf.
     pub fn update_dependencies(&mut self) {
         for index in 0..self.leafs.len() as u32 {
             let mut new_dependencies = BTreeSet::new();
@@ -523,7 +542,10 @@ impl ReactiveCircuit {
         self.check_invariants();
     }
 
-    /// Drop the leaf with `index` out of its current circuits into its ancestors.
+    /// Removes the leaf with `index` from every circuit that directly contains
+    /// it, pushing its contribution down into descendant circuits.  If a
+    /// sibling memory node exists, the leaf is multiplied into the child it
+    /// points to; otherwise a new child `AlgebraicCircuit` is created.
     pub fn drop_leaf(&mut self, index: u32) {
         self.check_invariants();
 
@@ -554,6 +576,9 @@ impl ReactiveCircuit {
         self.check_invariants();
     }
 
+    /// Handles the product-level bookkeeping when dropping a leaf: either
+    /// multiplies the leaf into an existing child (via a memory sibling) or
+    /// creates a new child `AlgebraicCircuit` that contains only the leaf.
     fn handle_leaf_drop_for_product(
         &mut self,
         leaf_index: u32,
@@ -687,7 +712,8 @@ impl ReactiveCircuit {
         target_results
     }
 
-    // Full update of the Reactive Circuit independent of the current queue, but emptying the queue afterwards
+    /// Invalidates the entire circuit and then runs `update`, guaranteeing that
+    /// all target values are freshly recomputed regardless of queue state.
     pub fn full_update(&mut self) -> HashMap<String, Vector> {
         self.invalidate();
         self.update()

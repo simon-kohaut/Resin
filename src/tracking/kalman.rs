@@ -2,6 +2,14 @@ use nalgebra::{linalg::try_invert_to, DMatrix};
 
 use super::{LinearModel, Matrix, Vector};
 
+/// A discrete-time linear Kalman filter.
+///
+/// State is represented as a Gaussian: `(estimate, estimate_covariance)`.
+/// Each cycle runs `predict` (propagate with the forward model) then `update`
+/// (correct with a measurement via the output model).
+///
+/// The filter uses `nalgebra` for the matrix inversion required by the Kalman
+/// gain computation.
 #[derive(Clone, Debug)]
 pub struct Kalman {
     // Gaussian estimation of state
@@ -24,6 +32,9 @@ pub struct Kalman {
 }
 
 impl Kalman {
+    /// Creates a new Kalman filter with the given initial `estimate` and
+    /// `estimate_covariance`, `process_noise` and `sensor_noise` covariance
+    /// matrices, and a `model` describing the forward and output dynamics.
     pub fn new(
         estimate: &Vector,
         estimate_covariance: &Matrix,
@@ -48,6 +59,8 @@ impl Kalman {
         }
     }
 
+    /// Resets the filter to a new `estimate` and `estimate_covariance`, clearing
+    /// the prediction state.
     pub fn reset(&mut self, estimate: &Vector, estimate_covariance: &Matrix) {
         self.estimate = estimate.clone();
         self.estimate_covariance = estimate_covariance.clone();
@@ -57,6 +70,9 @@ impl Kalman {
         self.prediction_covariance = Matrix::zeros((x_dim, x_dim));
     }
 
+    /// Propagates the current estimate through the forward model for time step
+    /// `dt`, optionally with a control `input`.  Updates `prediction` and
+    /// `prediction_covariance`.
     pub fn predict(&mut self, dt: f64, input: Option<&Vector>) {
         // Predict next state and prediction covariance
         self.prediction = self.model.forward(&self.estimate, dt, input);
@@ -66,6 +82,12 @@ impl Kalman {
             + &self.process_noise;
     }
 
+    /// Corrects the prediction with `measurement` via the Kalman gain.
+    /// Updates `estimate` and `estimate_covariance`.
+    ///
+    /// The residual covariance is inverted using `nalgebra::linalg::try_invert_to`.
+    /// If the matrix is singular the inversion silently produces zeros and the
+    /// estimate is set to the prediction unchanged.
     pub fn update(&mut self, measurement: &Vector) {
         // Compute the residual and its covariance
         self.residual = measurement - &self.model.measure(&self.prediction);
