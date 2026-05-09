@@ -207,7 +207,40 @@ impl PyResin {
                 resin
                     .lock()
                     .unwrap()
+                    .manager
                     .make_writer(&channel)
+                    .map_err(|e| e.to_string())
+            })
+            .map_err(|e_str| PyRuntimeError::new_err(e_str))?;
+
+        match typed_writer {
+            TypedWriter::Probability(w) => {
+                Ok(Py::new(py, PyProbabilityWriter { writer: w })?.into_any())
+            }
+            TypedWriter::Density(w) => {
+                Ok(Py::new(py, PyDensityWriter { writer: w })?.into_any())
+            }
+            TypedWriter::Number(w) => {
+                Ok(Py::new(py, PyNumberWriter { writer: w })?.into_any())
+            }
+            TypedWriter::Boolean(w) => {
+                Ok(Py::new(py, PyBooleanWriter { writer: w })?.into_any())
+            }
+        }
+    }
+
+    /// Returns the correctly typed writer for a declared source atom.
+    /// The returned object is one of `ProbabilityWriter`, `DensityWriter`,
+    /// `NumberWriter`, or `BooleanWriter`.
+    fn make_writer_for(&self, py: Python<'_>, source_name: &str) -> PyResult<PyObject> {
+        let source_name = source_name.to_string();
+        let resin = self.resin.clone();
+        let typed_writer = py
+            .detach(move || {
+                resin
+                    .lock()
+                    .unwrap()
+                    .make_writer_for(&source_name)
                     .map_err(|e| e.to_string())
             })
             .map_err(|e_str| PyRuntimeError::new_err(e_str))?;
