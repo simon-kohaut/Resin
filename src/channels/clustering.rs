@@ -2,6 +2,10 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::circuit::reactive::ReactiveCircuit;
 
+/// Assigns each frequency to a bin index based on sorted `boundaries`.
+///
+/// A frequency falls in bin `i` when `frequency ≤ boundaries[i]`.  Any
+/// frequency larger than every boundary is assigned to `boundaries.len()`.
 pub fn binning(frequencies: &[f64], boundaries: &[f64]) -> Vec<usize> {
     // Append MAX for edge case of value being larger than any boundary
     let mut expanded_boundaries = boundaries.to_owned();
@@ -22,6 +26,8 @@ pub fn binning(frequencies: &[f64], boundaries: &[f64]) -> Vec<usize> {
     labels
 }
 
+/// Re-labels a bin vector so the labels are consecutive integers starting at
+/// `0`, preserving relative order.  E.g. `[0, 2, 2, 5]` → `[0, 1, 1, 2]`.
 pub fn pack(bins: &[usize]) -> Vec<usize> {
     // Packed bins, e.g., go from [0, 2, 2, 3, 5] to [0, 1, 1, 2, 3]
     let mut packed_bins = vec![];
@@ -47,6 +53,8 @@ pub fn pack(bins: &[usize]) -> Vec<usize> {
     packed_bins
 }
 
+/// Inverts bin labels so the highest bin becomes `0`.
+/// E.g. `[0, 2, 2, 5]` → `[5, 3, 3, 0]`.
 pub fn flip(bins: &[usize]) -> Vec<usize> {
     // Flipped bins, e.g., go from [0, 2, 2, 3, 5] to [5, 3, 3, 2, 0]
     let mut flipped = vec![];
@@ -61,6 +69,8 @@ pub fn flip(bins: &[usize]) -> Vec<usize> {
     flipped
 }
 
+/// Creates `number_bins` evenly-spaced boundary values:
+/// `[bin_size, 2*bin_size, …, number_bins*bin_size]`.
 pub fn create_boundaries(bin_size: f64, number_bins: usize) -> Vec<f64> {
     // Setup Vec of boundaries
     let mut boundaries = vec![];
@@ -72,6 +82,9 @@ pub fn create_boundaries(bin_size: f64, number_bins: usize) -> Vec<f64> {
     boundaries
 }
 
+/// Maps a slice of frequencies to priority levels: bins → packed → flipped,
+/// so the highest frequency gets priority `0` and the lowest gets the highest
+/// priority value.  Used by `ReactiveCircuit::adapt` for leaf scheduling.
 pub fn partitioning(frequencies: &[f64], boundaries: &[f64]) -> Vec<usize> {
     flip(&pack(&binning(&frequencies, boundaries)))
 }

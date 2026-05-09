@@ -4,18 +4,28 @@ use std::str::FromStr;
 use regex::Regex;
 
 use super::matching::{
-    canonical_comparison_name, get_literals, CLAUSE_REGEX, COMPARISON_LITERAL_REGEX, SOURCE_REGEX,
-    TARGET_REGEX,
+    args_of, canonical_comparison_name, get_literals, has_variable_arg,
+    parameterized_comparison_predicate, predicate_of, CLAUSE_REGEX, COMPARISON_LITERAL_REGEX,
+    SOURCE_REGEX, TARGET_REGEX,
 };
 
 /// A comparison literal extracted from a clause body, e.g. `distance(hospital) < 20.0`.
-/// Its `canonical_name` is used as the atom name in ASP and as the leaf name in the circuit.
+///
+/// For **ground** comparisons (`is_variable = false`) `canonical_name` is the flat leaf
+/// name used both in the emitted ASP body and as the circuit leaf name,
+/// e.g. `"distance_hospital_lt_20"`.
+///
+/// For **variable** comparisons (`is_variable = true`, e.g. `distance(T) > 100`)
+/// `canonical_name` is the parameterized form Clingo can ground,
+/// e.g. `"resin_distance_gt_100(T)"`.  Leaf names are produced by `ground_for`.
 #[derive(Clone, Debug)]
 pub struct ComparisonLiteral {
     pub source_atom: String,
     pub op: char,
     pub threshold: f64,
     pub canonical_name: String,
+    /// `true` when `source_atom` contains a Datalog variable argument (uppercase first char).
+    pub is_variable: bool,
 }
 
 impl ComparisonLiteral {
@@ -24,11 +34,46 @@ impl ComparisonLiteral {
     pub fn is_upper_tail(&self) -> bool {
         self.op == '>'
     }
+
+    /// For a variable comparison, returns a fully-grounded `ComparisonLiteral` for
+    /// `source_name` (e.g. `"distance(hospital, airport)"`), or `None` when:
+    /// - `self` is not a variable comparison,
+    /// - the predicate names differ, or
+    /// - a constant argument position in the template doesn't match the source.
+    pub fn ground_for(&self, source_name: &str) -> Option<ComparisonLiteral> {
+        if !self.is_variable {
+            return None;
+        }
+        if predicate_of(&self.source_atom) != predicate_of(source_name) {
+            return None;
+        }
+        // For mixed-arg templates like `distance(A, hub, B)` ensure every constant
+        // argument position matches the corresponding source argument.
+        if let (Some(tmpl_args), Some(src_args)) =
+            (args_of(&self.source_atom), args_of(source_name))
+        {
+            if tmpl_args.len() != src_args.len() {
+                return None;
+            }
+            for (t, s) in tmpl_args.iter().zip(src_args.iter()) {
+                if !t.starts_with(|c: char| c.is_uppercase()) && t != s {
+                    return None;
+                }
+            }
+        }
+        Some(ComparisonLiteral {
+            source_atom: source_name.to_string(),
+            op: self.op,
+            threshold: self.threshold,
+            canonical_name: canonical_comparison_name(source_name, self.op, self.threshold),
+            is_variable: false,
+        })
+    }
 }
 
-/// Extracts comparison literals from a raw body string and returns the
-/// processed body (comparisons replaced by their canonical names) together
-/// with the list of `ComparisonLiteral`s found.
+/// Scans `body` for inline comparison literals (e.g. `distance(hospital) < 20.0`),
+/// replaces each one with its canonical name in the text, and returns the full
+/// list of parsed body literals alongside the extracted `ComparisonLiteral`s.
 fn process_body(body: &str) -> (Vec<String>, Vec<ComparisonLiteral>) {
     let mut comparison_literals: Vec<ComparisonLiteral> = Vec::new();
     let mut processed = body.to_string();
@@ -39,13 +84,30 @@ fn process_body(body: &str) -> (Vec<String>, Vec<ComparisonLiteral>) {
         let source_atom = caps["comp_atom"].to_string();
         let op = caps["comp_op"].chars().next().unwrap();
         let threshold: f64 = caps["comp_threshold"].parse().unwrap();
-        let canonical = canonical_comparison_name(&source_atom, op, threshold);
+        let is_variable = has_variable_arg(&source_atom);
+
+        // Variable comparisons: emit a parameterized atom Clingo can ground,
+        // e.g. `distance(T) > 100` → `resin_distance_gt_100(T)`.
+        // Ground comparisons: flat canonical name as before.
+        let canonical = if is_variable {
+            let pred = predicate_of(&source_atom);
+            // Preserve all args (variables stay as variables, constants stay as constants)
+            // so Clingo can ground the parameterized atom correctly, e.g.
+            // `distance(A, hub, B) > 100` → `resin_distance_gt_100(A, hub, B)`.
+            let args_str = args_of(&source_atom)
+                .map(|a| a.join(", "))
+                .unwrap_or_default();
+            format!("{}({})", parameterized_comparison_predicate(pred, op, threshold), args_str)
+        } else {
+            canonical_comparison_name(&source_atom, op, threshold)
+        };
 
         comparison_literals.push(ComparisonLiteral {
             source_atom,
             op,
             threshold,
             canonical_name: canonical.clone(),
+            is_variable,
         });
 
         let start = (m.start() as i64 + offset) as usize;
@@ -59,6 +121,12 @@ fn process_body(body: &str) -> (Vec<String>, Vec<ComparisonLiteral>) {
     (literals, comparison_literals)
 }
 
+/// A parsed Resin rule, e.g. `unsafe(a, b) <- P(0.65) if close(a, b) and heavy(a).`
+///
+/// The `head` atom is the conclusion; `probability` carries the `P(…)` weight when
+/// present; `body` holds all body literals after comparison literals have been
+/// replaced by their canonical names; `comparison_literals` holds the extracted
+/// comparisons; `code` is the original source text.
 pub struct Clause {
     pub head: String,
     pub probability: Option<f64>,
@@ -69,12 +137,22 @@ pub struct Clause {
     pub code: String,
 }
 
+/// A declared Resin input source, e.g. `distance(hospital) <- source("/dist/hospital", Density).`
+///
+/// `name` is the atom that will appear in clause bodies; `channel` is the IPC
+/// topic string; `message_type` determines how incoming values are converted into
+/// leaf probabilities.
 pub struct Source {
     pub name: String,
     pub channel: String,
     pub message_type: ResinType,
 }
 
+/// A declared Resin output target, e.g. `safe -> target("/safety").`
+///
+/// At compile time, the target atom is removed from the DNF and the remaining
+/// formula is used to build the reactive circuit.  `message_type` is always
+/// `Probability`.
 pub struct Target {
     pub name: String,
     pub channel: String,
@@ -93,6 +171,8 @@ pub enum ResinType {
 }
 
 impl Clause {
+    /// Renders this clause as an ASP choice rule (when probabilistic) or a
+    /// deterministic rule, terminated with `.\n`.
     pub fn to_asp(&self) -> String {
         let mut asp;
 
@@ -113,6 +193,8 @@ impl Clause {
         asp
     }
 
+    /// Returns a new `Clause` with every occurrence of `variable` (as a regex
+    /// pattern) replaced by `instance` in the source text, then re-parsed.
     pub fn substitute(&self, variable: String, instance: String) -> Clause {
         let regex = Regex::new(&variable).unwrap();
         let substituted = regex.replace_all(&self.code, instance);
@@ -122,6 +204,7 @@ impl Clause {
 }
 
 impl Source {
+    /// Renders this source as an ASP choice atom `{name}.\n`.
     pub fn to_asp(&self) -> String {
         let asp = format!("{{{}}}.\n", self.name);
         asp
@@ -129,6 +212,8 @@ impl Source {
 }
 
 impl Target {
+    /// Renders this target as an ASP integrity constraint `:- not name.\n`,
+    /// which forces Clingo to only consider models where `name` holds.
     pub fn to_asp(&self) -> String {
         let asp = format!(":- not {}.\n", self.name);
         asp
@@ -138,6 +223,11 @@ impl Target {
 impl FromStr for Clause {
     type Err = ();
 
+    /// Parses a Resin rule string into a `Clause`.
+    ///
+    /// Accepts both fact form (`head.`) and rule form
+    /// (`head <- P(p) if body.`).  Returns `Err(())` if the input does not
+    /// match the clause grammar.
     fn from_str(input: &str) -> Result<Clause, Self::Err> {
         if CLAUSE_REGEX.is_match(input) {
             let Some(captures) = CLAUSE_REGEX.captures(input) else {
@@ -177,6 +267,9 @@ impl FromStr for Clause {
 impl FromStr for Source {
     type Err = ();
 
+    /// Parses a Resin source declaration such as
+    /// `distance(hospital) <- source("/dist/hospital", Density).`
+    /// Returns `Err(())` if the input does not match the source grammar.
     fn from_str(input: &str) -> Result<Source, Self::Err> {
         if SOURCE_REGEX.is_match(input) {
             let Some(captures) = SOURCE_REGEX.captures(input) else {
@@ -199,6 +292,8 @@ impl FromStr for Source {
 impl FromStr for Target {
     type Err = ();
 
+    /// Parses a Resin target declaration such as `safe -> target("/safety").`
+    /// Returns `Err(())` if the input does not match the target grammar.
     fn from_str(input: &str) -> Result<Target, Self::Err> {
         if TARGET_REGEX.is_match(input) {
             let Some(captures) = TARGET_REGEX.captures(input) else {
@@ -221,6 +316,9 @@ impl FromStr for Target {
 impl FromStr for ResinType {
     type Err = ();
 
+    /// Parses a type tag string (`"Probability"`, `"Density"`, `"Number"`, or
+    /// `"Boolean"`) as used in source declarations.  Returns `Err(())` for any
+    /// other string.
     fn from_str(input: &str) -> Result<ResinType, Self::Err> {
         match input {
             "Probability" => Ok(ResinType::Probability),
@@ -311,5 +409,116 @@ mod tests {
         let source: Source = code.parse().unwrap();
         assert_eq!(source.name, "distance(hospital)");
         assert!(matches!(source.message_type, ResinType::Density));
+    }
+
+    // -----------------------------------------------------------------------
+    // Variable comparison literal tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_variable_comparison_single_var() {
+        let code = "safety_distance(T) if critical_infrastructure(T) and distance(T) > 100.";
+        let clause: Clause = code.parse().unwrap();
+
+        assert_eq!(clause.comparison_literals.len(), 1);
+        let comp = &clause.comparison_literals[0];
+        assert!(comp.is_variable);
+        assert_eq!(comp.source_atom, "distance(T)");
+        assert_eq!(comp.op, '>');
+        assert_eq!(comp.threshold, 100.0);
+        // Body uses the parameterized, groundable form
+        assert_eq!(comp.canonical_name, "resin_distance_gt_100(T)");
+        assert!(clause.body.contains(&"resin_distance_gt_100(T)".to_string()));
+    }
+
+    #[test]
+    fn test_variable_comparison_multi_var() {
+        let code = "close(A, B) if distance(A, B) < 50.";
+        let clause: Clause = code.parse().unwrap();
+
+        let comp = &clause.comparison_literals[0];
+        assert!(comp.is_variable);
+        assert_eq!(comp.source_atom, "distance(A, B)");
+        assert_eq!(comp.canonical_name, "resin_distance_lt_50(A, B)");
+        assert!(clause.body.contains(&"resin_distance_lt_50(A, B)".to_string()));
+    }
+
+    #[test]
+    fn test_ground_comparison_is_not_variable() {
+        let code = "safe if distance(hospital) < 20.0.";
+        let clause: Clause = code.parse().unwrap();
+
+        let comp = &clause.comparison_literals[0];
+        assert!(!comp.is_variable);
+        assert_eq!(comp.canonical_name, "distance_hospital_lt_20");
+    }
+
+    #[test]
+    fn test_ground_for_single_arg() {
+        let comp = ComparisonLiteral {
+            source_atom: "distance(T)".to_string(),
+            op: '>',
+            threshold: 100.0,
+            canonical_name: "resin_distance_gt_100(T)".to_string(),
+            is_variable: true,
+        };
+
+        let g = comp.ground_for("distance(hospital)").unwrap();
+        assert_eq!(g.source_atom, "distance(hospital)");
+        assert_eq!(g.canonical_name, "distance_hospital_gt_100");
+        assert!(!g.is_variable);
+
+        // Wrong predicate → None
+        assert!(comp.ground_for("speed").is_none());
+        // Wrong arity → None
+        assert!(comp.ground_for("distance(a, b)").is_none());
+    }
+
+    #[test]
+    fn test_ground_for_multi_arg() {
+        let comp = ComparisonLiteral {
+            source_atom: "distance(A, B)".to_string(),
+            op: '<',
+            threshold: 50.0,
+            canonical_name: "resin_distance_lt_50(A, B)".to_string(),
+            is_variable: true,
+        };
+
+        let g = comp.ground_for("distance(hospital, airport)").unwrap();
+        assert_eq!(g.canonical_name, "distance_hospital__airport_lt_50");
+
+        // Wrong arity → None
+        assert!(comp.ground_for("distance(hospital)").is_none());
+    }
+
+    #[test]
+    fn test_ground_for_mixed_constant_arg() {
+        // Comparison has a constant in argument position 1 ("hub")
+        let comp = ComparisonLiteral {
+            source_atom: "distance(A, hub, B)".to_string(),
+            op: '>',
+            threshold: 100.0,
+            canonical_name: "resin_distance_gt_100(A, hub, B)".to_string(),
+            is_variable: true,
+        };
+
+        // Matching: constant position agrees
+        assert!(comp.ground_for("distance(x, hub, y)").is_some());
+        // Non-matching: constant position disagrees
+        assert!(comp.ground_for("distance(x, other, y)").is_none());
+        // Wrong arity → None
+        assert!(comp.ground_for("distance(x, y)").is_none());
+    }
+
+    #[test]
+    fn test_ground_for_returns_none_for_ground_literal() {
+        let comp = ComparisonLiteral {
+            source_atom: "distance(hospital)".to_string(),
+            op: '>',
+            threshold: 100.0,
+            canonical_name: "distance_hospital_gt_100".to_string(),
+            is_variable: false,
+        };
+        assert!(comp.ground_for("distance(hospital)").is_none());
     }
 }

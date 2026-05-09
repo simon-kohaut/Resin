@@ -8,10 +8,19 @@ use crate::channels::ipc::TypedWriter;
 use crate::channels::manager::Manager;
 use crate::circuit::category::Category;
 use crate::language::concepts::{ComparisonLiteral, ResinType};
+use crate::language::matching::{
+    args_of, cause_atom_base_name, cause_atom_name, has_variable_arg,
+    parameterized_comparison_predicate, predicate_of, split_statements,
+};
 use crate::language::{asp::solve, Dnf};
 
+/// Convenience alias for a thread-safe, heap-allocated vector of values shared
+/// between writers and the reactive circuit.
 pub type SharedStorage = Arc<Mutex<Vec<f64>>>;
 
+/// The compiled Resin runtime: holds the parsed program, the reactive circuit
+/// manager, and the comparison registry that maps Density/Number source atoms
+/// to their registered threshold comparisons.
 pub struct Resin {
     pub clauses: Vec<Clause>,
     pub sources: Vec<Source>,
@@ -24,6 +33,13 @@ pub struct Resin {
 }
 
 impl Resin {
+    /// Parses `model`, sets up signal leaves, runs Clingo to obtain stable
+    /// models, and builds the reactive circuit for each declared target.
+    ///
+    /// `value_size` is the number of parallel value slots (e.g. particles).
+    /// Set `verbose` to `true` to print intermediate ASP and circuit info.
+    ///
+    /// Currently only the first target is compiled (see the `TODO` in the body).
     pub fn compile(
         model: &str,
         value_size: usize,
@@ -69,6 +85,10 @@ impl Resin {
                 println!("Solved Resin into a DNF with {} clauses", dnf.clauses.len());
             }
 
+            // Create leaves for grounded FOL probabilistic cause atoms now that
+            // Clingo has produced concrete groundings.
+            resin.setup_fol_prob_signals(&dnf);
+
             // Build the RC from the DNF
             resin.circuit_from_dnf(dnf, &resin.targets[target_index].name);
 
@@ -80,6 +100,11 @@ impl Resin {
         Ok(resin)
     }
 
+    /// Renders the full ASP program for `target_index`, including:
+    /// - choice atoms for every referenced source,
+    /// - helper grounding rules for variable comparison literals,
+    /// - all clause rules,
+    /// - the integrity constraint for the target.
     pub fn to_asp(&self, target_index: usize) -> String {
         let mut asp = "".to_string();
 
@@ -87,7 +112,20 @@ impl Resin {
             match source.message_type {
                 // Probability and Boolean sources are simple probabilistic atoms.
                 ResinType::Probability | ResinType::Boolean => {
-                    asp.push_str(&source.to_asp());
+                    // Referenced if the source name appears verbatim in a body literal, OR
+                    // if a variable body literal shares the same predicate name (e.g. `active(T)`
+                    // for source `active(hospital)`, or `rel(A, hub, B)` for `rel(x, hub, y)`).
+                    let source_pred = predicate_of(&source.name);
+                    let referenced = self.clauses.iter().any(|c| {
+                        c.body.iter().any(|lit| {
+                            let base = lit.trim_start_matches("not ");
+                            base == source.name
+                                || (predicate_of(base) == source_pred && has_variable_arg(base))
+                        })
+                    });
+                    if referenced {
+                        asp.push_str(&source.to_asp());
+                    }
                 }
                 // Density and Number sources manifest as one choice atom per comparison.
                 ResinType::Density | ResinType::Number => {
@@ -100,14 +138,137 @@ impl Resin {
             }
         }
 
+        // For every variable comparison literal, emit one helper rule per matching source so
+        // that Clingo can ground the parameterized predicate, e.g.:
+        //   resin_distance_gt_100(hospital) :- distance_hospital_gt_100.
+        let mut emitted: std::collections::HashSet<String> = std::collections::HashSet::new();
         for clause in &self.clauses {
-            asp.push_str(&clause.to_asp());
+            for comp in &clause.comparison_literals {
+                if !comp.is_variable {
+                    continue;
+                }
+                let pred = predicate_of(&comp.source_atom);
+                let param_pred =
+                    parameterized_comparison_predicate(pred, comp.op, comp.threshold);
+                for source in &self.sources {
+                    match source.message_type {
+                        ResinType::Density | ResinType::Number => {}
+                        _ => continue,
+                    }
+                    if let Some(ground) = comp.ground_for(&source.name) {
+                        if let Some(src_args) = args_of(&source.name) {
+                            let rule = format!(
+                                "{}({}) :- {}.\n",
+                                param_pred,
+                                src_args.join(", "),
+                                ground.canonical_name
+                            );
+                            if emitted.insert(rule.clone()) {
+                                asp.push_str(&rule);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Each probabilistic clause gets its own independent auxiliary choice atom so that
+        // multiple clauses for the same head implement noisy-OR rather than sharing a single
+        // choice with an arbitrary weight.
+        //
+        // Ground head (no variables in args):
+        //   unsafe <- P(0.2) if close(a, b).   →   {unsafe_cause_0}.
+        //   unsafe <- P(0.5) if heavy(a).       →   {unsafe_cause_1}.
+        //                                           unsafe :- unsafe_cause_0, close(a, b).
+        //                                           unsafe :- unsafe_cause_1, heavy(a).
+        //
+        // FOL head (variable args): the cause atom carries the head args so Clingo
+        // creates one independent choice per grounding, not a single shared flip.
+        //   heads(C) <- P(0.6) if coin(C).   →   {heads_cause_0(C)} :- coin(C).
+        //                                         heads(C) :- heads_cause_0(C), coin(C).
+        let mut prob_head_counts: HashMap<String, usize> = HashMap::new();
+        for clause in &self.clauses {
+            if let Some(_) = clause.probability {
+                let idx = prob_head_counts.entry(clause.head.clone()).or_insert(0);
+
+                if has_variable_arg(&clause.head) {
+                    // FOL head: parameterized cause atom.
+                    let base = cause_atom_base_name(&clause.head, *idx);
+                    let args_str = args_of(&clause.head)
+                        .map(|a| a.join(", "))
+                        .unwrap_or_default();
+
+                    // Ground the choice on domain/structural body literals only —
+                    // not on source-derived ones.  In Resin, the only ASP choice
+                    // atoms are sources.  Including a source-derived literal
+                    // (a direct source reference or a `resin_*` parameterised
+                    // comparison atom) in the grounding condition makes the cause
+                    // atom a *conditional* choice: when the source condition is
+                    // false the cause is forced false, contributing weight (1−p)
+                    // instead of 1.0 in the WMC product.  Excluding them keeps the
+                    // cause as a free coin flip within its structural domain,
+                    // matching the correct Noisy-OR WMC semantics.
+                    let source_predicates: std::collections::HashSet<&str> = self
+                        .sources
+                        .iter()
+                        .map(|s| predicate_of(&s.name))
+                        .collect();
+                    let domain_body: Vec<&str> = clause
+                        .body
+                        .iter()
+                        .filter(|lit| {
+                            let base = lit.trim_start_matches("not ");
+                            let pred = predicate_of(base);
+                            !source_predicates.contains(pred) && !base.starts_with("resin_")
+                        })
+                        .map(|s| s.as_str())
+                        .collect();
+
+                    if domain_body.is_empty() {
+                        asp.push_str(&format!("{{{}({})}}.\n", base, args_str));
+                    } else {
+                        let domain_str = domain_body.join(", ");
+                        asp.push_str(&format!("{{{}({})}} :- {}.\n", base, args_str, domain_str));
+                    }
+                    let mut rule = format!("{} :- {}({})", clause.head, base, args_str);
+                    for lit in &clause.body {
+                        rule.push_str(&format!(", {}", lit));
+                    }
+                    rule.push_str(".\n");
+                    asp.push_str(&rule);
+                } else {
+                    // Ground head: flat cause atom.
+                    let aux = cause_atom_name(&clause.head, *idx);
+                    asp.push_str(&format!("{{{}}}.\n", aux));
+                    let mut rule = format!("{} :- {}", clause.head, aux);
+                    for lit in &clause.body {
+                        rule.push_str(&format!(", {}", lit));
+                    }
+                    rule.push_str(".\n");
+                    asp.push_str(&rule);
+                }
+
+                *idx += 1;
+            } else {
+                asp.push_str(&clause.to_asp());
+            }
         }
 
         asp.push_str(&self.targets[target_index].to_asp());
         asp
     }
 
+    /// Creates IPC leaf pairs for every declared source and for every
+    /// probabilistic clause head.
+    ///
+    /// - `Probability`/`Boolean` sources get a single dual-reader leaf pair.
+    /// - `Density`/`Number` sources get one dual-reader leaf pair per unique
+    ///   comparison threshold found across all clauses.
+    /// - Probabilistic clause heads get a complementary leaf pair seeded with
+    ///   `p` and `1 − p`.
+    ///
+    /// Also populates `comparison_registry` so that `make_writer_for` can later
+    /// build the correct fan-out writer.
     pub fn setup_signals(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         for source in &self.sources {
             match source.message_type {
@@ -158,39 +319,127 @@ impl Resin {
             }
         }
 
+        // Create leaves for ground-head probabilistic clauses, mirroring the
+        // per-head indexing used in to_asp so that leaf names match the auxiliary
+        // choice atoms emitted there.  FOL (variable-head) clauses are skipped
+        // here; their leaves are created after Clingo grounding via
+        // setup_fol_prob_signals, because the concrete ground atoms are unknown
+        // until Clingo runs.
+        let mut prob_head_counts: HashMap<String, usize> = HashMap::new();
         for clause in &self.clauses {
             if clause.probability.is_none() {
                 continue;
             }
-
+            if has_variable_arg(&clause.head) {
+                continue;
+            }
+            let idx = prob_head_counts.entry(clause.head.clone()).or_insert(0);
+            let aux = cause_atom_name(&clause.head, *idx);
             let category = Category::new(
-                &clause.head,
+                &aux,
                 clause.probability.unwrap() * Vector::ones(self.value_size),
             );
-
             self.manager
                 .create_leaf(&category.leafs[0].name, category.leafs[0].get_value(), 0.0);
             self.manager
                 .create_leaf(&category.leafs[1].name, category.leafs[1].get_value(), 0.0);
+            *idx += 1;
         }
 
         Ok(())
     }
 
-    /// Returns all unique comparison literals across all clauses that reference `source_name`.
+    /// Creates circuit leaves for grounded FOL probabilistic cause atoms found in `dnf`.
+    ///
+    /// Called after Clingo solving so the concrete groundings are known.  Scans
+    /// every literal in every DNF clause for atoms whose predicate matches a
+    /// `*_cause_N` base name derived from a variable-head probabilistic clause,
+    /// then creates a `Category` leaf pair (probability `p`, complement `1−p`)
+    /// for each distinct grounded atom found.
+    fn setup_fol_prob_signals(&mut self, dnf: &Dnf) {
+        // Build base_predicate → probability map for FOL probabilistic clauses.
+        let mut prob_map: HashMap<String, f64> = HashMap::new();
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for clause in &self.clauses {
+            if let Some(p) = clause.probability {
+                if has_variable_arg(&clause.head) {
+                    let idx = counts.entry(clause.head.clone()).or_insert(0);
+                    let base = cause_atom_base_name(&clause.head, *idx);
+                    prob_map.insert(base, p);
+                    *idx += 1;
+                }
+            }
+        }
+
+        if prob_map.is_empty() {
+            return;
+        }
+
+        // Scan all DNF literals; both positive (heads_cause_0(c0)) and negative
+        // (-heads_cause_0(c0)) forms appear because Clingo includes the complement.
+        let mut created: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for model_clause in &dnf.clauses {
+            for literal in model_clause {
+                let atom = literal.trim_start_matches('-');
+                for (base, &p) in &prob_map {
+                    let matches = atom == base.as_str()
+                        || atom.starts_with(&format!("{}(", base));
+                    if matches && created.insert(atom.to_string()) {
+                        let category =
+                            Category::new(atom, p * Vector::ones(self.value_size));
+                        self.manager.create_leaf(
+                            &category.leafs[0].name,
+                            category.leafs[0].get_value(),
+                            0.0,
+                        );
+                        self.manager.create_leaf(
+                            &category.leafs[1].name,
+                            category.leafs[1].get_value(),
+                            0.0,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns all unique comparison literals across all clauses that reference `source_name`,
+    /// including variable comparisons whose predicate matches the source's predicate.
     fn collect_comparisons_for(&self, source_name: &str) -> Vec<ComparisonLiteral> {
         let mut seen = std::collections::HashSet::new();
         let mut result = Vec::new();
         for clause in &self.clauses {
             for comp in &clause.comparison_literals {
-                if comp.source_atom == source_name
-                    && seen.insert(comp.canonical_name.clone())
-                {
-                    result.push(comp.clone());
+                if !comp.is_variable && comp.source_atom == source_name {
+                    if seen.insert(comp.canonical_name.clone()) {
+                        result.push(comp.clone());
+                    }
+                } else if comp.is_variable {
+                    if let Some(ground) = comp.ground_for(source_name) {
+                        if seen.insert(ground.canonical_name.clone()) {
+                            result.push(ground);
+                        }
+                    }
                 }
             }
         }
         result
+    }
+
+    /// Returns the typed writer for the source whose IPC channel matches
+    /// `channel`.  Looks up the source atom name and delegates to
+    /// `make_writer_for`.
+    pub fn make_writer(
+        &mut self,
+        channel: &str,
+    ) -> Result<TypedWriter, Box<dyn std::error::Error>> {
+        let source_name = self
+            .sources
+            .iter()
+            .find(|s| s.channel == channel)
+            .map(|s| s.name.clone())
+            .ok_or_else(|| format!("No source with channel '{}' found", channel))?;
+        self.make_writer_for(&source_name)
     }
 
     /// Returns the typed writer for a declared source, pre-configured with all
@@ -235,6 +484,11 @@ impl Resin {
         }
     }
 
+    /// Converts a `Dnf` formula into a sum-product structure inside the
+    /// reactive circuit, registering the result under `target_token`.
+    ///
+    /// Only literals that map to a known leaf index are included; derived atoms
+    /// that appear in stable models but have no circuit leaf are silently skipped.
     pub fn circuit_from_dnf(&self, dnf: Dnf, target_token: &str) {
         // Get indexing from name to foliage
         let index_map = self.manager.get_index_map();
@@ -268,6 +522,14 @@ impl Resin {
 impl FromStr for Resin {
     type Err = Box<dyn std::error::Error>;
 
+    /// Parses a Resin program string into sources, targets, and clauses.
+    ///
+    /// Pre-processing strips comments (`#` to end-of-line) from every line and
+    /// joins the result into a single string.  That string is then split on
+    /// statement-terminating dots (`\.(?!\d)`) so multi-line statements and
+    /// mid-clause comments are handled correctly.  Returns a `Resin` struct
+    /// with an empty manager and comparison registry; call `compile` for the
+    /// full pipeline including signal setup and circuit construction.
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         let mut resin = Resin {
             clauses: vec![],
@@ -278,24 +540,35 @@ impl FromStr for Resin {
             comparison_registry: HashMap::new(),
         };
 
-        // Parse Resin source line by line into appropriate data structures
-        for line in input.lines() {
-            let source = line.parse::<Source>();
-            if source.is_ok() {
-                resin.sources.push(source.unwrap());
+        // Strip comments and join into one string so multi-line statements are
+        // handled as a unit.
+        let stripped = input
+            .lines()
+            .map(|line| line.find('#').map_or(line, |p| &line[..p]).trim())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        // Split on statement-terminating dots (not followed by a digit).
+        // split_statements keeps the dot in each piece so individual parsers
+        // receive well-formed statements.
+        for statement in split_statements(&stripped) {
+            let statement = statement.trim();
+            if statement.is_empty() {
                 continue;
             }
+            let statement = statement.to_string();
 
-            let target = line.parse::<Target>();
-            if target.is_ok() {
-                resin.targets.push(target.unwrap());
+            if let Ok(source) = statement.parse::<Source>() {
+                resin.sources.push(source);
                 continue;
             }
-
-            let clause = line.parse::<Clause>();
-            if clause.is_ok() {
-                resin.clauses.push(clause.unwrap());
+            if let Ok(target) = statement.parse::<Target>() {
+                resin.targets.push(target);
                 continue;
+            }
+            if let Ok(clause) = statement.parse::<Clause>() {
+                resin.clauses.push(clause);
             }
         }
 
@@ -306,16 +579,9 @@ impl FromStr for Resin {
 #[cfg(test)]
 mod tests {
 
-    use std::fs::{File, OpenOptions};
-    use std::io::Write;
-    use std::path::Path;
     use std::time::Instant;
-    use std::{collections::HashMap, fmt::Debug};
 
-    use polars::io::mmap::MmapBytesReader;
     use polars::prelude::*;
-
-    use crate::channels::clustering::partitioning;
 
     use super::*;
 
@@ -519,7 +785,7 @@ mod tests {
             .to_combined_svg("output/test/test_resin_model_circuits.svg");
 
         println!(
-            "{:#?}",
+            "targets = {:#?}",
             resin.manager.reactive_circuit.lock().unwrap().targets
         );
 
@@ -530,6 +796,357 @@ mod tests {
 
         // Check a correct result for target signal
         let result = resin.manager.reactive_circuit.lock().unwrap().update();
-        assert_eq!(result["unsafe"], Vector::from(vec![0.94]));
+        assert_eq!(result["unsafe"], Vector::from(vec![0.8 * 0.7 + 0.2 * 0.7 + 0.8 * 0.3]));
+    }
+
+    #[test]
+    fn test_no_redundant_choices_for_unreferenced_sources() {
+        // Each source type has one referenced and one unreferenced variant.
+        // Density/Number: referenced means appearing in a comparison in a clause body.
+        // Boolean/Probability: referenced means appearing as a literal in a clause body.
+        let model = r#"
+            unused_bool <- source("/unused_bool", Boolean).
+            active <- source("/active", Boolean).
+            unused_prob <- source("/unused_prob", Probability).
+            likely <- source("/likely", Probability).
+            unused_dist <- source("/unused_dist", Density).
+            dist <- source("/dist", Density).
+            unused_num <- source("/unused_num", Number).
+            speed <- source("/speed", Number).
+            alarm if active.
+            alarm if likely.
+            alarm if dist < 10.0.
+            alarm if speed > 5.0.
+            alarm -> target("/alarm").
+        "#;
+
+        let resin: Resin = model.parse().unwrap();
+        let asp = resin.to_asp(0);
+
+        assert!(asp.contains("{active}"), "referenced Boolean source must produce a choice");
+        assert!(!asp.contains("{unused_bool}"), "unreferenced Boolean source must not produce a choice");
+
+        assert!(asp.contains("{likely}"), "referenced Probability source must produce a choice");
+        assert!(!asp.contains("{unused_prob}"), "unreferenced Probability source must not produce a choice");
+
+        // Density/Number choices use canonical comparison names, not the source name directly.
+        // Verify the referenced sources generate at least one choice and the unreferenced ones generate none.
+        let dist_choice_count = asp.matches("dist").count();
+        let unused_dist_choice_count = asp.matches("unused_dist").count();
+        assert!(dist_choice_count > 0, "referenced Density source must produce comparison choices");
+        assert_eq!(unused_dist_choice_count, 0, "unreferenced Density source must not produce comparison choices");
+
+        let speed_choice_count = asp.matches("speed").count();
+        let unused_num_choice_count = asp.matches("unused_num").count();
+        assert!(speed_choice_count > 0, "referenced Number source must produce comparison choices");
+        assert_eq!(unused_num_choice_count, 0, "unreferenced Number source must not produce comparison choices");
+    }
+
+    // -----------------------------------------------------------------------
+    // Noisy-OR / probabilistic clause tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_probabilistic_clause_uses_aux_atom() {
+        // A single probabilistic clause must emit an aux choice atom and a
+        // deterministic rule, not the raw `{head} :- body.` form.
+        let model = r#"
+            close(a, b) <- P(0.8).
+            alarm if close(a, b).
+            alarm -> target("/alarm").
+        "#;
+
+        let mut resin: Resin = model.parse().unwrap();
+        resin.setup_signals().unwrap();
+        let asp = resin.to_asp(0);
+
+        assert!(asp.contains("{close_a__b_cause_0}"), "aux choice atom missing");
+        assert!(asp.contains("close(a, b) :- close_a__b_cause_0"), "aux rule missing");
+        assert!(!asp.contains("{close(a, b)}"), "raw head choice must not be emitted");
+    }
+
+    #[test]
+    fn test_same_head_gets_distinct_aux_atoms() {
+        // Two probabilistic clauses for the same head must get distinct cause indices.
+        let model = r#"
+            risky <- P(0.3).
+            risky <- P(0.6).
+            risky -> target("/risky").
+        "#;
+
+        let mut resin: Resin = model.parse().unwrap();
+        resin.setup_signals().unwrap();
+        let asp = resin.to_asp(0);
+
+        assert!(asp.contains("{risky_cause_0}"), "first cause atom missing");
+        assert!(asp.contains("{risky_cause_1}"), "second cause atom missing");
+        assert!(!asp.contains("{risky_cause_2}"), "spurious third cause atom present");
+    }
+
+    #[test]
+    fn test_noisy_or_probability() {
+        // Two independent probabilistic causes for the same head.
+        // P(risky) = 1 - (1-0.3)(1-0.6) = 1 - 0.7*0.4 = 0.72
+        let model = r#"
+            risky <- P(0.3).
+            risky <- P(0.6).
+            risky -> target("/risky").
+        "#;
+
+        let resin = Resin::compile(model, 1, false).expect("compile failed");
+        let result = resin.manager.reactive_circuit.lock().unwrap().update();
+        let expected = 1.0 - 0.7_f64 * 0.4_f64;
+        assert!(
+            (result["risky"][0] - expected).abs() < 1e-9,
+            "noisy-OR probability wrong: got {}, expected {}",
+            result["risky"][0],
+            expected
+        );
+
+        // FOL example for Noisy-Or 
+        let model = r#"
+            coin(c0).
+            coin(c1).
+            coin(c2).
+            coin(c3).
+
+            heads(C) <- P(0.6) if coin(C).
+
+            any_heads if heads(C).
+            any_heads -> target("/any_heads").
+        "#;
+
+        let resin = Resin::compile(model, 1, true).expect("compile failed");
+        let result = resin.manager.reactive_circuit.lock().unwrap().update();
+        let expected =  0.9744;
+        assert!(
+            (result["any_heads"][0] - expected).abs() < 1e-9,
+            "noisy-OR probability wrong: got {}, expected {}",
+            result["any_heads"][0],
+            expected
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // First-order variable comparison tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_variable_comparison_generates_correct_asp() {
+        let model = r#"
+            distance(hospital) <- source("/distance/hospital", Density).
+            distance(airport)  <- source("/distance/airport", Density).
+            critical_infrastructure(hospital).
+            critical_infrastructure(airport).
+            safety_distance(T) if critical_infrastructure(T) and distance(T) > 100.
+            safe if safety_distance(hospital) and safety_distance(airport).
+            safe -> target("/safety").
+        "#;
+
+        let mut resin: Resin = model.parse().unwrap();
+        resin.setup_signals().unwrap();
+        let asp = resin.to_asp(0);
+
+        // One ground choice atom per source instance
+        assert!(asp.contains("{distance_hospital_gt_100}"), "missing hospital choice");
+        assert!(asp.contains("{distance_airport_gt_100}"), "missing airport choice");
+
+        // Helper rules that let Clingo ground the parameterized predicate
+        assert!(
+            asp.contains("resin_distance_gt_100(hospital) :- distance_hospital_gt_100."),
+            "missing hospital helper rule"
+        );
+        assert!(
+            asp.contains("resin_distance_gt_100(airport) :- distance_airport_gt_100."),
+            "missing airport helper rule"
+        );
+
+        // The clause body uses the parameterized, groundable form
+        assert!(asp.contains("resin_distance_gt_100(T)"), "missing parameterized atom in rule body");
+
+        // The flat variable-templated atom must NOT appear
+        assert!(!asp.contains("{distance_T_gt_100}"), "spurious variable-template choice emitted");
+    }
+
+    #[test]
+    fn test_variable_comparison_full_compile() {
+        // Full pipeline: parse → ASP → Clingo → ReactiveCircuit.
+        let model = r#"
+            distance(hospital) <- source("/distance/hospital", Density).
+            distance(airport)  <- source("/distance/airport", Density).
+            critical_infrastructure(hospital).
+            critical_infrastructure(airport).
+            safety_distance(T) if critical_infrastructure(T) and distance(T) > 100.
+            safe if safety_distance(hospital) and safety_distance(airport).
+            safe -> target("/safety").
+        "#;
+
+        let resin = Resin::compile(model, 1, false).expect("compile failed");
+
+        // Both comparison leaves must have been created
+        let names = resin.manager.get_names();
+        assert!(
+            names.iter().any(|n| n == "distance_hospital_gt_100"),
+            "hospital leaf missing: {:?}", names
+        );
+        assert!(
+            names.iter().any(|n| n == "distance_airport_gt_100"),
+            "airport leaf missing: {:?}", names
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Comment stripping tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_comment_stripping() {
+        // Full-line, inline, and mid-clause comments must all be ignored.
+        let model = r#"
+            # Full-line comment: declare sources
+            active <- source("/active", Boolean). # inline comment
+            speed  <- source("/speed", Number).
+
+            # Another full-line comment
+            alarm if active        # mid-clause comment
+                  and speed > 5.   # comment after continuation line
+            alarm -> target("/alarm").
+        "#;
+
+        let resin: Resin = model.parse().unwrap();
+
+        assert_eq!(resin.sources.len(), 2);
+        assert_eq!(resin.targets.len(), 1);
+        let alarm = resin.clauses.iter().find(|c| c.head == "alarm").unwrap();
+        assert!(alarm.body.contains(&"active".to_string()), "active body literal missing");
+        assert!(!alarm.comparison_literals.is_empty(), "speed > 5 comparison missing");
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration test combining  all Resin syntax features together
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_integration() {
+        use std::thread::sleep;
+        use std::time::Duration;
+        use crate::channels::ipc::VectorDistribution;
+
+        let model = r#"
+        # Source declarations
+        over(park)         <- source("/map/over/park", Probability).
+        distance(hospital) <- source("/map/distance/hospital", Density).
+        distance(airport)  <- source("/map/distance/airport", Density).
+        speed              <- source("/sensor/speed", Number).
+        flight_hours(w1)   <- source("/metrics/flight_hours/wing_1", Number).
+        flight_hours(w2)   <- source("/metrics/flight_hours/wing_2", Number).
+        flight_hours(w3)   <- source("/metrics/flight_hours/wing_3", Number).
+        flight_hours(w4)   <- source("/metrics/flight_hours/wing_4", Number).
+
+        # Propositional rules
+        permitted if over(park) and speed < 25.
+
+        # First-order rules
+        critical_infrastructure(hospital).
+        critical_infrastructure(airport).
+        safety_distance(T) if critical_infrastructure(T) and distance(T) > 100.
+
+        # Conditional probabilities and Noisy-OR over first-order instantiations
+        wing(w1). wing(w2). wing(w3). wing(w4).
+        needs_checkup(W) <- P(0.9) if flight_hours(W) > 100 and wing(W).
+        any_wing_needs_checkup if needs_checkup(W).
+
+        # Target that the program will be constrained on
+        safe if permitted and safety_distance(T) and not any_wing_needs_checkup.
+        safe -> target("/output/safe").
+        "#;
+
+        let mut resin = Resin::compile(model, 1, true).expect("compile failed");
+
+        // All expected leaves must exist after compilation.
+        let names = resin.manager.get_names();
+        for expected in &[
+            "needs_checkup_cause_0(w1)",
+            "needs_checkup_cause_0(w2)",
+            "needs_checkup_cause_0(w3)",
+            "needs_checkup_cause_0(w4)",
+            "distance_hospital_gt_100",
+            "distance_airport_gt_100",
+            "speed_lt_25",
+            "flight_hours_w1_gt_100",
+            "flight_hours_w2_gt_100",
+            "flight_hours_w3_gt_100",
+            "flight_hours_w4_gt_100",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "leaf '{}' missing; all leaves: {:?}", expected, names
+            );
+        }
+
+        // over(park) = 1.0 (certain)
+        let TypedWriter::Probability(prob_writer) =
+            resin.make_writer_for("over(park)").unwrap()
+        else {
+            panic!("Expected Probability writer");
+        };
+        prob_writer.write(Vector::from(vec![1.0]), None);
+
+        // distance(hospital) and distance(airport) ~ Normal(500, 1):
+        // P(X > 100) ≈ 1 and P(X > 200) ≈ 1 for both.
+        let far_dist = VectorDistribution::Normal {
+            mean: Vector::from_elem(1, 500.0),
+            std: Vector::from_elem(1, 1.0),
+        };
+        let TypedWriter::Density(dist_hosp) =
+            resin.make_writer_for("distance(hospital)").unwrap()
+        else {
+            panic!("Expected Density writer");
+        };
+        dist_hosp.write(&far_dist, None);
+
+        let far_dist2 = VectorDistribution::Normal {
+            mean: Vector::from_elem(1, 500.0),
+            std: Vector::from_elem(1, 1.0),
+        };
+        let TypedWriter::Density(dist_air) =
+            resin.make_writer_for("distance(airport)").unwrap()
+        else {
+            panic!("Expected Density writer");
+        };
+        dist_air.write(&far_dist2, None);
+
+        // speed = 10 → speed_lt_25 = 1.0
+        let TypedWriter::Number(speed_writer) =
+            resin.make_writer_for("speed").unwrap()
+        else {
+            panic!("Expected Number writer");
+        };
+        speed_writer.write(Vector::from(vec![10.0]), None);
+
+        // flight_hours = 200 → flight_hours_gt_100 = 1.0 (maintenance due)
+        let TypedWriter::Number(flight_writer) =
+            resin.make_writer_for("flight_hours(w1)").unwrap()
+        else {
+            panic!("Expected Number writer");
+        };
+        flight_writer.write(Vector::from(vec![200.0]), None);
+
+        sleep(Duration::from_millis(50));
+
+        // With flight_hours_w1_gt_100 = 1.0 (deterministic), needs_checkup fires
+        // whenever needs_checkup_cause_0 (P=0.9) is true.
+        // so needs_checkup_cause_1 never fires regardless of its state.
+        //
+        // P(safe) = P(not needs_checkup) * P(all other conditions)
+        //         = P(cause_0 = false) * 1.0 * 1.0 * ...
+        //         = 0.1
+        let result = resin.manager.reactive_circuit.lock().unwrap().update();
+        let p_safe = result["safe"][0];
+        assert!(
+            (p_safe - 0.1).abs() < 0.01,
+            "P(safe) = {:.4}, expected ≈ 0.1",
+            p_safe
+        );
     }
 }

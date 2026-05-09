@@ -13,6 +13,13 @@ use petgraph::Direction::{Incoming, Outgoing};
 use super::reactive::ReactiveCircuit;
 use super::Vector;
 
+/// Node kind in an `AlgebraicCircuit`.
+///
+/// - `Sum` — computes the sum of its children (OR in probability space).
+/// - `Product` — computes the product of its children (AND in probability space).
+/// - `Leaf(index)` — leaf node backed by `ReactiveCircuit::leafs[index]`.
+/// - `Memory(edge)` — proxy node whose value is read from the edge weight
+///   `ReactiveCircuit::structure[edge]` (the cached output of another circuit).
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeType {
     Sum,
@@ -21,6 +28,13 @@ pub enum NodeType {
     Memory(EdgeIndex),
 }
 
+/// An arithmetic circuit that computes a sum-of-products formula over leaf
+/// and memory nodes.
+///
+/// The `structure` is a DAG where the `root` is always a `NodeType::Sum`.
+/// `leafs` and `memories` are index maps for fast lookup by leaf index or edge
+/// index respectively.  The circuit is evaluated by calling `value`, which
+/// delegates to `node_value` on the root.
 #[derive(Clone, Debug)]
 pub struct AlgebraicCircuit {
     pub(crate) structure: StableGraph<NodeType, ()>,
@@ -31,6 +45,7 @@ pub struct AlgebraicCircuit {
 }
 
 impl AlgebraicCircuit {
+    /// Creates an empty circuit with a single root `Sum` node and no leaves.
     pub fn new(value_size: usize) -> Self {
         // Create a simple graph with a single sum node and nothing else
         let mut structure = StableGraph::new();
@@ -266,6 +281,7 @@ impl AlgebraicCircuit {
         }
     }
 
+    /// Removes all edges from `node`'s parents to `node`.
     pub fn disconnect_from_parents(&mut self, node: &NodeIndex) {
         let parents = self.get_parents(node);
         for parent in parents.iter() {
@@ -349,13 +365,16 @@ impl AlgebraicCircuit {
         }
     }
 
-    // Remove the `NodeType::Leaf` node with `index` from this circuit.
+    /// Removes `node` from the circuit, also cleaning up its entry in `leafs`
+    /// or `memories` if applicable.
     pub fn remove(&mut self, node: &NodeIndex) {
         self.leafs.retain(|_, leaf| leaf != node);
         self.memories.retain(|_, memory| memory != node);
         self.structure.remove_node(*node);
     }
 
+    /// Removes any node that has no incoming and no outgoing edges (isolated
+    /// nodes left over after structural changes).
     pub fn remove_disconnected(&mut self) {
         let mut to_be_removed = Vec::new();
         for node in self.structure.node_indices() {

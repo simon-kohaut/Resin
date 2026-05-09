@@ -5,6 +5,31 @@ build-backend = "maturin"
 [project]
 name = "pyresin"
 dynamic = ["version", "description"]
+readme = "README.md"
+license = { file = "LICENSE.md" }
+requires-python = ">=3.9"
+authors = [
+  { name = "Simon Kohaut" }
+]
+keywords = [
+  "probabilistic logic programming",
+  "reactive circuits",
+  "answer set programming",
+  "inference",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/simon-kohaut/resin"
+Repository = "https://github.com/simon-kohaut/resin"
+Issues = "https://github.com/simon-kohaut/resin/issues"
 
 [tool.maturin]
 module-name = "resin"
