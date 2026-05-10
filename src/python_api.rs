@@ -151,6 +151,16 @@ impl PyBooleanWriter {
     }
 }
 
+/// Converts a `TypedWriter` into the appropriate Python writer object.
+fn typed_writer_to_py(py: Python<'_>, writer: TypedWriter) -> PyResult<Py<PyAny>> {
+    match writer {
+        TypedWriter::Probability(w) => Ok(Py::new(py, PyProbabilityWriter { writer: w })?.into_any()),
+        TypedWriter::Density(w) => Ok(Py::new(py, PyDensityWriter { writer: w })?.into_any()),
+        TypedWriter::Number(w) => Ok(Py::new(py, PyNumberWriter { writer: w })?.into_any()),
+        TypedWriter::Boolean(w) => Ok(Py::new(py, PyBooleanWriter { writer: w })?.into_any()),
+    }
+}
+
 /// A Python wrapper for the high-level `Resin` language compiler and runtime.
 #[pyclass(name = "Resin")]
 struct PyResin {
@@ -199,7 +209,7 @@ impl PyResin {
     /// Returns the correctly typed writer for the source whose IPC channel
     /// matches `channel`.  The returned object is one of `ProbabilityWriter`,
     /// `DensityWriter`, `NumberWriter`, or `BooleanWriter`.
-    fn make_writer(&self, py: Python<'_>, channel: &str) -> PyResult<PyObject> {
+    fn make_writer(&self, py: Python<'_>, channel: &str) -> PyResult<Py<PyAny>> {
         let channel = channel.to_string();
         let resin = self.resin.clone();
         let typed_writer = py
@@ -207,32 +217,17 @@ impl PyResin {
                 resin
                     .lock()
                     .unwrap()
-                    .manager
                     .make_writer(&channel)
                     .map_err(|e| e.to_string())
             })
             .map_err(|e_str| PyRuntimeError::new_err(e_str))?;
-
-        match typed_writer {
-            TypedWriter::Probability(w) => {
-                Ok(Py::new(py, PyProbabilityWriter { writer: w })?.into_any())
-            }
-            TypedWriter::Density(w) => {
-                Ok(Py::new(py, PyDensityWriter { writer: w })?.into_any())
-            }
-            TypedWriter::Number(w) => {
-                Ok(Py::new(py, PyNumberWriter { writer: w })?.into_any())
-            }
-            TypedWriter::Boolean(w) => {
-                Ok(Py::new(py, PyBooleanWriter { writer: w })?.into_any())
-            }
-        }
+        typed_writer_to_py(py, typed_writer)
     }
 
     /// Returns the correctly typed writer for a declared source atom.
     /// The returned object is one of `ProbabilityWriter`, `DensityWriter`,
     /// `NumberWriter`, or `BooleanWriter`.
-    fn make_writer_for(&self, py: Python<'_>, source_name: &str) -> PyResult<PyObject> {
+    fn make_writer_for(&self, py: Python<'_>, source_name: &str) -> PyResult<Py<PyAny>> {
         let source_name = source_name.to_string();
         let resin = self.resin.clone();
         let typed_writer = py
@@ -244,53 +239,7 @@ impl PyResin {
                     .map_err(|e| e.to_string())
             })
             .map_err(|e_str| PyRuntimeError::new_err(e_str))?;
-
-        match typed_writer {
-            TypedWriter::Probability(w) => {
-                Ok(Py::new(py, PyProbabilityWriter { writer: w })?.into_any())
-            }
-            TypedWriter::Density(w) => {
-                Ok(Py::new(py, PyDensityWriter { writer: w })?.into_any())
-            }
-            TypedWriter::Number(w) => {
-                Ok(Py::new(py, PyNumberWriter { writer: w })?.into_any())
-            }
-            TypedWriter::Boolean(w) => {
-                Ok(Py::new(py, PyBooleanWriter { writer: w })?.into_any())
-            }
-        }
-    }
-
-    /// Returns the correctly typed writer for a declared source atom.
-    /// The returned object is one of `ProbabilityWriter`, `DensityWriter`,
-    /// `NumberWriter`, or `BooleanWriter`.
-    fn make_writer_for(&self, py: Python<'_>, source_name: &str) -> PyResult<PyObject> {
-        let source_name = source_name.to_string();
-        let resin = self.resin.clone();
-        let typed_writer = py
-            .detach(move || {
-                resin
-                    .lock()
-                    .unwrap()
-                    .make_writer_for(&source_name)
-                    .map_err(|e| e.to_string())
-            })
-            .map_err(|e_str| PyRuntimeError::new_err(e_str))?;
-
-        match typed_writer {
-            TypedWriter::Probability(w) => {
-                Ok(Py::new(py, PyProbabilityWriter { writer: w })?.into_any())
-            }
-            TypedWriter::Density(w) => {
-                Ok(Py::new(py, PyDensityWriter { writer: w })?.into_any())
-            }
-            TypedWriter::Number(w) => {
-                Ok(Py::new(py, PyNumberWriter { writer: w })?.into_any())
-            }
-            TypedWriter::Boolean(w) => {
-                Ok(Py::new(py, PyBooleanWriter { writer: w })?.into_any())
-            }
-        }
+        typed_writer_to_py(py, typed_writer)
     }
 
     /// Creates a timed writer that sends its value at a given frequency.
