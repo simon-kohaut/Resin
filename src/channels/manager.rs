@@ -420,10 +420,9 @@ mod tests {
 
         sleep(Duration::from_millis(10));
 
-        assert_eq!(
-            manager.get_values(),
-            vec![array![0.5], array![0.19999999999999996]]
-        ); // 1.0 - 0.8
+        let values = manager.get_values();
+        assert!((values[0][0] - 0.5_f64).abs() < 1e-9);
+        assert!((values[1][0] - 0.2_f64).abs() < 1e-9); // 1.0 - 0.8
 
         Ok(())
     }
@@ -474,7 +473,9 @@ mod tests {
         manager.create_leaf("b", array![0.2].into(), 2.0);
 
         assert_eq!(manager.get_names(), vec!["a".to_string(), "b".to_string()]);
-        assert_eq!(manager.get_values(), vec![array![0.1], array![0.2]]);
+        let values = manager.get_values();
+        assert!((values[0][0] - 0.1_f64).abs() < 1e-9);
+        assert!((values[1][0] - 0.2_f64).abs() < 1e-9);
         assert_eq!(manager.get_frequencies(), vec![1.0, 2.0]);
 
         let index_map = manager.get_index_map();

@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+use ndarray::{Array1, ArrayView1};
+
 use crate::channels::FoCEstimator;
 
 use super::reactive::ReactiveCircuit;
@@ -13,7 +15,7 @@ use super::Vector;
 /// indices that depend on this leaf's value.
 #[derive(Clone, Debug)]
 pub struct Leaf {
-    value: Vector,
+    log_value: Vector,
     frequency: f64,
     cluster: i32,
     foc_estimator: FoCEstimator,
@@ -25,7 +27,7 @@ impl Leaf {
     /// Creates a new leaf with the given initial `value`, FoC `frequency`, and `name`.
     pub fn new(value: Vector, frequency: f64, name: &str) -> Self {
         Self {
-            value: value.clone(),
+            log_value: value.mapv(f64::ln).into_shared(),
             frequency,
             cluster: 0,
             foc_estimator: FoCEstimator::new(frequency),
@@ -34,9 +36,14 @@ impl Leaf {
         }
     }
 
-    /// Returns a clone of the current value vector.
+    /// Returns a view into the stored log-probability vector — zero copy.
+    pub fn get_log_value(&self) -> ArrayView1<'_, f64> {
+        self.log_value.view()
+    }
+
+    /// Returns the probability vector, computed on demand via `exp`.
     pub fn get_value(&self) -> Vector {
-        self.value.clone()
+        self.log_value.mapv(f64::exp).into_shared()
     }
 
     /// Resets the FoC estimator and sets `frequency` to `0.0` if the leaf has
@@ -54,12 +61,13 @@ impl Leaf {
     /// Returns `true` when the value was changed (dependent circuits should be
     /// re-queued), `false` when the change was below threshold (no-op).
     pub fn set_value(&mut self, value: Vector, timestamp: f64) -> bool {
-        let difference = &value - &self.value;
+        let old_value = self.log_value.mapv(f64::exp);
+        let difference = value.to_owned() - old_value;
 
         // Check if any difference in the value vector is larger than the threshold
         // TODO: Make threshold leaf parameter or argument
         if difference.iter().any(|&d| d.abs() > 1e-3) {
-            self.value = value.clone();
+            self.log_value = value.mapv(f64::ln).into_shared();
             self.frequency = self.foc_estimator.update(timestamp);
 
             true

@@ -13,12 +13,12 @@ use petgraph::{
     visit::EdgeRef,
 };
 use plotly::sankey::Node;
-use rayon::in_place_scope;
+use rayon::prelude::*;
 
 use crate::channels::clustering::partitioning;
 use crate::circuit::leaf::{self, force_invalidate_dependencies};
 
-use super::{algebraic::AlgebraicCircuit, algebraic::NodeType, leaf::Leaf, Vector};
+use super::{algebraic::AlgebraicCircuit, leaf::Leaf, Vector};
 
 /// A dynamic computation graph where each node contains an `AlgebraicCircuit` for which the result is
 /// stored as weight of the incoming edges.
@@ -37,6 +37,10 @@ pub struct ReactiveCircuit {
     pub queue: HashSet<u32>,
     pub targets: HashMap<String, NodeIndex>,
     pub partitioning: Vec<usize>,
+    /// Nodes grouped by evaluation level: level 0 = leaf ACs (no child circuits),
+    /// higher levels depend only on nodes at lower levels.  Cached across updates,
+    /// invalidated whenever the graph structure changes.
+    topo_levels: Option<Vec<Vec<NodeIndex>>>,
 }
 
 impl ReactiveCircuit {
@@ -54,6 +58,7 @@ impl ReactiveCircuit {
             queue: HashSet::new(),
             targets: HashMap::new(),
             partitioning: Vec::new(),
+            topo_levels: None,
         }
     }
 
@@ -98,6 +103,7 @@ impl ReactiveCircuit {
     pub fn new_target(&mut self, target_token: &str) -> NodeIndex {
         // TODO: Using this function leaves the RC in a bad state (empty AC node)
         // Maybe remove method or require formula?
+        self.topo_levels = None;
         assert!(
             !self.targets.contains_key(target_token),
             "Cannot add multiple targets with the same name!"
@@ -115,6 +121,7 @@ impl ReactiveCircuit {
     /// creating the target node if it does not yet exist, and registers every
     /// leaf index in `sum_product` as a dependency of that node.
     pub fn add_sum_product(&mut self, sum_product: &[Vec<u32>], target_token: &str) {
+        self.topo_levels = None;
         self.check_invariants();
 
         if !self.targets.contains_key(target_token) {
@@ -249,51 +256,47 @@ impl ReactiveCircuit {
         self.queue = self.queue.iter().unique().cloned().collect();
     }
 
-    /// Removes nodes whose `AlgebraicCircuit` is empty (no leafs and no
-    /// memories), cleaning up any dangling memory references in peer nodes first.
+    /// Remove RC nodes whose AC has no leaves and no memories, cleaning up any
+    /// dangling memory columns in peer ACs first.
     pub fn prune(&mut self) {
-        // Collect nodes that seem safe to remove
-        let mut nodes_to_remove = Vec::new();
-        for node in self.structure.node_indices() {
-            if self.structure[node].leafs.is_empty() && self.structure[node].memories.is_empty() {
-                nodes_to_remove.push(node);
-            }
-        }
+        self.topo_levels = None;
+        let nodes_to_remove: Vec<NodeIndex> = self
+            .structure
+            .node_indices()
+            .filter(|&n| {
+                self.structure[n].leafs.is_empty() && self.structure[n].memories.is_empty()
+            })
+            .collect();
 
-        // For each of these nodes, we need to ensure no other node holds a memory of it.
         for node_to_remove in nodes_to_remove {
             if !self.structure.contains_node(node_to_remove) {
                 continue;
             }
 
-            let mut incident_edges: Vec<EdgeIndex> = self
+            let incident_edges: Vec<EdgeIndex> = self
                 .structure
                 .edges_directed(node_to_remove, Incoming)
                 .map(|e| e.id())
+                .chain(
+                    self.structure
+                        .edges_directed(node_to_remove, Outgoing)
+                        .map(|e| e.id()),
+                )
                 .collect();
-            incident_edges.extend(
-                self.structure
-                    .edges_directed(node_to_remove, Outgoing)
-                    .map(|e| e.id()),
-            );
 
-            // Collect node indices to avoid borrowing issues while modifying node weights.
-            let all_node_indices: Vec<NodeIndex> = self.structure.node_indices().collect();
-
-            // Remove any memory nodes in other algebraic circuits that point to this node
-            for node_idx in all_node_indices {
+            let all_nodes: Vec<NodeIndex> = self.structure.node_indices().collect();
+            for node_idx in all_nodes {
                 if node_idx == node_to_remove {
                     continue;
                 }
                 let ac = self.structure.node_weight_mut(node_idx).unwrap();
-                for edge in &incident_edges {
-                    if let Some(mem_node) = ac.get_memory(*edge) {
-                        ac.remove(&mem_node);
+                for &edge in &incident_edges {
+                    if let Some(col) = ac.get_memory(edge) {
+                        ac.remove_col(col);
                     }
                 }
             }
 
-            // Now it is safe to remove the node
             self.structure.remove_node(node_to_remove);
         }
     }
@@ -309,32 +312,25 @@ impl ReactiveCircuit {
             .collect();
 
         if parents_and_edges.is_empty() {
-            // Create the missing parent and its edge potining at the specified circuit
             let parent = self
                 .structure
                 .add_node(AlgebraicCircuit::new(self.value_size));
             let edge = self
                 .structure
-                .add_edge(parent, index, Vector::ones(self.value_size));
+                .add_edge(parent, index, Vector::zeros(self.value_size));
 
-            // Note that this new parent is invalid
             self.queue.insert(parent.index() as u32);
 
-            // Access the parent mutably
-            let algebraic_circuit = self.structure.node_weight_mut(parent).unwrap();
+            let ac = self.structure.node_weight_mut(parent).unwrap();
+            let mem_col = ac.create_memory(edge);
+            ac.push_single(mem_col);
 
-            // Add a memory node pointing at the new edge to the circuit
-            let memory_index = algebraic_circuit.create_memory(edge);
-            algebraic_circuit.add_to_nodes(&vec![algebraic_circuit.root], &vec![memory_index]);
-
-            // Update targets if this node was one before
             let tokens_to_update: Vec<String> = self
                 .targets
                 .iter()
                 .filter(|(_, &node_index)| node_index == index)
                 .map(|(token, _)| token.clone())
                 .collect();
-
             for token in tokens_to_update {
                 self.targets.insert(token, parent);
             }
@@ -343,8 +339,7 @@ impl ReactiveCircuit {
         }
 
         self.check_invariants();
-
-        return parents_and_edges;
+        parents_and_edges
     }
 
     /// Get all ancestors of a node, including the node itself.
@@ -388,183 +383,154 @@ impl ReactiveCircuit {
 
     /// Lift the leaf with `index` out of its current circuits into its ancestors.
     pub fn lift_leaf(&mut self, index: u32) {
+        self.topo_levels = None;
         for dependency in self.leafs[index as usize].get_dependencies() {
             self.check_invariants();
 
-            // Check if this node actually contains leaf
-            if self
-                .structure
-                .node_weight(dependency.into())
-                .unwrap()
-                .get_leaf(index)
-                .is_none()
-            {
+            let node_to_lift: NodeIndex = dependency.into();
+            if self.structure.node_weight(node_to_lift).unwrap().get_leaf(index).is_none() {
                 continue;
             }
 
-            // Get mutable access to dependency with leaf and ensure they have at least one parent node to lift leaf into
-            let node_to_lift = dependency.into();
             let parents_and_edges = self.ensure_parent(node_to_lift);
             let ac = self.structure.node_weight_mut(node_to_lift).unwrap();
-
-            // Split into part that has leaf and part without that leaf
             let (in_scope_circuit, out_of_scope_circuit) = ac.split(index);
 
-            let out_of_scope_node = match out_of_scope_circuit {
-                Some(circuit) => {
-                    let node = self.structure.add_node(circuit);
-                    let memories = self
-                        .structure
-                        .node_weight_mut(node)
-                        .unwrap()
-                        .memories
-                        .clone();
-                    for (edge, memory_node) in memories {
-                        let old_edge_weight = self.structure.edge_weight(edge.into()).unwrap();
-                        let old_edge_target = self.structure.edge_endpoints(edge.into()).unwrap().1;
-
-                        let new_edge = self
-                            .structure
-                            .add_edge(node, old_edge_target, old_edge_weight.clone())
-                            .index() as u32;
-
-                        self.structure
-                            .node_weight_mut(node)
-                            .unwrap()
-                            .memories
-                            .remove(&edge);
-                        self.structure
-                            .node_weight_mut(node)
-                            .unwrap()
-                            .memories
-                            .insert(new_edge, memory_node);
-                        self.structure.node_weight_mut(node).unwrap().structure[memory_node] =
-                            NodeType::Memory(new_edge.into());
-                    }
-
-                    Some(node)
+            // Helper: add a freshly-cloned child AC to the graph, rewiring its
+            // memory columns to new edges that originate from the new node.
+            let reattach = |this: &mut Self, mut circuit: AlgebraicCircuit| -> NodeIndex {
+                // Remove the split leaf if present (in-scope circuit still has it).
+                if let Some(col) = circuit.get_leaf(index) {
+                    circuit.remove_col(col);
                 }
-                None => None,
-            };
-
-            let in_scope_node = match in_scope_circuit {
-                Some(mut circuit) => {
-                    circuit.remove(&circuit.get_leaf(index).unwrap());
-
-                    let node = self.structure.add_node(circuit);
-                    let memories = self
-                        .structure
-                        .node_weight_mut(node)
-                        .unwrap()
-                        .memories
-                        .clone();
-                    for (edge, memory_node) in memories {
-                        let old_edge_weight = self.structure.edge_weight(edge.into()).unwrap();
-                        let old_edge_target = self.structure.edge_endpoints(edge.into()).unwrap().1;
-
-                        let new_edge = self
-                            .structure
-                            .add_edge(node, old_edge_target, old_edge_weight.clone())
-                            .index() as u32;
-
-                        self.structure
-                            .node_weight_mut(node)
-                            .unwrap()
-                            .memories
-                            .remove(&edge);
-                        self.structure
-                            .node_weight_mut(node)
-                            .unwrap()
-                            .memories
-                            .insert(new_edge, memory_node);
-                        self.structure.node_weight_mut(node).unwrap().structure[memory_node] =
-                            NodeType::Memory(new_edge.into());
-                    }
-
-                    node
-                }
-                None => unreachable!(),
-            };
-
-            // Removes the lifted leaf and creates a new node with this circuit
-            for (parent, edge) in parents_and_edges {
-                let original_product = self.disconnect(parent, node_to_lift);
-                let mut factors = self
+                let node = this.structure.add_node(circuit);
+                // Remap each memory column: the cloned AC refers to old edge indices
+                // that belonged to node_to_lift; create new edges from the new node.
+                let old_memories: Vec<(u32, usize)> = this
                     .structure
-                    .node_weight_mut(parent)
+                    .node_weight(node)
                     .unwrap()
-                    .get_children(&original_product);
+                    .memories
+                    .iter()
+                    .map(|(&k, &v)| (k, v))
+                    .collect();
+                for (old_key, col) in old_memories {
+                    let old_edge = EdgeIndex::new(old_key as usize);
+                    let weight = this.structure.edge_weight(old_edge).unwrap().clone();
+                    let target = this.structure.edge_endpoints(old_edge).unwrap().1;
+                    let new_edge = this.structure.add_edge(node, target, weight);
+                    this.structure
+                        .node_weight_mut(node)
+                        .unwrap()
+                        .remap_memory(col, old_key, new_edge);
+                }
+                node
+            };
 
-                let leaf = self
+            let out_of_scope_node = out_of_scope_circuit.map(|c| reattach(self, c));
+
+            // Count bare minterms ({x} alone) before reattach prunes them.
+            // Each bare term contributes P(x) directly to the parent without a child node.
+            let in_scope_circuit = in_scope_circuit.expect("in_scope must exist");
+            let bare_count = in_scope_circuit
+                .get_leaf(index)
+                .map(|x_col| {
+                    in_scope_circuit
+                        .minterms
+                        .iter()
+                        .filter(|row| row.as_slice() == &[x_col])
+                        .count()
+                })
+                .unwrap_or(0);
+
+            let in_scope_node = reattach(self, in_scope_circuit);
+            let in_scope_has_proper = !self.structure[in_scope_node].is_empty();
+            if !in_scope_has_proper {
+                self.structure.remove_node(in_scope_node);
+            }
+
+            for (parent, _edge) in parents_and_edges {
+                // Remove old edge + memory; get the row that contained it.
+                let original_row = self.disconnect(parent, node_to_lift);
+
+                // Columns shared by every new row added for this parent.
+                let base_cols: Vec<usize> = self
+                    .structure
+                    .node_weight(parent)
+                    .unwrap()
+                    .get_minterm_cols(original_row)
+                    .to_vec();
+                let leaf_col = self
                     .structure
                     .node_weight_mut(parent)
                     .unwrap()
                     .ensure_leaf(index);
-                factors.push(leaf);
-                let in_scope_product = self
-                    .structure
-                    .node_weight_mut(parent)
-                    .unwrap()
-                    .add_to_node(&original_product, &factors);
 
-                if self
-                    .structure
-                    .node_weight_mut(in_scope_node)
-                    .unwrap()
-                    .structure
-                    .node_indices()
-                    .count()
-                    == 2
-                {
-                    self.structure.remove_node(in_scope_node);
-                } else {
-                    self.connect(parent, in_scope_node, in_scope_product);
-                    self.queue.insert(in_scope_node.index() as u32);
-                }
-
-                if out_of_scope_node.is_some() {
-                    self.connect(parent, out_of_scope_node.unwrap(), original_product);
-                    self.queue.insert(out_of_scope_node.unwrap().index() as u32);
-                } else {
+                // One direct row per bare minterm — no child node, just P(x).
+                for _ in 0..bare_count {
+                    let mut bare_cols = base_cols.clone();
+                    bare_cols.push(leaf_col);
                     self.structure
                         .node_weight_mut(parent)
                         .unwrap()
-                        .remove(&original_product);
+                        .push_minterm(bare_cols);
+                }
+
+                // One row for the proper (non-bare) in-scope minterms, wired to the child.
+                if in_scope_has_proper {
+                    let mut in_scope_cols = base_cols.clone();
+                    in_scope_cols.push(leaf_col);
+                    let in_scope_row = self
+                        .structure
+                        .node_weight_mut(parent)
+                        .unwrap()
+                        .push_minterm(in_scope_cols);
+                    self.connect(parent, in_scope_node, in_scope_row);
+                    self.queue.insert(in_scope_node.index() as u32);
+                }
+
+                if let Some(oos_node) = out_of_scope_node {
+                    self.connect(parent, oos_node, original_row);
+                    self.queue.insert(oos_node.index() as u32);
+                } else {
+                    // No out-of-scope rows: the original row is now empty, drop it.
+                    self.structure
+                        .node_weight_mut(parent)
+                        .unwrap()
+                        .minterms
+                        .remove(original_row);
                 }
             }
 
-            // Remove lifted node from dependencies
             self.structure.remove_node(node_to_lift);
         }
 
         self.update_dependencies();
-
         self.check_invariants();
     }
 
-    /// Removes the leaf with `index` from every circuit that directly contains
-    /// it, pushing its contribution down into descendant circuits.  If a
-    /// sibling memory node exists, the leaf is multiplied into the child it
-    /// points to; otherwise a new child `AlgebraicCircuit` is created.
+    /// Remove the leaf with `index` from every circuit that directly contains
+    /// it, pushing its contribution down into descendant circuits.
     pub fn drop_leaf(&mut self, index: u32) {
+        self.topo_levels = None;
         self.check_invariants();
 
         for dependency in self.leafs[index as usize].get_dependencies() {
             let dependency: NodeIndex = dependency.into();
-            let leaf_node = match self.structure[dependency].get_leaf(index) {
-                Some(node) => node,
-                None => continue, // Leaf not in this circuit, must be an ancestor dependency.
+            let leaf_col = match self.structure[dependency].get_leaf(index) {
+                Some(col) => col,
+                None => continue,
             };
 
-            let products = self.structure[dependency].get_parents(&leaf_node);
-            for product in products {
-                self.handle_leaf_drop_for_product(index, dependency, product);
+            let rows = self.structure[dependency].minterms_containing_col(leaf_col);
+            for row in rows {
+                self.handle_leaf_drop_for_product(index, dependency, row);
             }
 
             self.structure
                 .node_weight_mut(dependency)
                 .unwrap()
-                .remove(&leaf_node);
+                .remove_col(leaf_col);
 
             for child in self.structure.neighbors_directed(dependency, Outgoing) {
                 self.queue.insert(child.index() as u32);
@@ -572,58 +538,48 @@ impl ReactiveCircuit {
         }
 
         self.update_dependencies();
-
         self.check_invariants();
     }
 
-    /// Handles the product-level bookkeeping when dropping a leaf: either
-    /// multiplies the leaf into an existing child (via a memory sibling) or
-    /// creates a new child `AlgebraicCircuit` that contains only the leaf.
+    /// Push leaf `leaf_index` from `dependency`'s row `row` down into a child:
+    /// either multiply it into the child that a sibling memory points to, or
+    /// create a new child AC containing only that leaf.
     fn handle_leaf_drop_for_product(
         &mut self,
         leaf_index: u32,
         dependency: NodeIndex,
-        product: NodeIndex,
+        row: usize,
     ) {
-        let memory_sibling = self.structure[dependency]
-            .iter_children(&product)
-            .find(|&child| {
-                self.structure[dependency]
-                    .check_node_type(&child, &NodeType::Memory(EdgeIndex::default()))
-            });
+        let mem_col = self.structure[dependency]
+            .get_minterm_cols(row)
+            .iter()
+            .copied()
+            .find(|&c| self.structure[dependency].col_is_memory(c));
 
-        if let Some(memory_node) = memory_sibling {
-            if let NodeType::Memory(edge) = self.structure[dependency].structure[memory_node] {
-                let (_, child) = self.structure.edge_endpoints(edge).unwrap();
-                self.structure[child].multiply(leaf_index);
-            } else {
-                unreachable!()
-            }
+        if let Some(col) = mem_col {
+            let edge = self.structure[dependency].col_memory_edge(col).unwrap();
+            let (_, child) = self.structure.edge_endpoints(edge).unwrap();
+            self.structure[child].multiply(leaf_index);
         } else {
-            let new_ac =
-                AlgebraicCircuit::from_sum_product(self.value_size, &vec![vec![leaf_index]]);
+            let new_ac = AlgebraicCircuit::from_sum_product(self.value_size, &[vec![leaf_index]]);
             let new_node = self.structure.add_node(new_ac);
-            let new_edge =
-                self.structure
-                    .add_edge(dependency, new_node, Vector::ones(self.value_size));
-
+            let new_edge = self
+                .structure
+                .add_edge(dependency, new_node, Vector::zeros(self.value_size));
             let ac = self.structure.node_weight_mut(dependency).unwrap();
-            let new_memory_node = ac.create_memory(new_edge);
-            ac.structure.add_edge(product, new_memory_node, ());
+            let mem_col = ac.create_memory(new_edge);
+            ac.add_col_to_minterm(row, mem_col);
         }
     }
 
-    /// Create a memory in the parent node's product as well as a new edge to the given child node.
-    pub fn connect(
-        &mut self,
-        parent: NodeIndex,
-        child: NodeIndex,
-        product: NodeIndex,
-    ) -> NodeIndex {
-        let edge: EdgeIndex = self
+    /// Add a memory column for `child` to the parent's AC row `row`, wiring a
+    /// new reactive edge.  Returns the new memory column index.
+    pub fn connect(&mut self, parent: NodeIndex, child: NodeIndex, row: usize) -> usize {
+        self.topo_levels = None;
+        let edge = self
             .structure
-            .add_edge(parent, child, Vector::ones(self.value_size));
-        let memory: NodeIndex = self
+            .add_edge(parent, child, Vector::zeros(self.value_size));
+        let mem_col = self
             .structure
             .node_weight_mut(parent)
             .unwrap()
@@ -631,37 +587,39 @@ impl ReactiveCircuit {
         self.structure
             .node_weight_mut(parent)
             .unwrap()
-            .multiply_with_nodes(&vec![product], &vec![memory]);
-
-        memory
+            .add_col_to_minterm(row, mem_col);
+        mem_col
     }
 
-    /// Disconnects a parent node from its child by removing the edge and corresponding memory node.
-    pub fn disconnect(&mut self, parent: NodeIndex, child: NodeIndex) -> NodeIndex {
-        let edges: Vec<_> = self
+    /// Remove the edge from `parent` to `child` and its memory column.
+    /// Returns the row index that contained the memory (now without it).
+    pub fn disconnect(&mut self, parent: NodeIndex, child: NodeIndex) -> usize {
+        self.topo_levels = None;
+        let edge = self
             .structure
             .edges_connecting(parent, child)
-            .map(|edge_ref| edge_ref.id())
-            .collect();
-        let edge: EdgeIndex = edges[0];
-        let memory: NodeIndex = self
+            .map(|e| e.id())
+            .next()
+            .unwrap();
+        let mem_col = self
             .structure
-            .node_weight_mut(parent)
+            .node_weight(parent)
             .unwrap()
             .get_memory(edge)
             .unwrap();
-        let product: NodeIndex = self
+        let rows = self
             .structure
-            .node_weight_mut(parent)
+            .node_weight(parent)
             .unwrap()
-            .get_parents(&memory)[0];
+            .minterms_containing_col(mem_col);
+        let row = rows[0];
+        // Keep the now-empty row alive so the caller can repopulate it.
         self.structure
             .node_weight_mut(parent)
             .unwrap()
-            .remove(&memory);
+            .remove_col_keep_rows(mem_col);
         self.structure.remove_edge(edge);
-
-        product
+        row
     }
 
     /// Update the necessary values within the ReactiveCircuit and its output.
@@ -673,39 +631,67 @@ impl ReactiveCircuit {
         let outdated_nodes = self.queue.clone();
         self.queue.clear();
 
-        // For each outdated circuit, we recompute the memorized value as edge weight
-        let mut sorted_nodes =
-            toposort(&self.structure, None).expect("ReactiveCircuit should be a DAG");
-        while let Some(outdated_algebraic_circuit) = sorted_nodes.pop() {
-            if !outdated_nodes.contains(&(outdated_algebraic_circuit.index() as u32)) {
-                continue;
+        // Build level decomposition once; invalidated on structural changes.
+        // Level 0 = leaf ACs (no child circuits); level k depends only on levels < k.
+        if self.topo_levels.is_none() {
+            let topo = toposort(&self.structure, None).expect("ReactiveCircuit should be a DAG");
+
+            // Assign each node its evaluation level (children first = reverse topo order).
+            let max_idx = self.structure.node_indices().map(|n| n.index()).max().unwrap_or(0);
+            let mut node_level = vec![0usize; max_idx + 1];
+            for &node in topo.iter().rev() {
+                let child_max = self
+                    .structure
+                    .neighbors_directed(node, Outgoing)
+                    .map(|c| node_level[c.index()])
+                    .max();
+                node_level[node.index()] = child_max.map_or(0, |l| l + 1);
             }
 
-            // Get the new value of the AlgebraicCircuit
-            let result = self
-                .structure
-                .node_weight(outdated_algebraic_circuit.into())
-                .expect("AlgebraicCircuit was missing!")
-                .value(self);
-
-            // If this dependency is a target, add to results
-            for (token, index) in self.targets.iter() {
-                if index.index() == outdated_algebraic_circuit.index() {
-                    target_results.insert(token.to_owned(), result.clone());
-                }
+            let depth = node_level.iter().copied().max().unwrap_or(0);
+            let mut levels: Vec<Vec<NodeIndex>> = vec![vec![]; depth + 1];
+            for node in self.structure.node_indices() {
+                levels[node_level[node.index()]].push(node);
             }
+            self.topo_levels = Some(levels);
+        }
 
-            // Memorize the result in all incoming edges
-            let edges: Vec<EdgeIndex> = self
-                .structure
-                .edges_directed(outdated_algebraic_circuit.into(), Incoming)
-                .map(|e| e.id())
+        // Process levels from 0 upward: within each level all nodes are independent.
+        let n_levels = self.topo_levels.as_ref().unwrap().len();
+        for lvl in 0..n_levels {
+            // Phase 1 — parallel: compute log-values for every queued node in this level.
+            // All reads; the children's edge weights (levels < lvl) are fully written already.
+            let level_nodes = self.topo_levels.as_ref().unwrap()[lvl].clone();
+            let level_results: Vec<(NodeIndex, Vector)> = level_nodes
+                .par_iter()
+                .filter(|&&node| outdated_nodes.contains(&(node.index() as u32)))
+                .map(|&node| {
+                    let log_result = self.structure[node].log_value(self);
+                    (node, log_result)
+                })
                 .collect();
-            for edge in edges.iter() {
-                self.structure
-                    .edge_weight_mut(*edge)
-                    .expect("ReactiveCircuit edge was missing!")
-                    .assign(&result);
+
+            // Phase 2 — sequential: write results back to parent edges and target map.
+            for (node, log_result) in level_results {
+                for (token, &target_node) in &self.targets {
+                    if target_node == node {
+                        target_results.insert(
+                            token.to_owned(),
+                            log_result.mapv(f64::exp).into_shared(),
+                        );
+                    }
+                }
+                let edges: Vec<EdgeIndex> = self
+                    .structure
+                    .edges_directed(node, Incoming)
+                    .map(|e| e.id())
+                    .collect();
+                for edge in edges {
+                    self.structure
+                        .edge_weight_mut(edge)
+                        .expect("ReactiveCircuit edge was missing!")
+                        .assign(&log_result);
+                }
             }
         }
 
@@ -723,56 +709,46 @@ impl ReactiveCircuit {
     pub fn check_invariants(&self) {
         let mut violations = Vec::new();
 
-        // Invariant 1: For every edge that exists in the reactive circuit, the source node's
-        // algebraic circuit must have a corresponding memory node.
-        for edge_index in self.structure.edge_indices() {
-            let (source, target) = self.structure.edge_endpoints(edge_index).unwrap();
-            let source_ac = &self.structure[source];
-            if source_ac.get_memory(edge_index).is_none() {
+        // Invariant 1: every RC edge has a memory column in the source AC.
+        for edge in self.structure.edge_indices() {
+            let (source, target) = self.structure.edge_endpoints(edge).unwrap();
+            if self.structure[source].get_memory(edge).is_none() {
                 violations.push(format!(
-                    "Invariant Violation: Edge {:?} from {:?} to {:?} exists, but source AC is missing memory node.",
-                    edge_index,
-                    source,
-                    target
+                    "Invariant Violation: Edge {:?} from {:?} to {:?} exists, but source AC is missing memory column.",
+                    edge, source, target
                 ));
             }
         }
 
-        // Invariant 2: For every memory node in an algebraic circuit, the edge it refers to
-        // must exist in the reactive circuit.
-        for node_index in self.structure.node_indices() {
-            let ac = &self.structure[node_index];
-            for edge_index_u32 in ac.memories.keys() {
-                let edge_index = EdgeIndex::new(*edge_index_u32 as usize);
-                if self.structure.edge_weight(edge_index).is_none() {
+        // Invariant 2: every AC memory column references a valid RC edge.
+        for node in self.structure.node_indices() {
+            for &key in self.structure[node].memories.keys() {
+                let edge = EdgeIndex::new(key as usize);
+                if self.structure.edge_weight(edge).is_none() {
                     violations.push(format!(
-                        "Invariant Violation: Node {:?} has memory of edge {:?}, but this edge does not exist.",
-                        node_index,
-                        edge_index
+                        "Invariant Violation: Node {:?} has memory column for edge {:?}, but that edge does not exist.",
+                        node, edge
                     ));
                 }
             }
         }
 
-        // Invariant 3: Every node has a non-empty algebraic circuit (beyond a sum and a product node).
-        for node_index in self.structure.node_indices() {
-            if self.structure[node_index].structure.node_indices().count() <= 2 {
+        // Invariant 3: every AC has at least one minterm.
+        for node in self.structure.node_indices() {
+            if self.structure[node].is_empty() {
                 violations.push(format!(
                     "Invariant Violation: Node {:?} has an empty algebraic circuit.",
-                    node_index
+                    node
                 ));
             }
         }
 
-        // Invariant 4: Every node has a non-empty scope.
-        for node_index in self.structure.node_indices() {
-            if self.structure[node_index]
-                .get_scope(&self.structure[node_index].root)
-                .is_empty()
-            {
+        // Invariant 4: every AC has at least one column.
+        for node in self.structure.node_indices() {
+            if self.structure[node].columns.is_empty() {
                 violations.push(format!(
-                    "Invariant Violation: Node {:?} has an empty scope.",
-                    node_index
+                    "Invariant Violation: Node {:?} has no columns (empty scope).",
+                    node
                 ));
             }
         }
@@ -798,37 +774,20 @@ impl ReactiveCircuit {
         // Iterate over the nodes
         for node in self.structure.node_indices() {
             let node_type = &self.structure[node];
-            let node_label = match node_type {
-                algebraic_circuit => format!(
-                    "P({}) = ΣΠ\\n{}",
-                    // "P({}) = ΣΠ\\n{}\\n - N{} - E{}\\nLeafs {:?}\\nMemory{:?}",
-                    self.targets
-                        .iter()
-                        .filter(|(_, v)| **v == node)
-                        .map(|(k, _)| k)
-                        .join(""),
-                    algebraic_circuit
-                        .get_scope(&algebraic_circuit.root)
-                        .iter()
-                        .map(|leaf| {
-                            if let NodeType::Leaf(index) = algebraic_circuit.structure[*leaf] {
-                                format!("L{}", index)
-                            } else if let NodeType::Memory(index) =
-                                algebraic_circuit.structure[*leaf]
-                            {
-                                format!("M{:?}", index.index())
-                            } else {
-                                unreachable!()
-                            }
-                        })
-                        .collect::<Vec<String>>()
-                        .join(" "),
-                    // self.structure[node].structure.node_count(),
-                    // self.structure[node].structure.edge_count(),
-                    // self.structure[node].leafs,
-                    // self.structure[node].memories
-                ),
-            };
+            let ac = &self.structure[node];
+            let scope: Vec<String> = ac.columns.iter().map(|col| match col {
+                super::algebraic::Column::Leaf(i) => format!("L{}", i),
+                super::algebraic::Column::Memory(k) => format!("M{}", k),
+            }).collect();
+            let node_label = format!(
+                "P({}) = ΣΠ\\n{}",
+                self.targets
+                    .iter()
+                    .filter(|(_, v)| **v == node)
+                    .map(|(k, _)| k)
+                    .join(""),
+                scope.join(" "),
+            );
             dot.push_str(&format!(
                 "    {} [shape=\"circle\" label=\"{}\"];\n",
                 node.index(),
@@ -936,6 +895,7 @@ impl ReactiveCircuit {
 #[cfg(test)]
 mod tests {
 
+    use ndarray::array;
     use rand::prelude::IndexedRandom;
     use rand::Rng;
 
@@ -1062,6 +1022,27 @@ mod tests {
     }
 
     #[test]
+    fn test_bare_minterm_lift() {
+        // Formula: x + x*a = {0} + {0,1}
+        // Lifting leaf 0 (x) must preserve the bare {x} term in the parent AC.
+        // P(x)=0.5, P(a)=0.4 → value = 0.5 + 0.5*0.4 = 0.7
+        let mut rc = ReactiveCircuit::new(1);
+        rc.leafs.push(Leaf::new(array![0.5].into(), 0.0, "x"));
+        rc.leafs.push(Leaf::new(array![0.4].into(), 0.0, "a"));
+        rc.add_sum_product(&[vec![0], vec![0, 1]], "test");
+
+        let expected = 0.5_f64 + 0.5 * 0.4;
+
+        let v_before = rc.full_update()["test"][0];
+        assert!((v_before - expected).abs() < 1e-9, "before lift: {v_before} != {expected}");
+
+        rc.lift_leaf(0);
+
+        let v_after = rc.full_update()["test"][0];
+        assert!((v_after - expected).abs() < 1e-9, "after lift: {v_after} != {expected}");
+    }
+
+    #[test]
     fn test_rc() -> std::io::Result<()> {
         let manager = Manager::new(1);
         let reactive_circuit = &mut manager.reactive_circuit.lock().unwrap();
@@ -1080,15 +1061,10 @@ mod tests {
 
         assert_eq!(reactive_circuit.leafs.len(), 3);
         assert_eq!(reactive_circuit.structure.node_count(), 1);
-        assert_eq!(
-            reactive_circuit
-                .structure
-                .node_weight(0.into())
-                .unwrap()
-                .structure
-                .node_count(),
-            6
-        );
+        // Matrix AC: 2 minterms, 3 columns (leaves 0,1,2)
+        let ac = reactive_circuit.structure.node_weight(0.into()).unwrap();
+        assert_eq!(ac.minterms.len(), 2);
+        assert_eq!(ac.columns.len(), 3);
         assert!(reactive_circuit
             .leafs
             .iter()
