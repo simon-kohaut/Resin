@@ -28,7 +28,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 petgraph = "*"
 plotly = "*"
-ndarray = "0.17.0"
+ndarray = { version = "0.17.0", features=["approx"] } 
 ndarray-rand = "0.16.0"
 ndarray-npy = "*"
 nalgebra = "0.34.0"

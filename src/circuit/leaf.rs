@@ -61,13 +61,12 @@ impl Leaf {
     /// Returns `true` when the value was changed (dependent circuits should be
     /// re-queued), `false` when the change was below threshold (no-op).
     pub fn set_value(&mut self, value: Vector, timestamp: f64) -> bool {
-        let old_value = self.log_value.mapv(f64::exp);
-        let difference = value.to_owned() - old_value;
+        let log_value = value.mapv(f64::ln);
 
         // Check if any difference in the value vector is larger than the threshold
         // TODO: Make threshold leaf parameter or argument
-        if difference.iter().any(|&d| d.abs() > 1e-3) {
-            self.log_value = value.mapv(f64::ln).into_shared();
+        if !self.log_value.abs_diff_eq(&log_value, 1e-3) {
+            self.log_value = log_value.into_shared();
             self.frequency = self.foc_estimator.update(timestamp);
 
             true
