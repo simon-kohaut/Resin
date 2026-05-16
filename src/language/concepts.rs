@@ -5,8 +5,8 @@ use regex::Regex;
 
 use super::matching::{
     args_of, canonical_comparison_name, get_literals, has_variable_arg,
-    parameterized_comparison_predicate, predicate_of, CLAUSE_REGEX, COMPARISON_LITERAL_REGEX,
-    SOURCE_REGEX, TARGET_REGEX,
+    parameterized_comparison_predicate, predicate_of, CATEGORICAL_SOURCE_REGEX, CLAUSE_REGEX,
+    COMPARISON_LITERAL_REGEX, SOURCE_REGEX, TARGET_REGEX,
 };
 
 /// A comparison literal extracted from a clause body, e.g. `distance(hospital) < 20.0`.
@@ -168,6 +168,40 @@ pub enum ResinType {
     Number,
     /// A boolean: `true` → 1.0, `false` → 0.0.
     Boolean,
+    /// A categorical distribution: a probability per class, summing to 1.
+    /// Declared with `{cls0, cls1, ..} <- source(channel, Categorical).`
+    Categorical,
+}
+
+/// A declared Resin categorical source, e.g. `{dog, cat, horse} <- source("/cls", Categorical).`
+///
+/// Each category atom gets its own positive-only circuit leaf (no complementary leaf).
+/// The ASP constraint `1 { dog ; cat ; horse } 1` enforces mutual exclusivity, so
+/// each stable model carries exactly one active category.  Because the negative literals
+/// (`-dog`, `-cat`, ...) have no corresponding leaves, `circuit_from_dnf` skips them
+/// automatically, and the WMC of each product collapses to just the active category's
+/// probability — giving the exact categorical sum-of-products.
+#[derive(Clone)]
+pub struct CategoricalSource {
+    pub categories: Vec<String>,
+    pub channel: String,
+}
+
+impl FromStr for CategoricalSource {
+    type Err = ();
+
+    fn from_str(input: &str) -> Result<CategoricalSource, Self::Err> {
+        let caps = CATEGORICAL_SOURCE_REGEX.captures(input).ok_or(())?;
+        let categories = caps["categories"]
+            .split(',')
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect();
+        Ok(CategoricalSource {
+            categories,
+            channel: caps["topic"].to_owned(),
+        })
+    }
 }
 
 impl Clause {
@@ -316,15 +350,13 @@ impl FromStr for Target {
 impl FromStr for ResinType {
     type Err = ();
 
-    /// Parses a type tag string (`"Probability"`, `"Density"`, `"Number"`, or
-    /// `"Boolean"`) as used in source declarations.  Returns `Err(())` for any
-    /// other string.
     fn from_str(input: &str) -> Result<ResinType, Self::Err> {
         match input {
             "Probability" => Ok(ResinType::Probability),
             "Density" => Ok(ResinType::Density),
             "Number" => Ok(ResinType::Number),
             "Boolean" => Ok(ResinType::Boolean),
+            "Categorical" => Ok(ResinType::Categorical),
             _ => Err(()),
         }
     }

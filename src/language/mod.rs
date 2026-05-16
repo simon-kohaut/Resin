@@ -4,8 +4,9 @@ mod dnf;
 mod matching;
 mod resin;
 
-pub use crate::language::concepts::{Clause, ResinType, Source, Target};
+pub use crate::language::concepts::{CategoricalSource, Clause, Source, Target};
 pub use crate::language::dnf::Dnf;
+#[allow(unused_imports)]
 pub use crate::language::resin::Resin;
 
 use ndarray::{ArcArray1, ArcArray2};

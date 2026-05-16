@@ -1,10 +1,10 @@
-pub use crate::circuit::leaf::{update, Leaf};
 pub use crate::circuit::reactive::ReactiveCircuit;
 
 pub mod algebraic;
 pub mod category;
 pub mod leaf;
 pub mod reactive;
+pub mod semiring;
 
 use ndarray::{ArcArray1, ArcArray2};
 

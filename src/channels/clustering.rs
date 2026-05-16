@@ -1,7 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
 
-use crate::circuit::reactive::ReactiveCircuit;
-
 /// Assigns each frequency to a bin index based on sorted `boundaries`.
 ///
 /// A frequency falls in bin `i` when `frequency ≤ boundaries[i]`.  Any

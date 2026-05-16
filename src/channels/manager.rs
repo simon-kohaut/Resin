@@ -6,41 +6,40 @@ use std::{
 };
 
 use super::ipc::{
-    IpcBooleanWriter, IpcDensityWriter, IpcDualReader, IpcNumberWriter, IpcProbabilityWriter,
-    IpcReader, IpcWriter, TimedIpcWriter, TypedWriter,
+    IpcBooleanWriter, IpcCategoricalReader, IpcCategoricalWriter, IpcDensityWriter, IpcDualReader,
+    IpcNumberWriter, IpcProbabilityWriter, IpcReader, IpcWriter, TimedIpcWriter,
 };
 use super::Vector;
-use crate::circuit::{leaf::Leaf, reactive::ReactiveCircuit};
+use crate::circuit::{leaf::Leaf, reactive::ReactiveCircuit, semiring::{LogProb, Semiring}};
 
 /// Manages the state of leaves and the IPC channels for updating them.
 ///
-/// The `Manager` is a central struct that holds the collection of `Leaf` nodes,
-/// a queue for reactive circuits that need updates (`rc_queue`), and the associated
-/// readers and writers for inter-process communication. It handles the creation of
-/// leaves and the setup of channels to read from or write to, including timed writers
-/// that send data at a specified frequency.
-pub struct Manager {
-    pub reactive_circuit: Arc<Mutex<ReactiveCircuit>>,
+/// `S` is the semiring used by the underlying `ReactiveCircuit`; the default
+/// is `LogProb` so existing code compiles without annotation.
+pub struct Manager<S: Semiring = LogProb> {
+    pub reactive_circuit: Arc<Mutex<ReactiveCircuit<S>>>,
     readers: Vec<IpcReader>,
     dual_readers: Vec<IpcDualReader>,
+    categorical_readers: Vec<IpcCategoricalReader>,
     writers: Vec<TimedIpcWriter>,
     senders: HashMap<String, mpsc::Sender<(Vector, f64)>>,
 }
 
-impl Default for Manager {
+impl<S: Semiring> Default for Manager<S> {
     fn default() -> Self {
         Self::new(1)
     }
 }
 
-impl Manager {
-    /// Creates a new `Manager` with a fresh `ReactiveCircuit` of the given
+impl<S: Semiring> Manager<S> {
+    /// Creates a new `Manager` with a fresh `ReactiveCircuit<S>` of the given
     /// `value_size` (number of parallel value slots, e.g. particles).
     pub fn new(value_size: usize) -> Self {
         Self {
-            reactive_circuit: Arc::new(Mutex::new(ReactiveCircuit::new(value_size))),
+            reactive_circuit: Arc::new(Mutex::new(ReactiveCircuit::<S>::new(value_size))),
             readers: vec![],
             dual_readers: vec![],
+            categorical_readers: vec![],
             writers: vec![],
             senders: HashMap::new(),
         }
@@ -55,12 +54,13 @@ impl Manager {
         assert!(self.reactive_circuit.lock().unwrap().leafs.len() + 1 < u32::MAX as usize);
 
         // Create a new leaf with given parameters and return the index
+        let leaf_index = self.reactive_circuit.lock().unwrap().leafs.len();
         self.reactive_circuit
             .lock()
             .unwrap()
             .leafs
-            .push(Leaf::new(value.clone(), frequency, name));
-        self.reactive_circuit.lock().unwrap().leafs.len() as u32 - 1
+            .push(Leaf::new(value.clone(), frequency, name, leaf_index));
+        leaf_index as u32
     }
 
     /// Clears all dependency indices from all leaves and clears the reactive queue.
@@ -122,6 +122,37 @@ impl Manager {
         )?;
         self.dual_readers.push(reader);
         Ok(())
+    }
+
+    /// Creates a categorical reader: reads a flat `[col₀, col₁, …]` vector and
+    /// updates each category leaf to its column slice.
+    pub fn read_categorical(
+        &mut self,
+        category_indices: Vec<u32>,
+        channel: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (tx, rx) = mpsc::channel();
+        self.senders.insert(channel.to_string(), tx);
+        let value_size = self.reactive_circuit.lock().unwrap().value_size;
+        let reader = IpcCategoricalReader::new(
+            self.reactive_circuit.clone(),
+            category_indices,
+            value_size,
+            channel,
+            rx,
+        );
+        self.categorical_readers.push(reader);
+        Ok(())
+    }
+
+    /// Creates a categorical writer for `channel`.
+    pub fn make_categorical_writer(
+        &mut self,
+        channel: &str,
+        n_categories: usize,
+    ) -> Result<IpcCategoricalWriter, Box<dyn std::error::Error>> {
+        let value_size = self.reactive_circuit.lock().unwrap().value_size;
+        Ok(IpcCategoricalWriter::new(self.get_or_create_sender(channel), n_categories, value_size))
     }
 
     /// Returns a cloned sender for `channel`, creating a dangling one if none exists yet.
@@ -325,7 +356,7 @@ impl Manager {
     }
 }
 
-impl Drop for Manager {
+impl<S: Semiring> Drop for Manager<S> {
     fn drop(&mut self) {
         self.stop_timed_writers();
     }
@@ -337,11 +368,14 @@ mod tests {
     use ndarray::array;
 
     use super::*;
+    use crate::circuit::semiring::LogProb;
     use std::{thread::sleep, time::Duration};
+
+    type TestManager = Manager<LogProb>;
 
     #[test]
     fn test_read_write() -> Result<(), Box<dyn std::error::Error>> {
-        let mut manager = Manager::new(1);
+        let mut manager = TestManager::new(1);
 
         // Create a leaf and connect it with a reader and writer
         let receiver = manager.create_leaf("tester_1", array![0.0].into(), 0.0);
@@ -368,7 +402,7 @@ mod tests {
 
     #[test]
     fn test_timed_writer() -> Result<(), Box<dyn std::error::Error>> {
-        let mut manager = Manager::new(1);
+        let mut manager = TestManager::new(1);
         let receiver = manager.create_leaf("timed_tester", array![0.0].into(), 0.0);
         manager.read(receiver, "timed_tester", false)?;
 
@@ -402,7 +436,7 @@ mod tests {
 
     #[test]
     fn test_multiple_channels() -> Result<(), Box<dyn std::error::Error>> {
-        let mut manager = Manager::new(1);
+        let mut manager = TestManager::new(1);
 
         let r1 = manager.create_leaf("r1", array![0.0].into(), 0.0);
         let r2 = manager.create_leaf("r2", array![0.0].into(), 0.0);
@@ -429,7 +463,7 @@ mod tests {
 
     #[test]
     fn test_prune_frequencies() {
-        let mut manager = Manager::new(1);
+        let mut manager = TestManager::new(1);
         let leaf_idx = manager.create_leaf("freq_leaf", array![0.5].into(), 0.0);
         let mut rc_guard = manager.reactive_circuit.lock().unwrap();
         let leaf = &mut rc_guard.leafs[leaf_idx as usize];
@@ -468,7 +502,7 @@ mod tests {
 
     #[test]
     fn test_getters() {
-        let mut manager = Manager::new(1);
+        let mut manager = TestManager::new(1);
         manager.create_leaf("a", array![0.1].into(), 1.0);
         manager.create_leaf("b", array![0.2].into(), 2.0);
 

@@ -1,9 +1,10 @@
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::circuit::leaf::update;
+use crate::circuit::semiring::Semiring;
 use crate::circuit::ReactiveCircuit;
 
 use super::Vector;
@@ -45,8 +46,8 @@ pub struct TimedIpcWriter {
 impl IpcReader {
     /// Spawns a reader thread that forwards values from `receiver` to leaf
     /// `index`.  If `invert` is `true`, each value is replaced by `1 − value`.
-    pub fn new(
-        shared_reactive_circuit: Arc<Mutex<ReactiveCircuit>>,
+    pub fn new<S: Semiring>(
+        shared_reactive_circuit: Arc<Mutex<ReactiveCircuit<S>>>,
         index: u32,
         channel: &str,
         invert: bool,
@@ -79,8 +80,8 @@ impl IpcDualReader {
     /// Spawns a reader thread that writes each received value to leaf
     /// `index_normal` and `1 − value` to leaf `index_inverted` atomically
     /// (both updates hold the circuit lock together).
-    pub fn new(
-        shared_reactive_circuit: Arc<Mutex<ReactiveCircuit>>,
+    pub fn new<S: Semiring>(
+        shared_reactive_circuit: Arc<Mutex<ReactiveCircuit<S>>>,
         index_normal: u32,
         index_inverted: u32,
         channel: &str,
@@ -414,12 +415,80 @@ impl IpcBooleanWriter {
     }
 }
 
+/// Reads a flat probability matrix from a channel and updates one leaf per category.
+///
+/// The incoming `Vector` has layout `[col₀, col₁, …, colₙ₋₁]` where each `colₖ`
+/// is a contiguous block of `value_size` floats — the probability of category `k`
+/// across all batch slots.  Leaf `k` is updated to `colₖ`.
+pub struct IpcCategoricalReader {
+    pub topic: String,
+    _handle: Arc<JoinHandle<()>>,
+}
+
+impl IpcCategoricalReader {
+    pub fn new<S: Semiring>(
+        shared_rc: Arc<Mutex<ReactiveCircuit<S>>>,
+        category_indices: Vec<u32>,
+        value_size: usize,
+        channel: &str,
+        receiver: mpsc::Receiver<(Vector, f64)>,
+    ) -> Self {
+        let handle = std::thread::spawn(move || {
+            while let Ok((probs, timestamp)) = receiver.recv() {
+                let mut circuit = shared_rc.lock().unwrap();
+                for (k, &leaf_idx) in category_indices.iter().enumerate() {
+                    let start = k * value_size;
+                    let end = start + value_size;
+                    if end <= probs.len() {
+                        let col = probs.slice(ndarray::s![start..end]).to_shared();
+                        update(&mut circuit, leaf_idx, col, timestamp);
+                    }
+                }
+            }
+        });
+        Self {
+            topic: channel.to_owned(),
+            _handle: Arc::new(handle),
+        }
+    }
+}
+
+/// Sends a flat probability matrix `[col₀, col₁, …, colₙ₋₁]` to a categorical
+/// channel.  Each `colₖ` is a contiguous block of `value_size` values.
+pub struct IpcCategoricalWriter {
+    inner: IpcWriter,
+    n_categories: usize,
+    value_size: usize,
+}
+
+impl IpcCategoricalWriter {
+    pub fn new(sender: Sender<(Vector, f64)>, n_categories: usize, value_size: usize) -> Self {
+        Self { inner: IpcWriter::new(sender).unwrap(), n_categories, value_size }
+    }
+
+    pub fn n_categories(&self) -> usize { self.n_categories }
+    pub fn value_size(&self) -> usize { self.value_size }
+
+    /// Write a flat probability matrix.  `probabilities` must have length
+    /// `n_categories * value_size`, laid out as `n_categories` consecutive
+    /// columns of `value_size` entries each.
+    pub fn write(&self, probabilities: Vector, timestamp: Option<f64>) {
+        debug_assert_eq!(
+            probabilities.len(), self.n_categories * self.value_size,
+            "categorical write: expected {} values, got {}",
+            self.n_categories * self.value_size, probabilities.len()
+        );
+        self.inner.write(probabilities, timestamp);
+    }
+}
+
 /// Groups all typed writers so callers can handle them in a single `match`.
 pub enum TypedWriter {
     Probability(IpcProbabilityWriter),
     Density(IpcDensityWriter),
     Number(IpcNumberWriter),
     Boolean(IpcBooleanWriter),
+    Categorical(IpcCategoricalWriter),
 }
 
 /// Returns `timestamp` if `Some`, otherwise returns the current Unix time in seconds.
@@ -435,8 +504,11 @@ fn resolve_timestamp(timestamp: Option<f64>) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::circuit::semiring::LogProb;
     use ndarray::array;
     use std::thread::sleep;
+
+    type TestRC = ReactiveCircuit<LogProb>;
 
     // -----------------------------------------------------------------------
     // Typed writer tests
@@ -694,7 +766,7 @@ mod tests {
 
     #[test]
     fn test_ipc_read_write() -> Result<(), Box<dyn std::error::Error>> {
-        let reactive_circuit = Arc::new(Mutex::new(ReactiveCircuit::new(1)));
+        let reactive_circuit = Arc::new(Mutex::new(TestRC::new(1)));
         reactive_circuit
             .lock()
             .unwrap()
@@ -703,6 +775,7 @@ mod tests {
                 array![0.0].into(),
                 0.0,
                 "test_leaf",
+                0,
             ));
         let (tx, rx) = mpsc::channel();
         let _reader = IpcReader::new(reactive_circuit.clone(), 0, "test_channel", false, rx)?;

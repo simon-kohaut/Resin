@@ -8,15 +8,19 @@ const PROBABILITY_PATTERN: &str = r"P\((?<probability>[01][.]\d+)\)";
 const BODY_PATTERN: &str = r"(?<body>.+)";
 const TOPIC_PATTERN: &str = r#""(?<topic>(?:\/\w+)+)""#;
 const DTYPE_PATTERN: &str = r"(?<dtype>Probability|Density|Number|Boolean)";
-const VARIABLE_LIST_PATTERN: &str = r"((?:\()(?:(?:,\s+)?\w+)+(?:\)))";
-const VARIABLE_PATTERN: &str = r"((?:(,\s+)?)(?<variable>[A-Z]))";
 // Matches comparison literals in clause bodies, e.g. `distance(hospital) < 20.0`
 const COMPARISON_PATTERN: &str =
     r"(?<comp_atom>\w+(?:\([\w\s,]+\))?)\s+(?<comp_op>[<>])\s+(?<comp_threshold>[+-]?\d+(?:\.\d+)?)";
 
+// Matches categorical source declarations, e.g. `{dog, cat} <- source("/cls", Categorical).`
+const CATEGORICAL_SOURCE_PATTERN: &str =
+    r#"\{(?<categories>[^}]+)\}\s+<-\s+source\("(?<topic>(?:\/\w+)+)",\s+Categorical\)\."#;
+
 // Regular expressions for complete Resin statements
 lazy_static! {
     pub static ref LITERAL_REGEX: Regex = Regex::new(&LITERAL_PATTERN).unwrap();
+    pub static ref CATEGORICAL_SOURCE_REGEX: Regex =
+        Regex::new(CATEGORICAL_SOURCE_PATTERN).unwrap();
     pub static ref CLAUSE_REGEX: Regex = Regex::new(&format!(
         r"{}(\s+<-\s+{})?(\s+if\s+{})?\.",
         ATOM_PATTERN, PROBABILITY_PATTERN, BODY_PATTERN
@@ -32,8 +36,6 @@ lazy_static! {
         ATOM_PATTERN, TOPIC_PATTERN
     ))
     .unwrap();
-    pub static ref VARIABLE_LIST_REGEX: Regex = Regex::new(VARIABLE_LIST_PATTERN).unwrap();
-    pub static ref VARIABLE_REGEX: Regex = Regex::new(VARIABLE_PATTERN).unwrap();
     pub static ref COMPARISON_LITERAL_REGEX: Regex = Regex::new(COMPARISON_PATTERN).unwrap();
     pub static ref AND_KEYWORD_REGEX: Regex = Regex::new(r"\band\b").unwrap();
 }

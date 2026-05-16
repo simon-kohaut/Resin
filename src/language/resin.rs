@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
 
 use super::Vector;
-use super::{Clause, Source, Target};
+use super::{CategoricalSource, Clause, Source, Target};
 use crate::channels::ipc::TypedWriter;
 use crate::channels::manager::Manager;
 use crate::circuit::category::Category;
+use crate::circuit::leaf;
+use crate::circuit::semiring::{LogProb, Semiring};
 use crate::language::concepts::{ComparisonLiteral, ResinType};
 use crate::language::matching::{
     args_of, cause_atom_base_name, cause_atom_name, has_variable_arg,
@@ -14,25 +15,27 @@ use crate::language::matching::{
 };
 use crate::language::{asp::solve, Dnf};
 
-/// Convenience alias for a thread-safe, heap-allocated vector of values shared
-/// between writers and the reactive circuit.
-pub type SharedStorage = Arc<Mutex<Vec<f64>>>;
-
 /// The compiled Resin runtime: holds the parsed program, the reactive circuit
 /// manager, and the comparison registry that maps Density/Number source atoms
 /// to their registered threshold comparisons.
-pub struct Resin {
+pub struct Resin<S: Semiring = LogProb> {
     pub clauses: Vec<Clause>,
     pub sources: Vec<Source>,
+    pub categorical_sources: Vec<CategoricalSource>,
     pub targets: Vec<Target>,
-    pub manager: Manager,
+    pub manager: Manager<S>,
     value_size: usize,
     /// Maps each Density/Number source atom name to its registered comparisons:
     /// `(threshold, upper_tail, canonical_leaf_name)`.
     comparison_registry: HashMap<String, Vec<(f64, bool, String)>>,
+    /// Maps each learnable probabilistic-clause parameter to the names of its
+    /// positive-polarity cause leaves.  Key format: `"{predicate}#{clause_index}"`.
+    /// All leaves in a group share the same underlying `P(...)` value and should
+    /// be kept in sync during gradient-based learning via `fit_parameters`.
+    pub parameter_groups: HashMap<String, Vec<String>>,
 }
 
-impl Resin {
+impl<S: Semiring> Resin<S> {
     /// Parses `model`, sets up signal leaves, runs Clingo to obtain stable
     /// models, and builds the reactive circuit for each declared target.
     ///
@@ -44,9 +47,11 @@ impl Resin {
         model: &str,
         value_size: usize,
         verbose: bool,
-    ) -> Result<Resin, Box<dyn std::error::Error>> {
+    ) -> Result<Resin<S>, Box<dyn std::error::Error>> {
+        S::validate_value_size(value_size);
+
         // Parse and setup Resin runtime environment
-        let mut resin: Resin = model.parse().unwrap();
+        let mut resin: Resin<S> = model.parse().unwrap();
         resin.value_size = value_size;
         resin.manager.reactive_circuit.lock().unwrap().value_size = value_size;
 
@@ -89,8 +94,22 @@ impl Resin {
             // Clingo has produced concrete groundings.
             resin.setup_fol_prob_signals(&dnf);
 
+            // Semirings such as ProbGradient require value_size = f(n_leaves).
+            // Apply the override now that all leaves are known.
+            {
+                let n_leaves = resin.manager.reactive_circuit.lock().unwrap().leafs.len();
+                if let Some(auto_size) = S::auto_value_size(n_leaves) {
+                    resin.value_size = auto_size;
+                    let mut rc = resin.manager.reactive_circuit.lock().unwrap();
+                    rc.value_size = auto_size;
+                    for leaf in rc.leafs.iter_mut() {
+                        leaf.resize_for_value_size(auto_size);
+                    }
+                }
+            }
+
             // Build the RC from the DNF
-            resin.circuit_from_dnf(dnf, &resin.targets[target_index].name);
+            resin.circuit_from_dnf(dnf, &resin.targets[target_index].channel);
 
             // TODO: Handle multiple targets
             break;
@@ -135,7 +154,15 @@ impl Resin {
                         }
                     }
                 }
+                // Categorical sources are handled separately via `categorical_sources`.
+                ResinType::Categorical => unreachable!(),
             }
+        }
+
+        // Categorical sources: exactly-one constraint enforces mutual exclusivity.
+        for cat_source in &self.categorical_sources {
+            let atoms = cat_source.categories.join(" ; ");
+            asp.push_str(&format!("1 {{ {} }} 1.\n", atoms));
         }
 
         // For every variable comparison literal, emit one helper rule per matching source so
@@ -316,7 +343,24 @@ impl Resin {
                     self.comparison_registry
                         .insert(source.name.clone(), registry_entry);
                 }
+                ResinType::Categorical => unreachable!(),
             }
+        }
+
+        // Categorical sources: one positive-only leaf per category, no complement.
+        // Mutual exclusivity is enforced in the ASP via `1{...}1`, so negative
+        // literals in Clingo models have no leaves and are skipped in circuit_from_dnf.
+        for cat_source in &self.categorical_sources.clone() {
+            let mut category_indices = Vec::new();
+            for category in &cat_source.categories {
+                let idx = self.manager.create_leaf(
+                    category,
+                    Vector::zeros(self.value_size),
+                    0.0,
+                );
+                category_indices.push(idx);
+            }
+            self.manager.read_categorical(category_indices, &cat_source.channel)?;
         }
 
         // Create leaves for ground-head probabilistic clauses, mirroring the
@@ -335,7 +379,7 @@ impl Resin {
             }
             let idx = prob_head_counts.entry(clause.head.clone()).or_insert(0);
             let aux = cause_atom_name(&clause.head, *idx);
-            let category = Category::new(
+            let category = Category::<S>::new(
                 &aux,
                 clause.probability.unwrap() * Vector::ones(self.value_size),
             );
@@ -343,6 +387,8 @@ impl Resin {
                 .create_leaf(&category.leafs[0].name, category.leafs[0].get_value(), 0.0);
             self.manager
                 .create_leaf(&category.leafs[1].name, category.leafs[1].get_value(), 0.0);
+            let group_key = format!("{}#{}", predicate_of(&clause.head), *idx);
+            self.parameter_groups.entry(group_key).or_default().push(aux);
             *idx += 1;
         }
 
@@ -357,15 +403,16 @@ impl Resin {
     /// then creates a `Category` leaf pair (probability `p`, complement `1−p`)
     /// for each distinct grounded atom found.
     fn setup_fol_prob_signals(&mut self, dnf: &Dnf) {
-        // Build base_predicate → probability map for FOL probabilistic clauses.
-        let mut prob_map: HashMap<String, f64> = HashMap::new();
+        // Build base_predicate → (probability, group_key) map for FOL probabilistic clauses.
+        let mut prob_map: HashMap<String, (f64, String)> = HashMap::new();
         let mut counts: HashMap<String, usize> = HashMap::new();
         for clause in &self.clauses {
             if let Some(p) = clause.probability {
                 if has_variable_arg(&clause.head) {
                     let idx = counts.entry(clause.head.clone()).or_insert(0);
                     let base = cause_atom_base_name(&clause.head, *idx);
-                    prob_map.insert(base, p);
+                    let group_key = format!("{}#{}", predicate_of(&clause.head), *idx);
+                    prob_map.insert(base, (p, group_key));
                     *idx += 1;
                 }
             }
@@ -381,12 +428,12 @@ impl Resin {
         for model_clause in &dnf.clauses {
             for literal in model_clause {
                 let atom = literal.trim_start_matches('-');
-                for (base, &p) in &prob_map {
+                for (base, (p, group_key)) in &prob_map {
                     let matches = atom == base.as_str()
                         || atom.starts_with(&format!("{}(", base));
                     if matches && created.insert(atom.to_string()) {
                         let category =
-                            Category::new(atom, p * Vector::ones(self.value_size));
+                            Category::<S>::new(atom, *p * Vector::ones(self.value_size));
                         self.manager.create_leaf(
                             &category.leafs[0].name,
                             category.leafs[0].get_value(),
@@ -397,6 +444,10 @@ impl Resin {
                             category.leafs[1].get_value(),
                             0.0,
                         );
+                        self.parameter_groups
+                            .entry(group_key.clone())
+                            .or_default()
+                            .push(atom.to_string());
                     }
                 }
             }
@@ -481,6 +532,159 @@ impl Resin {
                     self.manager.make_number_writer_for_channels(&channels),
                 ))
             }
+            ResinType::Categorical => unreachable!(),
+        }
+    }
+
+    /// Returns the categorical writer for the source whose channel matches `channel`.
+    pub fn make_categorical_writer(
+        &mut self,
+        channel: &str,
+    ) -> Result<TypedWriter, Box<dyn std::error::Error>> {
+        let cat = self
+            .categorical_sources
+            .iter()
+            .find(|c| c.channel == channel)
+            .ok_or_else(|| format!("No categorical source with channel '{}' found", channel))?;
+        let n = cat.categories.len();
+        Ok(TypedWriter::Categorical(
+            self.manager.make_categorical_writer(channel, n)?,
+        ))
+    }
+
+    /// Returns the parameter groups discovered during compilation.
+    ///
+    /// Each entry maps a user-facing key `"{predicate}#{clause_index}"` to the
+    /// names of the positive-polarity cause leaves sharing that `P(...)` value.
+    pub fn get_parameter_groups(&self) -> &HashMap<String, Vec<String>> {
+        &self.parameter_groups
+    }
+
+    /// Returns the subset of `gradients` that belongs to a single source,
+    /// looked up by atom name **or** IPC channel name.
+    ///
+    /// Delegates to `source_leaf_names` for the lookup and filters the provided
+    /// gradient map.  Returns an empty map when `name` matches no source.
+    pub fn source_gradients<'a>(
+        &self,
+        gradients: &'a HashMap<String, f64>,
+        name: &str,
+    ) -> HashMap<&'a str, f64> {
+        self.source_leaf_names(name)
+            .into_iter()
+            .filter_map(|leaf| {
+                gradients
+                    .get_key_value(leaf.as_str())
+                    .map(|(k, &v)| (k.as_str(), v))
+            })
+            .collect()
+    }
+
+    /// Returns the positive-polarity leaf names for a given source, looked up
+    /// by source atom name **or** IPC channel name.
+    ///
+    /// - `Probability` / `Boolean`: one leaf (the atom name itself).
+    /// - `Density` / `Number`: one leaf per registered comparison threshold
+    ///   (e.g. `"speed_lt_25"`, `"speed_gt_50"`).
+    /// - `Categorical`: one leaf per category atom.
+    ///
+    /// Returns an empty `Vec` when `name` does not match any source.
+    pub fn source_leaf_names(&self, name: &str) -> Vec<String> {
+        // Try regular sources first.
+        if let Some(source) = self
+            .sources
+            .iter()
+            .find(|s| s.name == name || s.channel == name)
+        {
+            return match source.message_type {
+                ResinType::Probability | ResinType::Boolean => vec![source.name.clone()],
+                ResinType::Density | ResinType::Number => self
+                    .comparison_registry
+                    .get(&source.name)
+                    .map(|entries| entries.iter().map(|(_, _, n)| n.clone()).collect())
+                    .unwrap_or_default(),
+                ResinType::Categorical => unreachable!(),
+            };
+        }
+        // Try categorical sources (matched only by channel).
+        if let Some(cat) = self
+            .categorical_sources
+            .iter()
+            .find(|c| c.channel == name)
+        {
+            return cat.categories.clone();
+        }
+        vec![]
+    }
+
+    /// Applies one gradient-descent step to probabilistic-clause parameters,
+    /// keeping all groundings of each clause at the same shared value.
+    ///
+    /// For each parameter group (one per `P(...)` clause), the gradients of all
+    /// positive leaves are summed to form the shared gradient, then a single
+    /// `p_new` is computed and written to every leaf in the group — both the
+    /// positive leaf and its complement (`1 − p_new`).
+    ///
+    /// Source atoms (Probability, Boolean, Density, Number, Categorical) are
+    /// never touched; only cause leaves created from `P(...)` clauses are updated.
+    /// Body-less clauses (`something <- P(0.3).`) are handled identically to
+    /// clauses with conditions.
+    ///
+    /// `loss` is `∂L/∂P` — the upstream scalar (e.g. `2·(P − target)` for MSE).
+    /// Pass `parameters` to restrict which groups are updated; `None` updates all.
+    pub fn fit_parameters(
+        &mut self,
+        gradients: &HashMap<String, f64>,
+        lr: f64,
+        loss: f64,
+        parameters: Option<&[&str]>,
+        timestamp: f64,
+    ) {
+        let mut rc = self.manager.reactive_circuit.lock().unwrap();
+        let value_size = rc.value_size;
+
+        let index_map: HashMap<String, usize> = rc
+            .leafs
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (l.name.clone(), i))
+            .collect();
+
+        let mut updates: Vec<(u32, f64)> = Vec::new();
+
+        for (group_key, pos_names) in &self.parameter_groups {
+            if let Some(params) = parameters {
+                if !params.contains(&group_key.as_str()) {
+                    continue;
+                }
+            }
+
+            let sum_grad: f64 = pos_names
+                .iter()
+                .filter_map(|name| gradients.get(name).copied())
+                .sum();
+
+            let Some(&first_idx) = index_map.get(&pos_names[0]) else { continue };
+            let p = rc.leafs[first_idx].get_encoded_value()[0];
+            let p_new = (p - lr * loss * sum_grad).clamp(0.0, 1.0);
+
+            for name in pos_names {
+                if let Some(&idx) = index_map.get(name) {
+                    updates.push((idx as u32, p_new));
+                }
+                if let Some(&idx) = index_map.get(&format!("-{}", name)) {
+                    updates.push((idx as u32, 1.0 - p_new));
+                }
+            }
+        }
+
+        for (idx, p) in updates {
+            leaf::update(
+                &mut rc,
+                idx,
+                Vector::from_elem(value_size, p).into_shared(),
+                timestamp,
+            );
         }
     }
 
@@ -519,7 +723,7 @@ impl Resin {
     }
 }
 
-impl FromStr for Resin {
+impl<S: Semiring> FromStr for Resin<S> {
     type Err = Box<dyn std::error::Error>;
 
     /// Parses a Resin program string into sources, targets, and clauses.
@@ -531,13 +735,15 @@ impl FromStr for Resin {
     /// with an empty manager and comparison registry; call `compile` for the
     /// full pipeline including signal setup and circuit construction.
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        let mut resin = Resin {
+        let mut resin = Resin::<S> {
             clauses: vec![],
             sources: vec![],
+            categorical_sources: vec![],
             targets: vec![],
-            manager: Manager::new(1),
+            manager: Manager::<S>::new(1),
             value_size: 1,
             comparison_registry: HashMap::new(),
+            parameter_groups: HashMap::new(),
         };
 
         // Strip comments and join into one string so multi-line statements are
@@ -559,6 +765,11 @@ impl FromStr for Resin {
             }
             let statement = statement.to_string();
 
+            // Try categorical before regular source — `{...}` won't match SOURCE_REGEX.
+            if let Ok(cat) = statement.parse::<CategoricalSource>() {
+                resin.categorical_sources.push(cat);
+                continue;
+            }
             if let Ok(source) = statement.parse::<Source>() {
                 resin.sources.push(source);
                 continue;
@@ -584,6 +795,9 @@ mod tests {
     use polars::prelude::*;
 
     use super::*;
+    use crate::circuit::semiring::{Boolean, Fuzzy, LogProb, MaxProduct, ProbGradient};
+
+    type TestResin = Resin<LogProb>;
 
     #[test]
     fn test_clauses() {
@@ -633,7 +847,7 @@ mod tests {
             safe -> target("/safety").
         "#;
 
-        let mut resin = Resin::compile(model, 1, false).expect("Compile failed");
+        let mut resin = TestResin::compile(model, 1, false).expect("Compile failed");
 
         // Two comparison leaf pairs should have been created
         let names = resin.manager.get_names();
@@ -665,7 +879,7 @@ mod tests {
             safe -> target("/safety").
         "#;
 
-        let mut resin = Resin::compile(model, 1, false).expect("Compile failed");
+        let mut resin = TestResin::compile(model, 1, false).expect("Compile failed");
         let writer = resin.make_writer_for("dist").unwrap();
 
         let TypedWriter::Density(density_writer) = writer else {
@@ -703,7 +917,7 @@ mod tests {
             moving -> target("/moving").
         "#;
 
-        let mut resin = Resin::compile(model, 1, false).expect("Compile failed");
+        let mut resin = TestResin::compile(model, 1, false).expect("Compile failed");
         let writer = resin.make_writer_for("speed").unwrap();
         assert!(matches!(writer, crate::channels::ipc::TypedWriter::Number(_)));
 
@@ -736,7 +950,7 @@ mod tests {
             alarm -> target("/alarm").
         "#;
 
-        let mut resin = Resin::compile(model, 1, false).expect("Compile failed");
+        let mut resin = TestResin::compile(model, 1, false).expect("Compile failed");
         let writer = resin.make_writer_for("active").unwrap();
         assert!(matches!(writer, crate::channels::ipc::TypedWriter::Boolean(_)));
 
@@ -772,7 +986,7 @@ mod tests {
         ";
 
         // Compile Resin runtime environment
-        let resin = Resin::compile(model, 1, true);
+        let resin = TestResin::compile(model, 1, true);
         assert!(resin.is_ok());
         let resin = resin.unwrap();
 
@@ -796,7 +1010,154 @@ mod tests {
 
         // Check a correct result for target signal
         let result = resin.manager.reactive_circuit.lock().unwrap().update();
-        assert_eq!(result["unsafe"], Vector::from(vec![0.8 * 0.7 + 0.2 * 0.7 + 0.8 * 0.3]));
+        assert_eq!(result["/safety"], Vector::from(vec![0.8 * 0.7 + 0.2 * 0.7 + 0.8 * 0.3]));
+    }
+
+    // The three tests below use the same two-clause proximity model as
+    // `test_resin_model` to show how swapping the semiring changes the question
+    // the circuit answers while the formula structure stays identical.
+    //
+    // The DNF for `unsafe if close(X,Y)` expands to three exclusive minterms:
+    //   M1 = {close(a,b)=T, close(a,c)=T}  weight 0.8·0.7 = 0.56
+    //   M2 = {close(a,b)=F, close(a,c)=T}  weight 0.2·0.7 = 0.14
+    //   M3 = {close(a,b)=T, close(a,c)=F}  weight 0.8·0.3 = 0.24
+    //
+    //   LogProb  : ΣMi = 0.56+0.14+0.24 = 0.94   (probability of unsafe)
+    //   MaxProduct: max(Mi) = 0.56                 (most probable unsafe world)
+    //   Fuzzy    : max(min·) = 0.7                 (degree of unsafe condition)
+    //   Boolean  : OR(Mi>0) = 1                    (is unsafe satisfied (if p > 0 = T)?)
+
+    const PROXIMITY_MODEL: &str = "
+        close(a,b) <- P(0.8).
+        close(a,c) <- P(0.7).
+        unsafe if close(X,Y).
+        unsafe -> target(\"/safety\").
+    ";
+
+    /// MaxProduct semiring — Most Probable Explanation.
+    ///
+    /// Compiling the same proximity model under MaxProduct answers:
+    /// "What is the probability of the single most-likely world in which the
+    /// system is unsafe?"  This is 0.8 * 0.7 = 0.56 (M1), the world where
+    /// both links are simultaneously active.
+    #[test]
+    fn test_max_product_most_probable_explanation() {
+        let resin = Resin::<MaxProduct>::compile(PROXIMITY_MODEL, 1, false)
+            .expect("compile failed");
+        let result = resin.manager.reactive_circuit.lock().unwrap().full_update();
+        let expected = 0.8_f64 * 0.7; // max(0.56, 0.14, 0.24) = 0.56
+        assert!(
+            (result["/safety"][0] - expected).abs() < 1e-9,
+            "MPE: expected {expected}, got {}",
+            result["/safety"][0]
+        );
+    }
+
+    /// Fuzzy semiring — degree of unsafe condition.
+    ///
+    /// Compiling under Fuzzy (AND=min, OR=max) answers:
+    /// "To what degree is the system unsafe, treating each probability as a
+    /// membership grade?"  M1 contributes min(0.8, 0.7) = 0.7 — the degree
+    /// to which both proximity conditions hold jointly — which dominates.
+    #[test]
+    fn test_fuzzy_degree_of_unsafety() {
+        let resin = Resin::<Fuzzy>::compile(PROXIMITY_MODEL, 1, false)
+            .expect("compile failed");
+        let result = resin.manager.reactive_circuit.lock().unwrap().full_update();
+        // max(min(0.8,0.7), min(0.2,0.7), min(0.8,0.3)) = max(0.7, 0.2, 0.3) = 0.7
+        let expected = 0.7_f64;
+        assert!(
+            (result["/safety"][0] - expected).abs() < 1e-9,
+            "Fuzzy: expected {expected}, got {}",
+            result["/safety"][0]
+        );
+    }
+
+    /// Boolean semiring — satisfiability of the unsafe condition.
+    ///
+    /// Compiling under Boolean (AND=·, OR=max on {0,1}) answers:
+    /// "Is there ANY world in which the system is unsafe?"  Since both atoms
+    /// carry positive probability they are encoded as 1, so M1 = AND(1,1) = 1
+    /// and the circuit returns 1 — unsafe is satisfiable.
+    #[test]
+    fn test_boolean_unsafe_satisfiability() {
+        let resin = Resin::<Boolean>::compile(PROXIMITY_MODEL, 1, false)
+            .expect("compile failed");
+        let result = resin.manager.reactive_circuit.lock().unwrap().full_update();
+        assert_eq!(
+            result["/safety"][0], 1.0,
+            "Boolean: unsafe should be satisfiable when both atoms have p > 0"
+        );
+    }
+
+    /// ProbGradient semiring — simultaneous WMC and gradient computation.
+    ///
+    /// The proximity model has 4 circuit leaves (two cause-atom/complement pairs).
+    /// Setting value_size = 5 gives layout [P, ∂P/∂x₀, ∂P/∂x₁, ∂P/∂x₂, ∂P/∂x₃].
+    ///
+    /// WMC = p0·p2 + p1·p2 + p0·p3  (p0=0.8, p1=0.2, p2=0.7, p3=0.3)
+    ///     = 0.56 + 0.14 + 0.24 = 0.94
+    ///
+    /// Gradients (leaves are independent parameters):
+    ///   ∂WMC/∂p0 = p2 + p3 = 1.0
+    ///   ∂WMC/∂p1 = p2      = 0.7
+    ///   ∂WMC/∂p2 = p0 + p1 = 1.0
+    ///   ∂WMC/∂p3 = p0      = 0.8
+    #[test]
+    fn test_prob_gradient_wmc_and_derivatives() {
+        let resin = Resin::<ProbGradient>::compile(PROXIMITY_MODEL, 1, false)
+            .expect("compile failed");
+        let result = resin.manager.reactive_circuit.lock().unwrap().full_update();
+        let grad = &result["/safety"];
+
+        let tol = 1e-9_f64;
+        assert!((grad[0] - 0.94).abs() < tol,      "P(unsafe)  expected 0.94,  got {}", grad[0]);
+        assert!((grad[1] - 1.0 ).abs() < tol,      "∂/∂p0      expected 1.0,   got {}", grad[1]);
+        assert!((grad[2] - 0.7 ).abs() < tol,      "∂/∂p1      expected 0.7,   got {}", grad[2]);
+        assert!((grad[3] - 1.0 ).abs() < tol,      "∂/∂p2      expected 1.0,   got {}", grad[3]);
+        assert!((grad[4] - 0.8 ).abs() < tol,      "∂/∂p3      expected 0.8,   got {}", grad[4]);
+    }
+
+    /// Gradient descent on leaf probabilities using `ProbGradient`.
+    ///
+    /// The proximity model has 4 circuit leaves (two cause/complement pairs).
+    /// Starting from the initial leaf probabilities (p0=0.8, p1=0.2, p2=0.7, p3=0.3)
+    /// the circuit computes P(unsafe)=0.94 and the full Jacobian in one pass.
+    ///
+    /// We minimise the MSE loss  L = (P(unsafe) − 0.5)²  by treating each leaf
+    /// probability as an independent parameter:
+    ///
+    ///   ∂L/∂pᵢ = 2·(P − 0.5) · (∂P/∂pᵢ)
+    ///
+    /// Each gradient step updates every leaf, clamping to [0, 1].  After enough
+    /// steps the circuit should converge to P(unsafe) ≈ 0.5.
+    #[test]
+    fn test_prob_gradient_learns_parameter() {
+        let resin = Resin::<ProbGradient>::compile(PROXIMITY_MODEL, 1, false)
+            .expect("compile failed");
+
+        let mut rc = resin.manager.reactive_circuit.lock().unwrap();
+        let target_p = 0.5_f64;
+        let lr = 0.1_f64;
+
+        for step in 0..500 {
+            let result = rc.full_gradient_update();
+            let (p, gradients) = &result["/safety"];
+
+            if (p - target_p).abs() < 1e-3 {
+                return; // converged
+            }
+
+            rc.fit(gradients, lr, 2.0 * (p - target_p), None, step as f64);
+        }
+
+        let result = rc.full_gradient_update();
+        let (p_final, _) = &result["/safety"];
+        assert!(
+            (p_final - target_p).abs() < 1e-2,
+            "gradient descent did not converge: P(unsafe) = {:.4}, target = {:.4}",
+            p_final, target_p
+        );
     }
 
     #[test]
@@ -893,13 +1254,13 @@ mod tests {
             risky -> target("/risky").
         "#;
 
-        let resin = Resin::compile(model, 1, false).expect("compile failed");
+        let resin = TestResin::compile(model, 1, false).expect("compile failed");
         let result = resin.manager.reactive_circuit.lock().unwrap().update();
         let expected = 1.0 - 0.7_f64 * 0.4_f64;
         assert!(
-            (result["risky"][0] - expected).abs() < 1e-9,
+            (result["/risky"][0] - expected).abs() < 1e-9,
             "noisy-OR probability wrong: got {}, expected {}",
-            result["risky"][0],
+            result["/risky"][0],
             expected
         );
 
@@ -916,13 +1277,13 @@ mod tests {
             any_heads -> target("/any_heads").
         "#;
 
-        let resin = Resin::compile(model, 1, true).expect("compile failed");
+        let resin = TestResin::compile(model, 1, true).expect("compile failed");
         let result = resin.manager.reactive_circuit.lock().unwrap().update();
         let expected =  0.9744;
         assert!(
-            (result["any_heads"][0] - expected).abs() < 1e-9,
+            (result["/any_heads"][0] - expected).abs() < 1e-9,
             "noisy-OR probability wrong: got {}, expected {}",
-            result["any_heads"][0],
+            result["/any_heads"][0],
             expected
         );
     }
@@ -981,7 +1342,7 @@ mod tests {
             safe -> target("/safety").
         "#;
 
-        let resin = Resin::compile(model, 1, false).expect("compile failed");
+        let resin = TestResin::compile(model, 1, false).expect("compile failed");
 
         // Both comparison leaves must have been created
         let names = resin.manager.get_names();
@@ -1061,7 +1422,7 @@ mod tests {
         safe -> target("/output/safe").
         "#;
 
-        let mut resin = Resin::compile(model, 1, true).expect("compile failed");
+        let mut resin = TestResin::compile(model, 1, true).expect("compile failed");
 
         // All expected leaves must exist after compilation.
         let names = resin.manager.get_names();
@@ -1142,11 +1503,78 @@ mod tests {
         //         = P(cause_0 = false) * 1.0 * 1.0 * ...
         //         = 0.1
         let result = resin.manager.reactive_circuit.lock().unwrap().update();
-        let p_safe = result["safe"][0];
+        let p_safe = result["/output/safe"][0];
         assert!(
             (p_safe - 0.1).abs() < 0.01,
             "P(safe) = {:.4}, expected ≈ 0.1",
             p_safe
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // MNIST addition
+    // -----------------------------------------------------------------------
+
+    /// MNIST addition: P(digit1 + digit2 = S).
+    ///
+    /// Two categorical digit sources with 3 classes each (digits 0-2 for brevity).
+    /// `circuit_from_dnf` skips the negative literals
+    /// (no corresponding leaves), so each product collapses to one leaf per digit:
+    ///
+    ///   P(sum = 2) = P(d1=0)·P(d2=2) + P(d1=1)·P(d2=1) + P(d1=2)·P(d2=0)
+    ///
+    /// With P(d1) = [0.1, 0.6, 0.3] and P(d2) = [0.4, 0.3, 0.2] (unnormalised
+    /// is fine — Resin treats each leaf independently):
+    ///
+    ///   P(sum=2) = 0.1·0.2 + 0.6·0.3 + 0.3·0.4 = 0.02 + 0.18 + 0.12 = 0.32
+    #[test]
+    fn test_mnist_addition() {
+        const MNIST_MODEL: &str = r#"
+            {digit1(0), digit1(1), digit1(2)} <- source("/digit1", Categorical).
+            {digit2(0), digit2(1), digit2(2)} <- source("/digit2", Categorical).
+
+            sum_eq_2 if digit1(0) and digit2(2).
+            sum_eq_2 if digit1(1) and digit2(1).
+            sum_eq_2 if digit1(2) and digit2(0).
+
+            sum_eq_2 -> target("/sum_eq_2").
+        "#;
+
+        use crate::channels::ipc::TypedWriter;
+        use std::thread::sleep;
+        use std::time::Duration;
+
+        let mut resin = TestResin::compile(MNIST_MODEL, 1, false)
+            .expect("compile failed");
+
+        // Verify the categorical leaves were created (positive only, no negatives).
+        let names = resin.manager.get_names();
+        for expected in &["digit1(0)", "digit1(1)", "digit1(2)", "digit2(0)", "digit2(1)", "digit2(2)"] {
+            assert!(names.iter().any(|n| n == expected), "leaf '{}' missing; all: {:?}", expected, names);
+        }
+        for unexpected in &["-digit1(0)", "-digit1(1)", "-digit2(0)"] {
+            assert!(!names.iter().any(|n| n == unexpected), "unexpected negative leaf '{}'", unexpected);
+        }
+
+        // Write P(digit1) = [0.1, 0.6, 0.3] and P(digit2) = [0.4, 0.3, 0.2].
+        let TypedWriter::Categorical(w1) = resin.make_categorical_writer("/digit1").unwrap()
+        else { panic!("expected CategoricalWriter for /digit1") };
+        let TypedWriter::Categorical(w2) = resin.make_categorical_writer("/digit2").unwrap()
+        else { panic!("expected CategoricalWriter for /digit2") };
+
+        w1.write(Vector::from(vec![0.1, 0.6, 0.3]), None);
+        w2.write(Vector::from(vec![0.4, 0.3, 0.2]), None);
+
+        sleep(Duration::from_millis(50));
+
+        let result = resin.manager.reactive_circuit.lock().unwrap().full_update();
+        let p = result["/sum_eq_2"][0];
+
+        // Expected: 0.1·0.2 + 0.6·0.3 + 0.3·0.4 = 0.32
+        let expected = 0.1_f64 * 0.2 + 0.6 * 0.3 + 0.3 * 0.4;
+        assert!(
+            (p - expected).abs() < 1e-9,
+            "P(sum=2) expected {:.4}, got {:.4}", expected, p
         );
     }
 }

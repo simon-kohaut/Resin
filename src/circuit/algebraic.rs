@@ -7,6 +7,7 @@ use ndarray::Array1;
 use petgraph::stable_graph::EdgeIndex;
 
 use super::reactive::ReactiveCircuit;
+use super::semiring::Semiring;
 use super::Vector;
 
 /// A variable in the circuit; either a reactive leaf or a cached memory from a
@@ -306,71 +307,39 @@ impl AlgebraicCircuit {
 
     // ── evaluation ────────────────────────────────────────────────────────────
 
-    /// Returns `log P(formula)` — edges are expected to already hold log-values.
-    pub(crate) fn log_value(&self, rc: &ReactiveCircuit) -> Vector {
+    /// Evaluates the formula under semiring `S`.
+    ///
+    /// Borrow encoded values zero-copy from leaves and edges, then fold every
+    /// minterm through `S::mul_inplace` and sum them with `S::sum_step`.
+    /// Returns a vector in `S`'s internal representation.
+    pub(crate) fn evaluate<S: Semiring>(&self, rc: &ReactiveCircuit<S>) -> Vector {
         if self.minterms.is_empty() {
-            return Array1::from_elem(self.value_size, f64::NEG_INFINITY).into_shared();
+            return Array1::from_elem(self.value_size, S::zero()).into_shared();
         }
 
-        // Borrow log-values directly — no copies for either leaves or edges.
-        let log_cols: Vec<ndarray::ArrayView1<f64>> = self.columns.iter().map(|col| match col {
-            Column::Leaf(idx) => rc.leafs[*idx as usize].get_log_value(),
+        let cols: Vec<ndarray::ArrayView1<f64>> = self.columns.iter().map(|col| match col {
+            Column::Leaf(idx)   => rc.leafs[*idx as usize].get_encoded_value(),
             Column::Memory(key) => rc.structure[EdgeIndex::new(*key as usize)].view(),
         }).collect();
 
         let n = self.value_size;
-
-        // Online logsumexp: single pass over minterms with four fixed O(N) buffers.
-        // Avoids the M×N intermediate allocation of collecting all log_vals first.
-        //
-        // Invariant after processing k minterms:
-        //   running_max[i] = max of log_val[i] seen so far
-        //   running_sum[i] = Σ exp(log_val[i] - running_max[i])
-        // Result: running_max + ln(running_sum)
-        let mut running_max = Array1::from_elem(n, f64::NEG_INFINITY);
-        let mut running_sum = Array1::<f64>::zeros(n);
-        let mut log_val    = Array1::<f64>::zeros(n);
-        let mut delta      = Array1::<f64>::zeros(n);
+        let mut sum_acc = S::sum_new(n);
+        let mut term    = { let mut t = Array1::zeros(n); S::reset_term(&mut t); t };
 
         for row in &self.minterms {
-            // Accumulate this minterm's log-probability in-place.
-            log_val.fill(0.0);
+            S::reset_term(&mut term);
             for &c in row {
-                log_val += &log_cols[c];
+                S::mul_inplace(&mut term, cols[c]);
             }
-
-            // Update running_max and compute the rescaling factor in one zip pass.
-            // Guard: old_max = -inf means no valid terms yet; skip to avoid -inf - (-inf) = NaN.
-            ndarray::Zip::from(&mut delta)
-                .and(&mut running_max)
-                .and(&log_val)
-                .for_each(|d, m, &v| {
-                    let new_m = m.max(v);
-                    *d = if *m == f64::NEG_INFINITY { 0.0 } else { (*m - new_m).exp() };
-                    *m = new_m;
-                });
-
-            // Rescale old sum, then add the new term.
-            // Guard: new_max = -inf means this term is also zero-probability; skip to avoid NaN.
-            running_sum *= &delta;
-            ndarray::Zip::from(&mut running_sum)
-                .and(&log_val)
-                .and(&running_max)
-                .for_each(|s, &lv, &m| {
-                    if m > f64::NEG_INFINITY {
-                        *s += (lv - m).exp();
-                    }
-                });
+            S::sum_step(&mut sum_acc, &term);
         }
 
-        running_sum.mapv_inplace(f64::ln);
-        running_max += &running_sum;
-        running_max.into_shared()
+        S::sum_finish(sum_acc).into_shared()
     }
 
-    /// Returns `P(formula)` in probability space (for tests and external callers).
-    pub fn value(&self, rc: &ReactiveCircuit) -> Vector {
-        self.log_value(rc).mapv(f64::exp).into_shared()
+    /// Returns `P(formula)` decoded to probability space (for tests and external callers).
+    pub fn value<S: Semiring>(&self, rc: &ReactiveCircuit<S>) -> Vector {
+        self.evaluate::<S>(rc).mapv(S::decode).into_shared()
     }
 
     // ── visualisation ─────────────────────────────────────────────────────────
@@ -415,6 +384,7 @@ mod tests {
 
     use crate::circuit::leaf::Leaf;
     use crate::circuit::reactive::ReactiveCircuit;
+    use crate::circuit::semiring::LogProb;
 
     use super::AlgebraicCircuit;
 
@@ -438,12 +408,12 @@ mod tests {
         let sum_product = vec![vec![0, 1], vec![0, 2]];
 
         let mut rc = ReactiveCircuit::new(1);
-        rc.leafs.push(Leaf::new(array![0.5].into(), 0.0, "l0"));
-        rc.leafs.push(Leaf::new(array![0.2].into(), 0.0, "l1"));
-        rc.leafs.push(Leaf::new(array![0.8].into(), 0.0, "l2"));
+        rc.leafs.push(Leaf::new(array![0.5].into(), 0.0, "l0", 0));
+        rc.leafs.push(Leaf::new(array![0.2].into(), 0.0, "l1", 1));
+        rc.leafs.push(Leaf::new(array![0.8].into(), 0.0, "l2", 2));
 
         let ac = AlgebraicCircuit::from_sum_product(1, &sum_product);
-        let result = ac.value(&rc);
+        let result = ac.value::<LogProb>(&rc);
 
         assert!((result[0] - 0.5_f64).abs() < 1e-9);
     }
@@ -505,10 +475,10 @@ mod tests {
     fn test_value_single_leaf() {
         // Formula: {0} — one minterm with one leaf, should equal P(leaf 0).
         let mut rc = ReactiveCircuit::new(1);
-        rc.leafs.push(Leaf::new(array![0.3].into(), 0.0, "l0"));
+        rc.leafs.push(Leaf::new(array![0.3].into(), 0.0, "l0", 0));
 
         let ac = AlgebraicCircuit::from_sum_product(1, &[vec![0]]);
-        let result = ac.value(&rc);
+        let result = ac.value::<LogProb>(&rc);
 
         assert!((result[0] - 0.3_f64).abs() < 1e-9);
     }

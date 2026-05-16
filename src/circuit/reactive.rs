@@ -3,37 +3,34 @@ use std::fs::File;
 use std::io::Write;
 use std::process::Command;
 
-use clingo::ast::Edge;
 use itertools::Itertools;
-use linfa::linalg::assert;
 use petgraph::Direction::{Incoming, Outgoing};
 use petgraph::{
     algo::toposort,
     stable_graph::{EdgeIndex, NodeIndex, StableGraph},
     visit::EdgeRef,
 };
-use plotly::sankey::Node;
 use rayon::prelude::*;
 
+use ndarray::Array1;
+
 use crate::channels::clustering::partitioning;
-use crate::circuit::leaf::{self, force_invalidate_dependencies};
+use crate::circuit::leaf;
+use crate::circuit::semiring::{LogProb, Semiring};
 
 use super::{algebraic::AlgebraicCircuit, leaf::Leaf, Vector};
 
 /// A dynamic computation graph where each node contains an `AlgebraicCircuit` for which the result is
 /// stored as weight of the incoming edges.
 ///
-/// A ReactiveCircuit owns its `structure` as a `StableGraph<AlgebraicCircuit, Vector>`, where each
-/// `Vector` is of length `value_size`.
-///
-/// Further, it has `leafs` and a `queue`, with the former holding time-dynamic input data and
-/// the latter holding indices to the `AlgebraicCircuits` that need reevaluation due to an update
-/// of a contained `leaf` or one of its decendants.
+/// `S` is the semiring used for evaluation; the default is `LogProb`
+/// (log-probability weighted model counting).  Leaf encoded values and edge
+/// weights are both stored in `S`'s internal representation.
 #[derive(Debug, Clone)]
-pub struct ReactiveCircuit {
+pub struct ReactiveCircuit<S: Semiring = LogProb> {
     pub structure: StableGraph<AlgebraicCircuit, Vector>,
     pub value_size: usize,
-    pub leafs: Vec<Leaf>,
+    pub leafs: Vec<Leaf<S>>,
     pub queue: HashSet<u32>,
     pub targets: HashMap<String, NodeIndex>,
     pub partitioning: Vec<usize>,
@@ -43,7 +40,7 @@ pub struct ReactiveCircuit {
     topo_levels: Option<Vec<Vec<NodeIndex>>>,
 }
 
-impl ReactiveCircuit {
+impl<S: Semiring> ReactiveCircuit<S> {
     /// Create a new `ReactiveCircuit` with the given `value_size` and set of `leafs`.
     pub fn new(value_size: usize) -> Self {
         assert!(
@@ -317,7 +314,7 @@ impl ReactiveCircuit {
                 .add_node(AlgebraicCircuit::new(self.value_size));
             let edge = self
                 .structure
-                .add_edge(parent, index, Vector::zeros(self.value_size));
+                .add_edge(parent, index, Array1::from_elem(self.value_size, S::zero()).into_shared());
 
             self.queue.insert(parent.index() as u32);
 
@@ -565,7 +562,7 @@ impl ReactiveCircuit {
             let new_node = self.structure.add_node(new_ac);
             let new_edge = self
                 .structure
-                .add_edge(dependency, new_node, Vector::zeros(self.value_size));
+                .add_edge(dependency, new_node, Array1::from_elem(self.value_size, S::zero()).into_shared());
             let ac = self.structure.node_weight_mut(dependency).unwrap();
             let mem_col = ac.create_memory(new_edge);
             ac.add_col_to_minterm(row, mem_col);
@@ -578,7 +575,7 @@ impl ReactiveCircuit {
         self.topo_levels = None;
         let edge = self
             .structure
-            .add_edge(parent, child, Vector::zeros(self.value_size));
+            .add_edge(parent, child, Array1::from_elem(self.value_size, S::zero()).into_shared());
         let mem_col = self
             .structure
             .node_weight_mut(parent)
@@ -659,25 +656,25 @@ impl ReactiveCircuit {
         // Process levels from 0 upward: within each level all nodes are independent.
         let n_levels = self.topo_levels.as_ref().unwrap().len();
         for lvl in 0..n_levels {
-            // Phase 1 — parallel: compute log-values for every queued node in this level.
+            // Phase 1 — parallel: compute values for every queued node in this level.
             // All reads; the children's edge weights (levels < lvl) are fully written already.
             let level_nodes = self.topo_levels.as_ref().unwrap()[lvl].clone();
             let level_results: Vec<(NodeIndex, Vector)> = level_nodes
                 .par_iter()
                 .filter(|&&node| outdated_nodes.contains(&(node.index() as u32)))
                 .map(|&node| {
-                    let log_result = self.structure[node].log_value(self);
-                    (node, log_result)
+                    let result = self.structure[node].evaluate::<S>(self);
+                    (node, result)
                 })
                 .collect();
 
             // Phase 2 — sequential: write results back to parent edges and target map.
-            for (node, log_result) in level_results {
+            for (node, result) in level_results {
                 for (token, &target_node) in &self.targets {
                     if target_node == node {
                         target_results.insert(
                             token.to_owned(),
-                            log_result.mapv(f64::exp).into_shared(),
+                            result.mapv(S::decode).into_shared(),
                         );
                     }
                 }
@@ -690,7 +687,7 @@ impl ReactiveCircuit {
                     self.structure
                         .edge_weight_mut(edge)
                         .expect("ReactiveCircuit edge was missing!")
-                        .assign(&log_result);
+                        .assign(&result);
                 }
             }
         }
@@ -703,6 +700,98 @@ impl ReactiveCircuit {
     pub fn full_update(&mut self) -> HashMap<String, Vector> {
         self.invalidate();
         self.update()
+    }
+
+    /// Unpacks a `ProbGradient` result map into `{ target → (wmc, { leaf_name → gradient }) }`.
+    ///
+    /// Only targets whose result vector length equals `1 + n_leaves` are included;
+    /// any other target (e.g. from a plain `LogProb` circuit) is silently skipped.
+    pub fn unpack_gradients(
+        &self,
+        results: &HashMap<String, Vector>,
+    ) -> HashMap<String, (f64, HashMap<String, f64>)> {
+        let n = self.leafs.len();
+        results
+            .iter()
+            .filter(|(_, vec)| vec.len() == 1 + n)
+            .map(|(target, vec)| {
+                let wmc = vec[0];
+                let gradients = self
+                    .leafs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, leaf)| (leaf.name.clone(), vec[i + 1]))
+                    .collect();
+                (target.clone(), (wmc, gradients))
+            })
+            .collect()
+    }
+
+    /// Runs the reactive update and returns `ProbGradient` results unpacked by leaf name.
+    ///
+    /// Only recomputes circuits whose inputs have changed since the last call.
+    /// The returned map has the form `{ target → (wmc, { leaf_name → gradient }) }`.
+    pub fn gradient_update(&mut self) -> HashMap<String, (f64, HashMap<String, f64>)> {
+        let results = self.update();
+        self.unpack_gradients(&results)
+    }
+
+    /// Invalidates the entire circuit, then runs an update and returns
+    /// `ProbGradient` results unpacked by leaf name.
+    ///
+    /// Use this when you need every target recomputed unconditionally.
+    /// The returned map has the form `{ target → (wmc, { leaf_name → gradient }) }`.
+    pub fn full_gradient_update(&mut self) -> HashMap<String, (f64, HashMap<String, f64>)> {
+        let results = self.full_update();
+        self.unpack_gradients(&results)
+    }
+
+    /// Applies one gradient-descent step to leaf probabilities.
+    ///
+    /// `gradients` is the per-leaf gradient map for a single target, as returned by
+    /// the second element of a `gradient_update()` entry.  `loss` is `∂L/∂P` — the
+    /// scalar upstream gradient of the loss with respect to the WMC output (e.g.
+    /// `2·(P − target)` for MSE).  The update rule for each fitted leaf is:
+    ///
+    /// ```text
+    /// p_new = clamp(p_i − lr · loss · ∂P/∂p_i,  0,  1)
+    /// ```
+    ///
+    /// When `atoms` is `None` every leaf is updated.  Pass `Some(names)` to
+    /// restrict updates to a specific subset of atoms.
+    pub fn fit(
+        &mut self,
+        gradients: &HashMap<String, f64>,
+        lr: f64,
+        loss: f64,
+        atoms: Option<&[String]>,
+        timestamp: f64,
+    ) {
+        let value_size = self.value_size;
+        let updates: Vec<(u32, f64)> = (0..self.leafs.len())
+            .filter_map(|i| {
+                let leaf = &self.leafs[i];
+                if let Some(list) = atoms {
+                    if !list.iter().any(|a| a == &leaf.name) {
+                        return None;
+                    }
+                }
+                gradients.get(&leaf.name).map(|&grad| {
+                    let p_i = leaf.get_encoded_value()[0];
+                    let p_new = (p_i - lr * loss * grad).clamp(0.0, 1.0);
+                    (i as u32, p_new)
+                })
+            })
+            .collect();
+
+        for (idx, p_new) in updates {
+            leaf::update(
+                self,
+                idx,
+                Vector::from_elem(value_size, p_new).into_shared(),
+                timestamp,
+            );
+        }
     }
 
     #[cfg(debug_assertions)]
@@ -754,7 +843,7 @@ impl ReactiveCircuit {
         }
 
         if !violations.is_empty() {
-            self.to_svg("invariant_violation.svg", true);
+            let _ = self.to_svg("invariant_violation.svg", true);
             panic!("Invariant violations found:\n{}", violations.join("\n"));
         }
     }
@@ -773,7 +862,6 @@ impl ReactiveCircuit {
 
         // Iterate over the nodes
         for node in self.structure.node_indices() {
-            let node_type = &self.structure[node];
             let ac = &self.structure[node];
             let scope: Vec<String> = ac.columns.iter().map(|col| match col {
                 super::algebraic::Column::Leaf(i) => format!("L{}", i),
@@ -904,8 +992,12 @@ mod tests {
 
     use crate::channels::manager::Manager;
     use crate::circuit::leaf::update;
+    use crate::circuit::semiring::LogProb;
 
     use super::Vector;
+
+    type TestRC = ReactiveCircuit<LogProb>;
+    type TestManager = Manager<LogProb>;
 
     fn calculate_expected_value(
         sum_of_products: &[Vec<u32>],
@@ -933,7 +1025,7 @@ mod tests {
         let simulation_steps = 100;
 
         // 1. Setup Manager and ReactiveCircuit
-        let manager = Manager::new(value_size);
+        let manager = TestManager::new(value_size);
         let mut reactive_circuit = manager.reactive_circuit.lock().unwrap();
 
         // 2. Create a large, random formula
@@ -942,6 +1034,7 @@ mod tests {
                 Vector::from(vec![rng.random_range(0.0..1.0)]),
                 0.0,
                 &format!("leaf_{}", i),
+                i,  // leaf_index
             ));
         }
 
@@ -1026,9 +1119,9 @@ mod tests {
         // Formula: x + x*a = {0} + {0,1}
         // Lifting leaf 0 (x) must preserve the bare {x} term in the parent AC.
         // P(x)=0.5, P(a)=0.4 → value = 0.5 + 0.5*0.4 = 0.7
-        let mut rc = ReactiveCircuit::new(1);
-        rc.leafs.push(Leaf::new(array![0.5].into(), 0.0, "x"));
-        rc.leafs.push(Leaf::new(array![0.4].into(), 0.0, "a"));
+        let mut rc = TestRC::new(1);
+        rc.leafs.push(Leaf::new(array![0.5].into(), 0.0, "x", 0));
+        rc.leafs.push(Leaf::new(array![0.4].into(), 0.0, "a", 1));
         rc.add_sum_product(&[vec![0], vec![0, 1]], "test");
 
         let expected = 0.5_f64 + 0.5 * 0.4;
@@ -1044,18 +1137,18 @@ mod tests {
 
     #[test]
     fn test_rc() -> std::io::Result<()> {
-        let manager = Manager::new(1);
+        let manager = TestManager::new(1);
         let reactive_circuit = &mut manager.reactive_circuit.lock().unwrap();
 
         reactive_circuit
             .leafs
-            .push(Leaf::new(Vector::ones(1), 0.0, ""));
+            .push(Leaf::new(Vector::ones(1), 0.0, "", 0));
         reactive_circuit
             .leafs
-            .push(Leaf::new(Vector::ones(1), 0.0, ""));
+            .push(Leaf::new(Vector::ones(1), 0.0, "", 1));
         reactive_circuit
             .leafs
-            .push(Leaf::new(Vector::ones(1), 0.0, ""));
+            .push(Leaf::new(Vector::ones(1), 0.0, "", 2));
 
         reactive_circuit.add_sum_product(&vec![vec![0, 1], vec![0, 2]], "test");
 
