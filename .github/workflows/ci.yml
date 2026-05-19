@@ -16,17 +16,15 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.x"
 
       - name: Install clingo
         run: |
-          # Install clingo into environment
-          pip install clingo
-          CLINGO_DIR=$(python3 -c "import clingo, os; print(os.path.dirname(clingo.__file__))")
-          LIB_PATH=$(ls "$CLINGO_DIR" | grep "cpython" | head -n 1)
-          ln -sf "$CLINGO_DIR/$LIB_PATH" "$CLINGO_DIR/libclingo.so"
-          echo "CLINGO_LIBRARY_PATH=$CLINGO_DIR" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=$CLINGO_DIR" >> $GITHUB_ENV
+          sudo add-apt-repository ppa:potassco/stable
+          sudo apt update
+          sudo apt-get install -y clingo
+          CLINGO_LIB=$(find /usr -name "libclingo.so*" | head -1)
+          echo "CLINGO_LIBRARY_PATH=$(dirname "$CLINGO_LIB")" >> $GITHUB_ENV
 
       - name: Format
         run: cargo fmt --check
