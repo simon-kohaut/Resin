@@ -10,7 +10,11 @@ use super::ipc::{
     IpcNumberWriter, IpcProbabilityWriter, IpcReader, IpcWriter, TimedIpcWriter,
 };
 use super::Vector;
-use crate::circuit::{leaf::Leaf, reactive::ReactiveCircuit, semiring::{LogProb, Semiring}};
+use crate::circuit::{
+    leaf::Leaf,
+    reactive::ReactiveCircuit,
+    semiring::{LogProb, Semiring},
+};
 
 /// Manages the state of leaves and the IPC channels for updating them.
 ///
@@ -55,11 +59,12 @@ impl<S: Semiring> Manager<S> {
 
         // Create a new leaf with given parameters and return the index
         let leaf_index = self.reactive_circuit.lock().unwrap().leafs.len();
-        self.reactive_circuit
-            .lock()
-            .unwrap()
-            .leafs
-            .push(Leaf::new(value.clone(), frequency, name, leaf_index));
+        self.reactive_circuit.lock().unwrap().leafs.push(Leaf::new(
+            value.clone(),
+            frequency,
+            name,
+            leaf_index,
+        ));
         leaf_index as u32
     }
 
@@ -152,7 +157,11 @@ impl<S: Semiring> Manager<S> {
         n_categories: usize,
     ) -> Result<IpcCategoricalWriter, Box<dyn std::error::Error>> {
         let value_size = self.reactive_circuit.lock().unwrap().value_size;
-        Ok(IpcCategoricalWriter::new(self.get_or_create_sender(channel), n_categories, value_size))
+        Ok(IpcCategoricalWriter::new(
+            self.get_or_create_sender(channel),
+            n_categories,
+            value_size,
+        ))
     }
 
     /// Returns a cloned sender for `channel`, creating a dangling one if none exists yet.
@@ -177,7 +186,9 @@ impl<S: Semiring> Manager<S> {
         &mut self,
         channel: &str,
     ) -> Result<IpcProbabilityWriter, Box<dyn std::error::Error>> {
-        Ok(IpcProbabilityWriter::new(self.get_or_create_sender(channel)))
+        Ok(IpcProbabilityWriter::new(
+            self.get_or_create_sender(channel),
+        ))
     }
 
     /// Creates a single-comparison density writer for direct (non-compiler) use.

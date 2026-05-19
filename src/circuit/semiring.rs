@@ -104,11 +104,21 @@ impl Semiring for LogProb {
     /// Avoids any per-minterm heap allocation during evaluation.
     type SumAcc = (Array1<f64>, Array1<f64>, Array1<f64>);
 
-    fn zero() -> f64 { f64::NEG_INFINITY }
-    fn one()  -> f64 { 0.0 }
-    fn encode(p: f64) -> f64 { p.ln() }
-    fn decode(v: f64) -> f64 { v.exp() }
-    fn negate(v: f64) -> f64 { (1.0 - v.exp()).ln() } // ln(1 − exp(v))
+    fn zero() -> f64 {
+        f64::NEG_INFINITY
+    }
+    fn one() -> f64 {
+        0.0
+    }
+    fn encode(p: f64) -> f64 {
+        p.ln()
+    }
+    fn decode(v: f64) -> f64 {
+        v.exp()
+    }
+    fn negate(v: f64) -> f64 {
+        (1.0 - v.exp()).ln()
+    } // ln(1 − exp(v))
 
     fn mul_inplace(acc: &mut Array1<f64>, rhs: ArrayView1<f64>) {
         *acc += &rhs; // log(a · b) = log a + log b
@@ -134,7 +144,11 @@ impl Semiring for LogProb {
             .for_each(|d, m, &v| {
                 let new_m = m.max(v);
                 // When old max was -∞ the rescaling factor is 0, not NaN.
-                *d = if *m == f64::NEG_INFINITY { 0.0 } else { (*m - new_m).exp() };
+                *d = if *m == f64::NEG_INFINITY {
+                    0.0
+                } else {
+                    (*m - new_m).exp()
+                };
                 *m = new_m;
             });
         *running_sum *= &*delta;
@@ -167,11 +181,21 @@ pub struct MaxProduct;
 impl Semiring for MaxProduct {
     type SumAcc = Array1<f64>;
 
-    fn zero() -> f64 { f64::NEG_INFINITY }
-    fn one()  -> f64 { 0.0 }
-    fn encode(p: f64) -> f64 { p.ln() }
-    fn decode(v: f64) -> f64 { v.exp() }
-    fn negate(v: f64) -> f64 { (1.0 - v.exp()).ln() } // ln(1 − exp(v))
+    fn zero() -> f64 {
+        f64::NEG_INFINITY
+    }
+    fn one() -> f64 {
+        0.0
+    }
+    fn encode(p: f64) -> f64 {
+        p.ln()
+    }
+    fn decode(v: f64) -> f64 {
+        v.exp()
+    }
+    fn negate(v: f64) -> f64 {
+        (1.0 - v.exp()).ln()
+    } // ln(1 − exp(v))
 
     fn mul_inplace(acc: &mut Array1<f64>, rhs: ArrayView1<f64>) {
         *acc += &rhs; // same log-space product as LogProb
@@ -187,7 +211,9 @@ impl Semiring for MaxProduct {
             .for_each(|m, &v| *m = m.max(v));
     }
 
-    fn sum_finish(acc: Self::SumAcc) -> Array1<f64> { acc }
+    fn sum_finish(acc: Self::SumAcc) -> Array1<f64> {
+        acc
+    }
 }
 
 // ── Fuzzy: ([0,1], max, min, 0, 1) ───────────────────────────────────────────
@@ -202,11 +228,21 @@ pub struct Fuzzy;
 impl Semiring for Fuzzy {
     type SumAcc = Array1<f64>;
 
-    fn zero() -> f64 { 0.0 }
-    fn one()  -> f64 { 1.0 }
-    fn encode(p: f64) -> f64 { p }
-    fn decode(v: f64) -> f64 { v }
-    fn negate(v: f64) -> f64 { 1.0 - v }
+    fn zero() -> f64 {
+        0.0
+    }
+    fn one() -> f64 {
+        1.0
+    }
+    fn encode(p: f64) -> f64 {
+        p
+    }
+    fn decode(v: f64) -> f64 {
+        v
+    }
+    fn negate(v: f64) -> f64 {
+        1.0 - v
+    }
 
     fn mul_inplace(acc: &mut Array1<f64>, rhs: ArrayView1<f64>) {
         ndarray::Zip::from(acc.view_mut())
@@ -214,7 +250,9 @@ impl Semiring for Fuzzy {
             .for_each(|a, &b| *a = a.min(b));
     }
 
-    fn sum_new(n: usize) -> Self::SumAcc { Array1::zeros(n) }
+    fn sum_new(n: usize) -> Self::SumAcc {
+        Array1::zeros(n)
+    }
 
     fn sum_step(acc: &mut Self::SumAcc, term: &Array1<f64>) {
         ndarray::Zip::from(acc.view_mut())
@@ -222,7 +260,9 @@ impl Semiring for Fuzzy {
             .for_each(|a, &v| *a = a.max(v));
     }
 
-    fn sum_finish(acc: Self::SumAcc) -> Array1<f64> { acc }
+    fn sum_finish(acc: Self::SumAcc) -> Array1<f64> {
+        acc
+    }
 }
 
 // ── Boolean: ({0, 1}, ∨, ∧, 0, 1) ───────────────────────────────────────────
@@ -237,11 +277,25 @@ pub struct Boolean;
 impl Semiring for Boolean {
     type SumAcc = Array1<f64>;
 
-    fn zero() -> f64 { 0.0 }
-    fn one()  -> f64 { 1.0 }
-    fn encode(p: f64) -> f64 { if p > 0.0 { 1.0 } else { 0.0 } }
-    fn decode(v: f64) -> f64 { v }
-    fn negate(v: f64) -> f64 { 1.0 - v } // 0 ↔ 1
+    fn zero() -> f64 {
+        0.0
+    }
+    fn one() -> f64 {
+        1.0
+    }
+    fn encode(p: f64) -> f64 {
+        if p > 0.0 {
+            1.0
+        } else {
+            0.0
+        }
+    }
+    fn decode(v: f64) -> f64 {
+        v
+    }
+    fn negate(v: f64) -> f64 {
+        1.0 - v
+    } // 0 ↔ 1
 
     fn mul_inplace(acc: &mut Array1<f64>, rhs: ArrayView1<f64>) {
         // AND: 0 if either factor is 0, else 1
@@ -250,7 +304,9 @@ impl Semiring for Boolean {
             .for_each(|a, &b| *a *= b);
     }
 
-    fn sum_new(n: usize) -> Self::SumAcc { Array1::zeros(n) }
+    fn sum_new(n: usize) -> Self::SumAcc {
+        Array1::zeros(n)
+    }
 
     fn sum_step(acc: &mut Self::SumAcc, term: &Array1<f64>) {
         // OR: max on {0, 1}
@@ -259,7 +315,9 @@ impl Semiring for Boolean {
             .for_each(|a, &v| *a = a.max(v));
     }
 
-    fn sum_finish(acc: Self::SumAcc) -> Array1<f64> { acc }
+    fn sum_finish(acc: Self::SumAcc) -> Array1<f64> {
+        acc
+    }
 }
 
 // ── ProbGradient: forward-mode autodiff over [0,1] ───────────────────────────
@@ -299,11 +357,21 @@ pub struct ProbGradient;
 impl Semiring for ProbGradient {
     type SumAcc = Array1<f64>;
 
-    fn zero() -> f64 { 0.0 }
-    fn one()  -> f64 { 1.0 }
-    fn encode(p: f64) -> f64 { p }
-    fn decode(v: f64) -> f64 { v }
-    fn negate(v: f64) -> f64 { 1.0 - v }
+    fn zero() -> f64 {
+        0.0
+    }
+    fn one() -> f64 {
+        1.0
+    }
+    fn encode(p: f64) -> f64 {
+        p
+    }
+    fn decode(v: f64) -> f64 {
+        v
+    }
+    fn negate(v: f64) -> f64 {
+        1.0 - v
+    }
 
     fn mul_inplace(acc: &mut Array1<f64>, rhs: ArrayView1<f64>) {
         let p_acc = acc[0];
@@ -315,9 +383,15 @@ impl Semiring for ProbGradient {
         acc[0] = p_acc * p_rhs;
     }
 
-    fn sum_new(n: usize) -> Array1<f64> { Array1::zeros(n) }
-    fn sum_step(acc: &mut Array1<f64>, term: &Array1<f64>) { *acc += term; }
-    fn sum_finish(acc: Array1<f64>) -> Array1<f64> { acc }
+    fn sum_new(n: usize) -> Array1<f64> {
+        Array1::zeros(n)
+    }
+    fn sum_step(acc: &mut Array1<f64>, term: &Array1<f64>) {
+        *acc += term;
+    }
+    fn sum_finish(acc: Array1<f64>) -> Array1<f64> {
+        acc
+    }
 
     fn encode_leaf_vec(value: ArrayView1<f64>, leaf_index: usize) -> Array1<f64> {
         let p = value[0];

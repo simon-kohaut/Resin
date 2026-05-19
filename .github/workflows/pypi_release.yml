@@ -2,12 +2,8 @@ name: "Release to PyPI"
 
 on:
   push:
-    branches:
-      - main
-      - master
     tags:
       - '*'
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -21,8 +17,7 @@ jobs:
         platform:
           - runner: ubuntu-22.04
             target: x86_64
-          - runner: ubuntu-22.04
-            target: x86
+            rustflags: "-C target-feature=+avx2,+fma"
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -46,6 +41,8 @@ jobs:
               LIB_PATH=$(ls "$CLINGO_DIR" | grep "cpython" | head -n 1)
               ln -sf $LIB_PATH "$CLINGO_DIR"/libclingo.so
               export CLINGO_LIBRARY_PATH="$CLINGO_DIR"
+        env:
+          RUSTFLAGS: ${{ matrix.platform.rustflags }}
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -92,9 +89,6 @@ jobs:
           - runner: windows-latest
             target: x64
             python_arch: x64
-          - runner: windows-latest
-            target: x86
-            python_arch: x86
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -131,8 +125,10 @@ jobs:
         platform:
           - runner: macos-15-intel
             target: x86_64
+            rustflags: "-C target-feature=+avx2,+fma"
           - runner: macos-latest
             target: aarch64
+            rustflags: ""
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -151,6 +147,8 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --find-interpreter
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        env:
+          RUSTFLAGS: ${{ matrix.platform.rustflags }}
       - name: Repair wheels with delocate
         run: |
           # Embed the brew-installed dylibs into the wheel

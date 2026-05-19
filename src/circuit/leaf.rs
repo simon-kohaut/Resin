@@ -49,7 +49,12 @@ impl<S: Semiring> Leaf<S> {
     /// Creates a new leaf from a value that is **already in the semiring's
     /// internal representation** (i.e. no encoding is applied).
     /// Use this when the encoded value was computed directly, e.g. via `S::negate`.
-    pub fn new_encoded(encoded_value: Vector, frequency: f64, name: &str, leaf_index: usize) -> Self {
+    pub fn new_encoded(
+        encoded_value: Vector,
+        frequency: f64,
+        name: &str,
+        leaf_index: usize,
+    ) -> Self {
         Self {
             encoded_value,
             frequency,

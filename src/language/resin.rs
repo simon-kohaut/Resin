@@ -19,11 +19,21 @@ use crate::language::{asp::solve, Dnf};
 /// manager, and the comparison registry that maps Density/Number source atoms
 /// to their registered threshold comparisons.
 pub struct Resin<S: Semiring = LogProb> {
+    /// The clauses (head if body rules) of the Resin program, dictating the
+    /// structure of the ReactiveCircuits.
     pub clauses: Vec<Clause>,
+    /// The sources of the Resin program, i.e., data channels that provide
+    /// Probability, Number, Density or Boolean values for inference.
     pub sources: Vec<Source>,
+    /// Categorical sources are mapped to atoms with different names instead of a true/false binary.
     pub categorical_sources: Vec<CategoricalSource>,
+    /// The outputs of this Resin program, each represented by a single ReactiveCircuit.
     pub targets: Vec<Target>,
+    /// The runtime manager controlling the inter process communication (IPC).
     pub manager: Manager<S>,
+    /// The number of elements held by each Leaf, i.e., a batch size for inference.
+    /// In the ProbGradient case, this is 1 + n_leafs instead, holding the computed
+    /// probability and all gradients.
     value_size: usize,
     /// Maps each Density/Number source atom name to its registered comparisons:
     /// `(threshold, upper_tail, canonical_leaf_name)`.
@@ -71,7 +81,10 @@ impl<S: Semiring> Resin<S> {
         }
 
         // Pass data to Clingo and obtain stable models
-        for target_index in 0..resin.targets.len() {
+        // TODO: Handle multiple targets
+        if !resin.targets.is_empty() {
+            let target_index = 0;
+
             // Compile Resin into ASP
             let program = resin.to_asp(target_index);
             if verbose {
@@ -110,9 +123,6 @@ impl<S: Semiring> Resin<S> {
 
             // Build the RC from the DNF
             resin.circuit_from_dnf(dnf, &resin.targets[target_index].channel);
-
-            // TODO: Handle multiple targets
-            break;
         }
 
         // Return the compiled Resin program
@@ -175,8 +185,7 @@ impl<S: Semiring> Resin<S> {
                     continue;
                 }
                 let pred = predicate_of(&comp.source_atom);
-                let param_pred =
-                    parameterized_comparison_predicate(pred, comp.op, comp.threshold);
+                let param_pred = parameterized_comparison_predicate(pred, comp.op, comp.threshold);
                 for source in &self.sources {
                     match source.message_type {
                         ResinType::Density | ResinType::Number => {}
@@ -215,7 +224,7 @@ impl<S: Semiring> Resin<S> {
         //                                         heads(C) :- heads_cause_0(C), coin(C).
         let mut prob_head_counts: HashMap<String, usize> = HashMap::new();
         for clause in &self.clauses {
-            if let Some(_) = clause.probability {
+            if clause.probability.is_some() {
                 let idx = prob_head_counts.entry(clause.head.clone()).or_insert(0);
 
                 if has_variable_arg(&clause.head) {
@@ -235,11 +244,8 @@ impl<S: Semiring> Resin<S> {
                     // instead of 1.0 in the WMC product.  Excluding them keeps the
                     // cause as a free coin flip within its structural domain,
                     // matching the correct Noisy-OR WMC semantics.
-                    let source_predicates: std::collections::HashSet<&str> = self
-                        .sources
-                        .iter()
-                        .map(|s| predicate_of(&s.name))
-                        .collect();
+                    let source_predicates: std::collections::HashSet<&str> =
+                        self.sources.iter().map(|s| predicate_of(&s.name)).collect();
                     let domain_body: Vec<&str> = clause
                         .body
                         .iter()
@@ -301,11 +307,9 @@ impl<S: Semiring> Resin<S> {
             match source.message_type {
                 ResinType::Probability | ResinType::Boolean => {
                     // Single leaf pair, driven directly by the writer.
-                    let idx_normal = self.manager.create_leaf(
-                        &source.name,
-                        Vector::zeros(self.value_size),
-                        0.0,
-                    );
+                    let idx_normal =
+                        self.manager
+                            .create_leaf(&source.name, Vector::zeros(self.value_size), 0.0);
                     let idx_inverted = self.manager.create_leaf(
                         &format!("-{}", source.name),
                         Vector::ones(self.value_size),
@@ -320,11 +324,9 @@ impl<S: Semiring> Resin<S> {
                     let mut registry_entry: Vec<(f64, bool, String)> = Vec::new();
 
                     for comp in comparisons {
-                        let idx_normal = self.manager.create_leaf(
-                            &comp.canonical_name,
-                            Vector::zeros(1),
-                            0.0,
-                        );
+                        let idx_normal =
+                            self.manager
+                                .create_leaf(&comp.canonical_name, Vector::zeros(1), 0.0);
                         let idx_inverted = self.manager.create_leaf(
                             &format!("-{}", comp.canonical_name),
                             Vector::ones(1),
@@ -353,14 +355,13 @@ impl<S: Semiring> Resin<S> {
         for cat_source in &self.categorical_sources.clone() {
             let mut category_indices = Vec::new();
             for category in &cat_source.categories {
-                let idx = self.manager.create_leaf(
-                    category,
-                    Vector::zeros(self.value_size),
-                    0.0,
-                );
+                let idx = self
+                    .manager
+                    .create_leaf(category, Vector::zeros(self.value_size), 0.0);
                 category_indices.push(idx);
             }
-            self.manager.read_categorical(category_indices, &cat_source.channel)?;
+            self.manager
+                .read_categorical(category_indices, &cat_source.channel)?;
         }
 
         // Create leaves for ground-head probabilistic clauses, mirroring the
@@ -388,7 +389,10 @@ impl<S: Semiring> Resin<S> {
             self.manager
                 .create_leaf(&category.leafs[1].name, category.leafs[1].get_value(), 0.0);
             let group_key = format!("{}#{}", predicate_of(&clause.head), *idx);
-            self.parameter_groups.entry(group_key).or_default().push(aux);
+            self.parameter_groups
+                .entry(group_key)
+                .or_default()
+                .push(aux);
             *idx += 1;
         }
 
@@ -429,11 +433,9 @@ impl<S: Semiring> Resin<S> {
             for literal in model_clause {
                 let atom = literal.trim_start_matches('-');
                 for (base, (p, group_key)) in &prob_map {
-                    let matches = atom == base.as_str()
-                        || atom.starts_with(&format!("{}(", base));
+                    let matches = atom == base.as_str() || atom.starts_with(&format!("{}(", base));
                     if matches && created.insert(atom.to_string()) {
-                        let category =
-                            Category::<S>::new(atom, *p * Vector::ones(self.value_size));
+                        let category = Category::<S>::new(atom, *p * Vector::ones(self.value_size));
                         self.manager.create_leaf(
                             &category.leafs[0].name,
                             category.leafs[0].get_value(),
@@ -607,11 +609,7 @@ impl<S: Semiring> Resin<S> {
             };
         }
         // Try categorical sources (matched only by channel).
-        if let Some(cat) = self
-            .categorical_sources
-            .iter()
-            .find(|c| c.channel == name)
-        {
+        if let Some(cat) = self.categorical_sources.iter().find(|c| c.channel == name) {
             return cat.categories.clone();
         }
         vec![]
@@ -664,7 +662,9 @@ impl<S: Semiring> Resin<S> {
                 .filter_map(|name| gradients.get(name).copied())
                 .sum();
 
-            let Some(&first_idx) = index_map.get(&pos_names[0]) else { continue };
+            let Some(&first_idx) = index_map.get(&pos_names[0]) else {
+                continue;
+            };
             let p = rc.leafs[first_idx].get_encoded_value()[0];
             let p_new = (p - lr * loss * sum_grad).clamp(0.0, 1.0);
 
@@ -790,10 +790,6 @@ impl<S: Semiring> FromStr for Resin<S> {
 #[cfg(test)]
 mod tests {
 
-    use std::time::Instant;
-
-    use polars::prelude::*;
-
     use super::*;
     use crate::circuit::semiring::{Boolean, Fuzzy, LogProb, MaxProduct, ProbGradient};
 
@@ -864,7 +860,10 @@ mod tests {
 
         // make_writer_for should return a Density writer
         let writer = resin.make_writer_for("distance(hospital)").unwrap();
-        assert!(matches!(writer, crate::channels::ipc::TypedWriter::Density(_)));
+        assert!(matches!(
+            writer,
+            crate::channels::ipc::TypedWriter::Density(_)
+        ));
     }
 
     #[test]
@@ -902,11 +901,13 @@ mod tests {
         let gt_idx = names.iter().position(|n| n.contains("gt")).unwrap();
 
         // P(X < 20) for Normal(25, 5) ≈ 0.159
-        assert!((values[lt_idx][0] - 0.159).abs() < 0.001,
-            "lt leaf = {}", values[lt_idx][0]);
+        assert!(
+            (values[lt_idx][0] - 0.159).abs() < 0.001,
+            "lt leaf = {}",
+            values[lt_idx][0]
+        );
         // P(X > 55) for Normal(25, 5) ≈ 0 (extremely small)
-        assert!(values[gt_idx][0] < 1e-6,
-            "gt leaf = {}", values[gt_idx][0]);
+        assert!(values[gt_idx][0] < 1e-6, "gt leaf = {}", values[gt_idx][0]);
     }
 
     #[test]
@@ -919,7 +920,10 @@ mod tests {
 
         let mut resin = TestResin::compile(model, 1, false).expect("Compile failed");
         let writer = resin.make_writer_for("speed").unwrap();
-        assert!(matches!(writer, crate::channels::ipc::TypedWriter::Number(_)));
+        assert!(matches!(
+            writer,
+            crate::channels::ipc::TypedWriter::Number(_)
+        ));
 
         let TypedWriter::Number(num_writer) = writer else {
             panic!("Expected Number writer");
@@ -952,7 +956,10 @@ mod tests {
 
         let mut resin = TestResin::compile(model, 1, false).expect("Compile failed");
         let writer = resin.make_writer_for("active").unwrap();
-        assert!(matches!(writer, crate::channels::ipc::TypedWriter::Boolean(_)));
+        assert!(matches!(
+            writer,
+            crate::channels::ipc::TypedWriter::Boolean(_)
+        ));
 
         let TypedWriter::Boolean(bool_writer) = writer else {
             panic!("Expected Boolean writer");
@@ -1010,7 +1017,10 @@ mod tests {
 
         // Check a correct result for target signal
         let result = resin.manager.reactive_circuit.lock().unwrap().update();
-        assert_eq!(result["/safety"], Vector::from(vec![0.8 * 0.7 + 0.2 * 0.7 + 0.8 * 0.3]));
+        assert_eq!(
+            result["/safety"],
+            Vector::from(vec![0.8 * 0.7 + 0.2 * 0.7 + 0.8 * 0.3])
+        );
     }
 
     // The three tests below use the same two-clause proximity model as
@@ -1042,8 +1052,8 @@ mod tests {
     /// both links are simultaneously active.
     #[test]
     fn test_max_product_most_probable_explanation() {
-        let resin = Resin::<MaxProduct>::compile(PROXIMITY_MODEL, 1, false)
-            .expect("compile failed");
+        let resin =
+            Resin::<MaxProduct>::compile(PROXIMITY_MODEL, 1, false).expect("compile failed");
         let result = resin.manager.reactive_circuit.lock().unwrap().full_update();
         let expected = 0.8_f64 * 0.7; // max(0.56, 0.14, 0.24) = 0.56
         assert!(
@@ -1061,8 +1071,7 @@ mod tests {
     /// to which both proximity conditions hold jointly — which dominates.
     #[test]
     fn test_fuzzy_degree_of_unsafety() {
-        let resin = Resin::<Fuzzy>::compile(PROXIMITY_MODEL, 1, false)
-            .expect("compile failed");
+        let resin = Resin::<Fuzzy>::compile(PROXIMITY_MODEL, 1, false).expect("compile failed");
         let result = resin.manager.reactive_circuit.lock().unwrap().full_update();
         // max(min(0.8,0.7), min(0.2,0.7), min(0.8,0.3)) = max(0.7, 0.2, 0.3) = 0.7
         let expected = 0.7_f64;
@@ -1081,8 +1090,7 @@ mod tests {
     /// and the circuit returns 1 — unsafe is satisfiable.
     #[test]
     fn test_boolean_unsafe_satisfiability() {
-        let resin = Resin::<Boolean>::compile(PROXIMITY_MODEL, 1, false)
-            .expect("compile failed");
+        let resin = Resin::<Boolean>::compile(PROXIMITY_MODEL, 1, false).expect("compile failed");
         let result = resin.manager.reactive_circuit.lock().unwrap().full_update();
         assert_eq!(
             result["/safety"][0], 1.0,
@@ -1105,17 +1113,37 @@ mod tests {
     ///   ∂WMC/∂p3 = p0      = 0.8
     #[test]
     fn test_prob_gradient_wmc_and_derivatives() {
-        let resin = Resin::<ProbGradient>::compile(PROXIMITY_MODEL, 1, false)
-            .expect("compile failed");
+        let resin =
+            Resin::<ProbGradient>::compile(PROXIMITY_MODEL, 1, false).expect("compile failed");
         let result = resin.manager.reactive_circuit.lock().unwrap().full_update();
         let grad = &result["/safety"];
 
         let tol = 1e-9_f64;
-        assert!((grad[0] - 0.94).abs() < tol,      "P(unsafe)  expected 0.94,  got {}", grad[0]);
-        assert!((grad[1] - 1.0 ).abs() < tol,      "∂/∂p0      expected 1.0,   got {}", grad[1]);
-        assert!((grad[2] - 0.7 ).abs() < tol,      "∂/∂p1      expected 0.7,   got {}", grad[2]);
-        assert!((grad[3] - 1.0 ).abs() < tol,      "∂/∂p2      expected 1.0,   got {}", grad[3]);
-        assert!((grad[4] - 0.8 ).abs() < tol,      "∂/∂p3      expected 0.8,   got {}", grad[4]);
+        assert!(
+            (grad[0] - 0.94).abs() < tol,
+            "P(unsafe)  expected 0.94,  got {}",
+            grad[0]
+        );
+        assert!(
+            (grad[1] - 1.0).abs() < tol,
+            "∂/∂p0      expected 1.0,   got {}",
+            grad[1]
+        );
+        assert!(
+            (grad[2] - 0.7).abs() < tol,
+            "∂/∂p1      expected 0.7,   got {}",
+            grad[2]
+        );
+        assert!(
+            (grad[3] - 1.0).abs() < tol,
+            "∂/∂p2      expected 1.0,   got {}",
+            grad[3]
+        );
+        assert!(
+            (grad[4] - 0.8).abs() < tol,
+            "∂/∂p3      expected 0.8,   got {}",
+            grad[4]
+        );
     }
 
     /// Gradient descent on leaf probabilities using `ProbGradient`.
@@ -1133,8 +1161,8 @@ mod tests {
     /// steps the circuit should converge to P(unsafe) ≈ 0.5.
     #[test]
     fn test_prob_gradient_learns_parameter() {
-        let resin = Resin::<ProbGradient>::compile(PROXIMITY_MODEL, 1, false)
-            .expect("compile failed");
+        let resin =
+            Resin::<ProbGradient>::compile(PROXIMITY_MODEL, 1, false).expect("compile failed");
 
         let mut rc = resin.manager.reactive_circuit.lock().unwrap();
         let target_p = 0.5_f64;
@@ -1156,7 +1184,8 @@ mod tests {
         assert!(
             (p_final - target_p).abs() < 1e-2,
             "gradient descent did not converge: P(unsafe) = {:.4}, target = {:.4}",
-            p_final, target_p
+            p_final,
+            target_p
         );
     }
 
@@ -1184,23 +1213,47 @@ mod tests {
         let resin: Resin = model.parse().unwrap();
         let asp = resin.to_asp(0);
 
-        assert!(asp.contains("{active}"), "referenced Boolean source must produce a choice");
-        assert!(!asp.contains("{unused_bool}"), "unreferenced Boolean source must not produce a choice");
+        assert!(
+            asp.contains("{active}"),
+            "referenced Boolean source must produce a choice"
+        );
+        assert!(
+            !asp.contains("{unused_bool}"),
+            "unreferenced Boolean source must not produce a choice"
+        );
 
-        assert!(asp.contains("{likely}"), "referenced Probability source must produce a choice");
-        assert!(!asp.contains("{unused_prob}"), "unreferenced Probability source must not produce a choice");
+        assert!(
+            asp.contains("{likely}"),
+            "referenced Probability source must produce a choice"
+        );
+        assert!(
+            !asp.contains("{unused_prob}"),
+            "unreferenced Probability source must not produce a choice"
+        );
 
         // Density/Number choices use canonical comparison names, not the source name directly.
         // Verify the referenced sources generate at least one choice and the unreferenced ones generate none.
         let dist_choice_count = asp.matches("dist").count();
         let unused_dist_choice_count = asp.matches("unused_dist").count();
-        assert!(dist_choice_count > 0, "referenced Density source must produce comparison choices");
-        assert_eq!(unused_dist_choice_count, 0, "unreferenced Density source must not produce comparison choices");
+        assert!(
+            dist_choice_count > 0,
+            "referenced Density source must produce comparison choices"
+        );
+        assert_eq!(
+            unused_dist_choice_count, 0,
+            "unreferenced Density source must not produce comparison choices"
+        );
 
         let speed_choice_count = asp.matches("speed").count();
         let unused_num_choice_count = asp.matches("unused_num").count();
-        assert!(speed_choice_count > 0, "referenced Number source must produce comparison choices");
-        assert_eq!(unused_num_choice_count, 0, "unreferenced Number source must not produce comparison choices");
+        assert!(
+            speed_choice_count > 0,
+            "referenced Number source must produce comparison choices"
+        );
+        assert_eq!(
+            unused_num_choice_count, 0,
+            "unreferenced Number source must not produce comparison choices"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1221,9 +1274,18 @@ mod tests {
         resin.setup_signals().unwrap();
         let asp = resin.to_asp(0);
 
-        assert!(asp.contains("{close_a__b_cause_0}"), "aux choice atom missing");
-        assert!(asp.contains("close(a, b) :- close_a__b_cause_0"), "aux rule missing");
-        assert!(!asp.contains("{close(a, b)}"), "raw head choice must not be emitted");
+        assert!(
+            asp.contains("{close_a__b_cause_0}"),
+            "aux choice atom missing"
+        );
+        assert!(
+            asp.contains("close(a, b) :- close_a__b_cause_0"),
+            "aux rule missing"
+        );
+        assert!(
+            !asp.contains("{close(a, b)}"),
+            "raw head choice must not be emitted"
+        );
     }
 
     #[test]
@@ -1241,7 +1303,10 @@ mod tests {
 
         assert!(asp.contains("{risky_cause_0}"), "first cause atom missing");
         assert!(asp.contains("{risky_cause_1}"), "second cause atom missing");
-        assert!(!asp.contains("{risky_cause_2}"), "spurious third cause atom present");
+        assert!(
+            !asp.contains("{risky_cause_2}"),
+            "spurious third cause atom present"
+        );
     }
 
     #[test]
@@ -1264,7 +1329,7 @@ mod tests {
             expected
         );
 
-        // FOL example for Noisy-Or 
+        // FOL example for Noisy-Or
         let model = r#"
             coin(c0).
             coin(c1).
@@ -1279,7 +1344,7 @@ mod tests {
 
         let resin = TestResin::compile(model, 1, true).expect("compile failed");
         let result = resin.manager.reactive_circuit.lock().unwrap().update();
-        let expected =  0.9744;
+        let expected = 0.9744;
         assert!(
             (result["/any_heads"][0] - expected).abs() < 1e-9,
             "noisy-OR probability wrong: got {}, expected {}",
@@ -1309,8 +1374,14 @@ mod tests {
         let asp = resin.to_asp(0);
 
         // One ground choice atom per source instance
-        assert!(asp.contains("{distance_hospital_gt_100}"), "missing hospital choice");
-        assert!(asp.contains("{distance_airport_gt_100}"), "missing airport choice");
+        assert!(
+            asp.contains("{distance_hospital_gt_100}"),
+            "missing hospital choice"
+        );
+        assert!(
+            asp.contains("{distance_airport_gt_100}"),
+            "missing airport choice"
+        );
 
         // Helper rules that let Clingo ground the parameterized predicate
         assert!(
@@ -1323,10 +1394,16 @@ mod tests {
         );
 
         // The clause body uses the parameterized, groundable form
-        assert!(asp.contains("resin_distance_gt_100(T)"), "missing parameterized atom in rule body");
+        assert!(
+            asp.contains("resin_distance_gt_100(T)"),
+            "missing parameterized atom in rule body"
+        );
 
         // The flat variable-templated atom must NOT appear
-        assert!(!asp.contains("{distance_T_gt_100}"), "spurious variable-template choice emitted");
+        assert!(
+            !asp.contains("{distance_T_gt_100}"),
+            "spurious variable-template choice emitted"
+        );
     }
 
     #[test]
@@ -1348,11 +1425,13 @@ mod tests {
         let names = resin.manager.get_names();
         assert!(
             names.iter().any(|n| n == "distance_hospital_gt_100"),
-            "hospital leaf missing: {:?}", names
+            "hospital leaf missing: {:?}",
+            names
         );
         assert!(
             names.iter().any(|n| n == "distance_airport_gt_100"),
-            "airport leaf missing: {:?}", names
+            "airport leaf missing: {:?}",
+            names
         );
     }
 
@@ -1379,8 +1458,14 @@ mod tests {
         assert_eq!(resin.sources.len(), 2);
         assert_eq!(resin.targets.len(), 1);
         let alarm = resin.clauses.iter().find(|c| c.head == "alarm").unwrap();
-        assert!(alarm.body.contains(&"active".to_string()), "active body literal missing");
-        assert!(!alarm.comparison_literals.is_empty(), "speed > 5 comparison missing");
+        assert!(
+            alarm.body.contains(&"active".to_string()),
+            "active body literal missing"
+        );
+        assert!(
+            !alarm.comparison_literals.is_empty(),
+            "speed > 5 comparison missing"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1389,9 +1474,9 @@ mod tests {
 
     #[test]
     fn test_integration() {
+        use crate::channels::ipc::VectorDistribution;
         use std::thread::sleep;
         use std::time::Duration;
-        use crate::channels::ipc::VectorDistribution;
 
         let model = r#"
         # Source declarations
@@ -1441,13 +1526,14 @@ mod tests {
         ] {
             assert!(
                 names.iter().any(|n| n == expected),
-                "leaf '{}' missing; all leaves: {:?}", expected, names
+                "leaf '{}' missing; all leaves: {:?}",
+                expected,
+                names
             );
         }
 
         // over(park) = 1.0 (certain)
-        let TypedWriter::Probability(prob_writer) =
-            resin.make_writer_for("over(park)").unwrap()
+        let TypedWriter::Probability(prob_writer) = resin.make_writer_for("over(park)").unwrap()
         else {
             panic!("Expected Probability writer");
         };
@@ -1459,8 +1545,7 @@ mod tests {
             mean: Vector::from_elem(1, 500.0),
             std: Vector::from_elem(1, 1.0),
         };
-        let TypedWriter::Density(dist_hosp) =
-            resin.make_writer_for("distance(hospital)").unwrap()
+        let TypedWriter::Density(dist_hosp) = resin.make_writer_for("distance(hospital)").unwrap()
         else {
             panic!("Expected Density writer");
         };
@@ -1470,24 +1555,20 @@ mod tests {
             mean: Vector::from_elem(1, 500.0),
             std: Vector::from_elem(1, 1.0),
         };
-        let TypedWriter::Density(dist_air) =
-            resin.make_writer_for("distance(airport)").unwrap()
+        let TypedWriter::Density(dist_air) = resin.make_writer_for("distance(airport)").unwrap()
         else {
             panic!("Expected Density writer");
         };
         dist_air.write(&far_dist2, None);
 
         // speed = 10 → speed_lt_25 = 1.0
-        let TypedWriter::Number(speed_writer) =
-            resin.make_writer_for("speed").unwrap()
-        else {
+        let TypedWriter::Number(speed_writer) = resin.make_writer_for("speed").unwrap() else {
             panic!("Expected Number writer");
         };
         speed_writer.write(Vector::from(vec![10.0]), None);
 
         // flight_hours = 200 → flight_hours_gt_100 = 1.0 (maintenance due)
-        let TypedWriter::Number(flight_writer) =
-            resin.make_writer_for("flight_hours(w1)").unwrap()
+        let TypedWriter::Number(flight_writer) = resin.make_writer_for("flight_hours(w1)").unwrap()
         else {
             panic!("Expected Number writer");
         };
@@ -1544,23 +1625,40 @@ mod tests {
         use std::thread::sleep;
         use std::time::Duration;
 
-        let mut resin = TestResin::compile(MNIST_MODEL, 1, false)
-            .expect("compile failed");
+        let mut resin = TestResin::compile(MNIST_MODEL, 1, false).expect("compile failed");
 
         // Verify the categorical leaves were created (positive only, no negatives).
         let names = resin.manager.get_names();
-        for expected in &["digit1(0)", "digit1(1)", "digit1(2)", "digit2(0)", "digit2(1)", "digit2(2)"] {
-            assert!(names.iter().any(|n| n == expected), "leaf '{}' missing; all: {:?}", expected, names);
+        for expected in &[
+            "digit1(0)",
+            "digit1(1)",
+            "digit1(2)",
+            "digit2(0)",
+            "digit2(1)",
+            "digit2(2)",
+        ] {
+            assert!(
+                names.iter().any(|n| n == expected),
+                "leaf '{}' missing; all: {:?}",
+                expected,
+                names
+            );
         }
         for unexpected in &["-digit1(0)", "-digit1(1)", "-digit2(0)"] {
-            assert!(!names.iter().any(|n| n == unexpected), "unexpected negative leaf '{}'", unexpected);
+            assert!(
+                !names.iter().any(|n| n == unexpected),
+                "unexpected negative leaf '{}'",
+                unexpected
+            );
         }
 
         // Write P(digit1) = [0.1, 0.6, 0.3] and P(digit2) = [0.4, 0.3, 0.2].
-        let TypedWriter::Categorical(w1) = resin.make_categorical_writer("/digit1").unwrap()
-        else { panic!("expected CategoricalWriter for /digit1") };
-        let TypedWriter::Categorical(w2) = resin.make_categorical_writer("/digit2").unwrap()
-        else { panic!("expected CategoricalWriter for /digit2") };
+        let TypedWriter::Categorical(w1) = resin.make_categorical_writer("/digit1").unwrap() else {
+            panic!("expected CategoricalWriter for /digit1")
+        };
+        let TypedWriter::Categorical(w2) = resin.make_categorical_writer("/digit2").unwrap() else {
+            panic!("expected CategoricalWriter for /digit2")
+        };
 
         w1.write(Vector::from(vec![0.1, 0.6, 0.3]), None);
         w2.write(Vector::from(vec![0.4, 0.3, 0.2]), None);
@@ -1574,7 +1672,9 @@ mod tests {
         let expected = 0.1_f64 * 0.2 + 0.6 * 0.3 + 0.3 * 0.4;
         assert!(
             (p - expected).abs() < 1e-9,
-            "P(sum=2) expected {:.4}, got {:.4}", expected, p
+            "P(sum=2) expected {:.4}, got {:.4}",
+            expected,
+            p
         );
     }
 }

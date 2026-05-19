@@ -9,6 +9,8 @@ use crate::circuit::ReactiveCircuit;
 
 use super::Vector;
 
+type ComparisonChannel = (f64, bool, Sender<(Vector, f64)>);
+
 /// Listens on an MPSC channel and writes received `(value, timestamp)` pairs
 /// to a single leaf in the reactive circuit, optionally inverting the value.
 #[derive(Clone)]
@@ -89,7 +91,7 @@ impl IpcDualReader {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let handle = std::thread::spawn(move || {
             while let Ok((value, timestamp)) = receiver.recv() {
-                let inverted_value = (Vector::ones(value.len()) - &*value).into();
+                let inverted_value = Vector::ones(value.len()) - &*value;
                 let mut circuit_guard = shared_reactive_circuit.lock().unwrap();
                 update(&mut circuit_guard, index_normal, value.clone(), timestamp);
                 update(
@@ -117,14 +119,12 @@ impl IpcWriter {
     /// Sends `value` with `timestamp` (or the current Unix time if `None`).
     /// Send failures (e.g. disconnected receiver) are silently ignored.
     pub fn write(&self, value: Vector, timestamp: Option<f64>) {
-        let timestamp = if timestamp.is_none() {
+        let timestamp = timestamp.unwrap_or_else(|| {
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("Acquiring UNIX timestamp failed!")
                 .as_secs_f64()
-        } else {
-            timestamp.unwrap()
-        };
+        });
 
         let _ = self.sender.send((value, timestamp));
     }
@@ -211,7 +211,6 @@ impl Drop for TimedIpcWriter {
     }
 }
 
-
 /// Passes a probability vector straight through to the circuit leaf.
 pub struct IpcProbabilityWriter {
     inner: IpcWriter,
@@ -231,7 +230,6 @@ impl IpcProbabilityWriter {
     }
 }
 
-
 /// Abramowitz & Stegun 7.1.26 — max error < 1.5e-7, no external deps.
 /// LLVM can auto-vectorize the polynomial part across ndarray mapv loops.
 #[inline]
@@ -239,13 +237,13 @@ fn erf(x: f64) -> f64 {
     let sign = if x >= 0.0 { 1.0 } else { -1.0 };
     let x = x.abs();
     let t = 1.0 / (1.0 + 0.3275911 * x);
-    let p = t * (0.254_829_592
-        + t * (-0.284_496_736
-            + t * (1.421_413_741 + t * (-1.453_152_027 + t * 1.061_405_429))));
+    let p = t
+        * (0.254_829_592
+            + t * (-0.284_496_736
+                + t * (1.421_413_741 + t * (-1.453_152_027 + t * 1.061_405_429))));
 
     sign * (1.0 - p * (-x * x).exp())
 }
-
 
 pub enum VectorDistribution {
     /// `params: [means, stds]`
@@ -311,10 +309,9 @@ impl VectorDistribution {
     /// P(X > threshold) = 1 − CDF(threshold), element-wise.
     pub fn sf(&self, threshold: f64) -> Vector {
         let c = self.cdf(threshold);
-        (Vector::ones(c.len()) - &*c).into()
+        Vector::ones(c.len()) - &*c
     }
 }
-
 
 /// Fan-out density writer.  A single `write(&distribution, ts)` call dispatches
 /// to every registered comparison channel, computing CDF or SF element-wise
@@ -323,7 +320,7 @@ impl VectorDistribution {
 /// - `upper_tail = true`  → SF(threshold)   = P(X > threshold)
 pub struct IpcDensityWriter {
     // (threshold, upper_tail, sender)
-    channels: Vec<(f64, bool, Sender<(Vector, f64)>)>,
+    channels: Vec<ComparisonChannel>,
 }
 
 impl IpcDensityWriter {
@@ -336,7 +333,7 @@ impl IpcDensityWriter {
     }
 
     /// Multi-comparison constructor used by the Resin compiler.
-    pub fn from_channels(channels: Vec<(f64, bool, Sender<(Vector, f64)>)>) -> Self {
+    pub fn from_channels(channels: Vec<ComparisonChannel>) -> Self {
         Self { channels }
     }
 
@@ -360,7 +357,7 @@ impl IpcDensityWriter {
 /// - `upper_tail = true`  → 1.0 when `value > threshold`
 pub struct IpcNumberWriter {
     // (threshold, upper_tail, sender)
-    channels: Vec<(f64, bool, Sender<(Vector, f64)>)>,
+    channels: Vec<ComparisonChannel>,
 }
 
 impl IpcNumberWriter {
@@ -372,7 +369,7 @@ impl IpcNumberWriter {
     }
 
     /// Multi-comparison constructor used by the Resin compiler.
-    pub fn from_channels(channels: Vec<(f64, bool, Sender<(Vector, f64)>)>) -> Self {
+    pub fn from_channels(channels: Vec<ComparisonChannel>) -> Self {
         Self { channels }
     }
 
@@ -384,9 +381,15 @@ impl IpcNumberWriter {
             let probability = value
                 .mapv(|v| {
                     if *upper_tail {
-                        if v > *threshold { 1.0 } else { 0.0 }
+                        if v > *threshold {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    } else if v < *threshold {
+                        1.0
                     } else {
-                        if v < *threshold { 1.0 } else { 0.0 }
+                        0.0
                     }
                 })
                 .into_shared();
@@ -410,8 +413,10 @@ impl IpcBooleanWriter {
 
     /// Converts `value` to `1.0` (`true`) or `0.0` (`false`) and sends it.
     pub fn write(&self, value: bool, timestamp: Option<f64>) {
-        self.inner
-            .write(Vector::from_elem(1, if value { 1.0 } else { 0.0 }), timestamp);
+        self.inner.write(
+            Vector::from_elem(1, if value { 1.0 } else { 0.0 }),
+            timestamp,
+        );
     }
 }
 
@@ -463,20 +468,30 @@ pub struct IpcCategoricalWriter {
 
 impl IpcCategoricalWriter {
     pub fn new(sender: Sender<(Vector, f64)>, n_categories: usize, value_size: usize) -> Self {
-        Self { inner: IpcWriter::new(sender).unwrap(), n_categories, value_size }
+        Self {
+            inner: IpcWriter::new(sender).unwrap(),
+            n_categories,
+            value_size,
+        }
     }
 
-    pub fn n_categories(&self) -> usize { self.n_categories }
-    pub fn value_size(&self) -> usize { self.value_size }
+    pub fn n_categories(&self) -> usize {
+        self.n_categories
+    }
+    pub fn value_size(&self) -> usize {
+        self.value_size
+    }
 
     /// Write a flat probability matrix.  `probabilities` must have length
     /// `n_categories * value_size`, laid out as `n_categories` consecutive
     /// columns of `value_size` entries each.
     pub fn write(&self, probabilities: Vector, timestamp: Option<f64>) {
         debug_assert_eq!(
-            probabilities.len(), self.n_categories * self.value_size,
+            probabilities.len(),
+            self.n_categories * self.value_size,
             "categorical write: expected {} values, got {}",
-            self.n_categories * self.value_size, probabilities.len()
+            self.n_categories * self.value_size,
+            probabilities.len()
         );
         self.inner.write(probabilities, timestamp);
     }
@@ -572,10 +587,8 @@ mod tests {
         let (tx_lt, rx_lt) = mpsc::channel::<(Vector, f64)>();
         let (tx_gt, rx_gt) = mpsc::channel::<(Vector, f64)>();
         // Fan-out: one channel for < 10, one for > 50
-        let writer = IpcNumberWriter::from_channels(vec![
-            (10.0, false, tx_lt),
-            (50.0, true, tx_gt),
-        ]);
+        let writer =
+            IpcNumberWriter::from_channels(vec![(10.0, false, tx_lt), (50.0, true, tx_gt)]);
 
         writer.write(array![5.0].into(), None); // < 10 → 1.0 | > 50 → 0.0
         assert_eq!(rx_lt.try_recv().unwrap().0[0], 1.0);
@@ -591,10 +604,8 @@ mod tests {
         let (tx_lt, rx_lt) = mpsc::channel::<(Vector, f64)>();
         let (tx_gt, rx_gt) = mpsc::channel::<(Vector, f64)>();
         // Fan-out: P(X < 20) and P(X > 55) for Normal(25, 5)
-        let writer = IpcDensityWriter::from_channels(vec![
-            (20.0, false, tx_lt),
-            (55.0, true, tx_gt),
-        ]);
+        let writer =
+            IpcDensityWriter::from_channels(vec![(20.0, false, tx_lt), (55.0, true, tx_gt)]);
 
         let dist = VectorDistribution::Normal {
             mean: Vector::from_elem(1, 25.0),
@@ -625,8 +636,12 @@ mod tests {
     fn test_vector_distribution_normal_many_values() {
         const N: usize = 10_000;
         // N distributions with means spread from -5 to 5 and stds from 0.5 to 2.0
-        let means: Vec<f64> = (0..N).map(|i| -5.0 + 10.0 * i as f64 / (N - 1) as f64).collect();
-        let stds: Vec<f64> = (0..N).map(|i| 0.5 + 1.5 * i as f64 / (N - 1) as f64).collect();
+        let means: Vec<f64> = (0..N)
+            .map(|i| -5.0 + 10.0 * i as f64 / (N - 1) as f64)
+            .collect();
+        let stds: Vec<f64> = (0..N)
+            .map(|i| 0.5 + 1.5 * i as f64 / (N - 1) as f64)
+            .collect();
         let threshold = 0.0;
 
         let dist = VectorDistribution::Normal {
@@ -667,8 +682,10 @@ mod tests {
         let result = dist.cdf(threshold);
         assert_eq!(result.len(), N);
 
-        for (i, (&p, (&m, &s))) in
-            result.iter().zip(log_means.iter().zip(log_stds.iter())).enumerate()
+        for (i, (&p, (&m, &s))) in result
+            .iter()
+            .zip(log_means.iter().zip(log_stds.iter()))
+            .enumerate()
         {
             let expected = normal_cdf_ref(threshold.ln(), m, s);
             assert!(
@@ -684,7 +701,9 @@ mod tests {
         let rates: Vec<f64> = (1..=N).map(|i| i as f64 / 100.0).collect();
         let threshold = 2.0_f64;
 
-        let dist = VectorDistribution::Exponential { rate: Vector::from(rates.clone()) };
+        let dist = VectorDistribution::Exponential {
+            rate: Vector::from(rates.clone()),
+        };
         let result = dist.cdf(threshold);
         assert_eq!(result.len(), N);
 
@@ -711,9 +730,7 @@ mod tests {
         let result = dist.cdf(threshold);
         assert_eq!(result.len(), N);
 
-        for (i, (&p, (&lo, &hi))) in
-            result.iter().zip(lows.iter().zip(highs.iter())).enumerate()
-        {
+        for (i, (&p, (&lo, &hi))) in result.iter().zip(lows.iter().zip(highs.iter())).enumerate() {
             let expected = if threshold <= lo {
                 0.0
             } else if threshold >= hi {
@@ -736,7 +753,9 @@ mod tests {
         let (tx, rx) = mpsc::channel::<(Vector, f64)>();
         let writer = IpcDensityWriter::new(tx, 0.0, false); // CDF at threshold=0
 
-        let means: Vec<f64> = (0..N).map(|i| -5.0 + 10.0 * i as f64 / (N - 1) as f64).collect();
+        let means: Vec<f64> = (0..N)
+            .map(|i| -5.0 + 10.0 * i as f64 / (N - 1) as f64)
+            .collect();
         let stds: Vec<f64> = vec![1.0; N];
         let dist = VectorDistribution::Normal {
             mean: Vector::from(means.clone()),
@@ -750,11 +769,17 @@ mod tests {
 
         // For mean < 0 (lower half), CDF(0) > 0.5
         let lower_half_mean = result[0]; // mean = -5.0
-        assert!(lower_half_mean > 0.9, "CDF(0) for N(-5,1) should be near 1: {lower_half_mean}");
+        assert!(
+            lower_half_mean > 0.9,
+            "CDF(0) for N(-5,1) should be near 1: {lower_half_mean}"
+        );
 
         // For mean = 0 (midpoint), CDF(0) ≈ 0.5
         let mid = result[N / 2];
-        assert!((mid - 0.5).abs() < 0.01, "CDF(0) for N(0,1) should be ~0.5: {mid}");
+        assert!(
+            (mid - 0.5).abs() < 0.01,
+            "CDF(0) for N(0,1) should be ~0.5: {mid}"
+        );
 
         // For mean > 0 (upper half), CDF(0) < 0.5
         let upper_half_mean = result[N - 1]; // mean = 5.0

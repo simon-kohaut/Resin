@@ -176,14 +176,18 @@ impl<S: Semiring> ReactiveCircuit<S> {
         println!("{:?}", partitioning);
 
         if self.partitioning.is_empty() {
-            for index in 0..partitioning.len() {
-                for _ in 0..partitioning[index] {
+            for (index, &count) in partitioning.iter().enumerate() {
+                for _ in 0..count {
                     self.drop_leaf(index as u32);
                 }
             }
         } else {
-            for index in 0..self.partitioning.len() {
-                let difference = self.partitioning[index] as i32 - partitioning[index] as i32;
+            for (index, &new_count) in partitioning
+                .iter()
+                .enumerate()
+                .take(self.partitioning.len())
+            {
+                let difference = self.partitioning[index] as i32 - new_count as i32;
                 match difference.signum() {
                     -1 => {
                         for _ in 0..-difference {
@@ -312,9 +316,11 @@ impl<S: Semiring> ReactiveCircuit<S> {
             let parent = self
                 .structure
                 .add_node(AlgebraicCircuit::new(self.value_size));
-            let edge = self
-                .structure
-                .add_edge(parent, index, Array1::from_elem(self.value_size, S::zero()).into_shared());
+            let edge = self.structure.add_edge(
+                parent,
+                index,
+                Array1::from_elem(self.value_size, S::zero()).into_shared(),
+            );
 
             self.queue.insert(parent.index() as u32);
 
@@ -385,7 +391,13 @@ impl<S: Semiring> ReactiveCircuit<S> {
             self.check_invariants();
 
             let node_to_lift: NodeIndex = dependency.into();
-            if self.structure.node_weight(node_to_lift).unwrap().get_leaf(index).is_none() {
+            if self
+                .structure
+                .node_weight(node_to_lift)
+                .unwrap()
+                .get_leaf(index)
+                .is_none()
+            {
                 continue;
             }
 
@@ -435,7 +447,7 @@ impl<S: Semiring> ReactiveCircuit<S> {
                     in_scope_circuit
                         .minterms
                         .iter()
-                        .filter(|row| row.as_slice() == &[x_col])
+                        .filter(|row| row.as_slice() == [x_col])
                         .count()
                 })
                 .unwrap_or(0);
@@ -541,12 +553,7 @@ impl<S: Semiring> ReactiveCircuit<S> {
     /// Push leaf `leaf_index` from `dependency`'s row `row` down into a child:
     /// either multiply it into the child that a sibling memory points to, or
     /// create a new child AC containing only that leaf.
-    fn handle_leaf_drop_for_product(
-        &mut self,
-        leaf_index: u32,
-        dependency: NodeIndex,
-        row: usize,
-    ) {
+    fn handle_leaf_drop_for_product(&mut self, leaf_index: u32, dependency: NodeIndex, row: usize) {
         let mem_col = self.structure[dependency]
             .get_minterm_cols(row)
             .iter()
@@ -560,9 +567,11 @@ impl<S: Semiring> ReactiveCircuit<S> {
         } else {
             let new_ac = AlgebraicCircuit::from_sum_product(self.value_size, &[vec![leaf_index]]);
             let new_node = self.structure.add_node(new_ac);
-            let new_edge = self
-                .structure
-                .add_edge(dependency, new_node, Array1::from_elem(self.value_size, S::zero()).into_shared());
+            let new_edge = self.structure.add_edge(
+                dependency,
+                new_node,
+                Array1::from_elem(self.value_size, S::zero()).into_shared(),
+            );
             let ac = self.structure.node_weight_mut(dependency).unwrap();
             let mem_col = ac.create_memory(new_edge);
             ac.add_col_to_minterm(row, mem_col);
@@ -573,9 +582,11 @@ impl<S: Semiring> ReactiveCircuit<S> {
     /// new reactive edge.  Returns the new memory column index.
     pub fn connect(&mut self, parent: NodeIndex, child: NodeIndex, row: usize) -> usize {
         self.topo_levels = None;
-        let edge = self
-            .structure
-            .add_edge(parent, child, Array1::from_elem(self.value_size, S::zero()).into_shared());
+        let edge = self.structure.add_edge(
+            parent,
+            child,
+            Array1::from_elem(self.value_size, S::zero()).into_shared(),
+        );
         let mem_col = self
             .structure
             .node_weight_mut(parent)
@@ -634,7 +645,12 @@ impl<S: Semiring> ReactiveCircuit<S> {
             let topo = toposort(&self.structure, None).expect("ReactiveCircuit should be a DAG");
 
             // Assign each node its evaluation level (children first = reverse topo order).
-            let max_idx = self.structure.node_indices().map(|n| n.index()).max().unwrap_or(0);
+            let max_idx = self
+                .structure
+                .node_indices()
+                .map(|n| n.index())
+                .max()
+                .unwrap_or(0);
             let mut node_level = vec![0usize; max_idx + 1];
             for &node in topo.iter().rev() {
                 let child_max = self
@@ -672,10 +688,8 @@ impl<S: Semiring> ReactiveCircuit<S> {
             for (node, result) in level_results {
                 for (token, &target_node) in &self.targets {
                     if target_node == node {
-                        target_results.insert(
-                            token.to_owned(),
-                            result.mapv(S::decode).into_shared(),
-                        );
+                        target_results
+                            .insert(token.to_owned(), result.mapv(S::decode).into_shared());
                     }
                 }
                 let edges: Vec<EdgeIndex> = self
@@ -863,10 +877,14 @@ impl<S: Semiring> ReactiveCircuit<S> {
         // Iterate over the nodes
         for node in self.structure.node_indices() {
             let ac = &self.structure[node];
-            let scope: Vec<String> = ac.columns.iter().map(|col| match col {
-                super::algebraic::Column::Leaf(i) => format!("L{}", i),
-                super::algebraic::Column::Memory(k) => format!("M{}", k),
-            }).collect();
+            let scope: Vec<String> = ac
+                .columns
+                .iter()
+                .map(|col| match col {
+                    super::algebraic::Column::Leaf(i) => format!("L{}", i),
+                    super::algebraic::Column::Memory(k) => format!("M{}", k),
+                })
+                .collect();
             let node_label = format!(
                 "P({}) = ΣΠ\\n{}",
                 self.targets
@@ -944,11 +962,11 @@ impl<S: Semiring> ReactiveCircuit<S> {
         let mut file = File::create(path)?;
 
         // Describe ReactiveCircuit itself in dot format
-        file.write_all(&self.to_dot_text().as_bytes())?;
+        file.write_all(self.to_dot_text().as_bytes())?;
 
         // Gather dot text for all contained AlgebraicCircuits
         for node in self.structure.node_indices() {
-            file.write_all(&self.structure[node].to_dot_text().as_bytes())?;
+            file.write_all(self.structure[node].to_dot_text().as_bytes())?;
         }
 
         // Ensure write is complete
@@ -1034,7 +1052,7 @@ mod tests {
                 Vector::from(vec![rng.random_range(0.0..1.0)]),
                 0.0,
                 &format!("leaf_{}", i),
-                i,  // leaf_index
+                i, // leaf_index
             ));
         }
 
@@ -1049,7 +1067,7 @@ mod tests {
         }
 
         reactive_circuit.add_sum_product(&sum_of_products, "random_target");
-        reactive_circuit.to_svg("test_randomized_rc.svg", false);
+        let _ = reactive_circuit.to_svg("test_randomized_rc.svg", false);
 
         // 3. Simulation loop
         for step in 0..simulation_steps + 1 {
@@ -1127,12 +1145,18 @@ mod tests {
         let expected = 0.5_f64 + 0.5 * 0.4;
 
         let v_before = rc.full_update()["test"][0];
-        assert!((v_before - expected).abs() < 1e-9, "before lift: {v_before} != {expected}");
+        assert!(
+            (v_before - expected).abs() < 1e-9,
+            "before lift: {v_before} != {expected}"
+        );
 
         rc.lift_leaf(0);
 
         let v_after = rc.full_update()["test"][0];
-        assert!((v_after - expected).abs() < 1e-9, "after lift: {v_after} != {expected}");
+        assert!(
+            (v_after - expected).abs() < 1e-9,
+            "after lift: {v_after} != {expected}"
+        );
     }
 
     #[test]
@@ -1150,7 +1174,7 @@ mod tests {
             .leafs
             .push(Leaf::new(Vector::ones(1), 0.0, "", 2));
 
-        reactive_circuit.add_sum_product(&vec![vec![0, 1], vec![0, 2]], "test");
+        reactive_circuit.add_sum_product(&[vec![0, 1], vec![0, 2]], "test");
 
         assert_eq!(reactive_circuit.leafs.len(), 3);
         assert_eq!(reactive_circuit.structure.node_count(), 1);

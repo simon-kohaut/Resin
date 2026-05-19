@@ -9,8 +9,7 @@ const BODY_PATTERN: &str = r"(?<body>.+)";
 const TOPIC_PATTERN: &str = r#""(?<topic>(?:\/\w+)+)""#;
 const DTYPE_PATTERN: &str = r"(?<dtype>Probability|Density|Number|Boolean)";
 // Matches comparison literals in clause bodies, e.g. `distance(hospital) < 20.0`
-const COMPARISON_PATTERN: &str =
-    r"(?<comp_atom>\w+(?:\([\w\s,]+\))?)\s+(?<comp_op>[<>])\s+(?<comp_threshold>[+-]?\d+(?:\.\d+)?)";
+const COMPARISON_PATTERN: &str = r"(?<comp_atom>\w+(?:\([\w\s,]+\))?)\s+(?<comp_op>[<>])\s+(?<comp_threshold>[+-]?\d+(?:\.\d+)?)";
 
 // Matches categorical source declarations, e.g. `{dog, cat} <- source("/cls", Categorical).`
 const CATEGORICAL_SOURCE_PATTERN: &str =
@@ -18,7 +17,7 @@ const CATEGORICAL_SOURCE_PATTERN: &str =
 
 // Regular expressions for complete Resin statements
 lazy_static! {
-    pub static ref LITERAL_REGEX: Regex = Regex::new(&LITERAL_PATTERN).unwrap();
+    pub static ref LITERAL_REGEX: Regex = Regex::new(LITERAL_PATTERN).unwrap();
     pub static ref CATEGORICAL_SOURCE_REGEX: Regex =
         Regex::new(CATEGORICAL_SOURCE_PATTERN).unwrap();
     pub static ref CLAUSE_REGEX: Regex = Regex::new(&format!(
@@ -112,7 +111,13 @@ pub fn parameterized_comparison_predicate(predicate: &str, op: char, threshold: 
 pub fn cause_atom_name(head: &str, index: usize) -> String {
     let sanitized: String = head
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let sanitized = sanitized.trim_matches('_');
     format!("{}_cause_{}", sanitized, index)
@@ -127,7 +132,13 @@ pub fn cause_atom_base_name(head: &str, index: usize) -> String {
     let pred = predicate_of(head);
     let sanitized: String = pred
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("{}_cause_{}", sanitized.trim_matches('_'), index)
 }
@@ -138,7 +149,13 @@ pub fn cause_atom_base_name(head: &str, index: usize) -> String {
 pub fn canonical_comparison_name(atom: &str, op: char, threshold: f64) -> String {
     let sanitized: String = atom
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let sanitized = sanitized.trim_matches('_');
     let op_str = if op == '<' { "lt" } else { "gt" };
@@ -168,7 +185,10 @@ mod tests {
         // "and" as a conjunction keyword must be stripped.
         assert_eq!(get_literals("foo and bar"), vec!["foo", "bar"]);
         // "and" inside an atom name must NOT be stripped.
-        assert_eq!(get_literals("random and command"), vec!["random", "command"]);
+        assert_eq!(
+            get_literals("random and command"),
+            vec!["random", "command"]
+        );
         assert_eq!(get_literals("sand_check"), vec!["sand_check"]);
         // Body mixing embedded-"and" atom with the keyword.
         assert_eq!(
@@ -282,18 +302,21 @@ mod tests {
         assert_eq!(cause_atom_name("close(a, b)", 0), "close_a__b_cause_0");
         assert_eq!(cause_atom_name("risky", 0), "risky_cause_0");
         assert_eq!(cause_atom_name("risky", 1), "risky_cause_1");
-        assert_eq!(cause_atom_name("unsafe(drone_1)", 2), "unsafe_drone_1_cause_2");
+        assert_eq!(
+            cause_atom_name("unsafe(drone_1)", 2),
+            "unsafe_drone_1_cause_2"
+        );
     }
 
     #[test]
     fn test_has_variable_arg() {
         assert!(has_variable_arg("distance(T)"));
         assert!(has_variable_arg("distance(A, B)"));
-        assert!(has_variable_arg("distance(A, hub, B)"));  // mixed constant/variable
+        assert!(has_variable_arg("distance(A, hub, B)")); // mixed constant/variable
         assert!(!has_variable_arg("distance(hospital)"));
         assert!(!has_variable_arg("distance(hospital, airport)"));
-        assert!(!has_variable_arg("speed"));               // bare atom, lowercase
-        assert!(has_variable_arg("T"));                    // bare variable
+        assert!(!has_variable_arg("speed")); // bare atom, lowercase
+        assert!(has_variable_arg("T")); // bare variable
     }
 
     #[test]
@@ -303,10 +326,7 @@ mod tests {
             args_of("distance(hospital, airport)"),
             Some(vec!["hospital", "airport"])
         );
-        assert_eq!(
-            args_of("distance(A, hub, B)"),
-            Some(vec!["A", "hub", "B"])
-        );
+        assert_eq!(args_of("distance(A, hub, B)"), Some(vec!["A", "hub", "B"]));
         assert_eq!(args_of("speed"), None);
     }
 

@@ -4,7 +4,7 @@
 /// Literals may be positive (`"safe"`) or negated (`"-safe"`).
 /// This representation is populated directly from Clingo stable models and then
 /// used to build the reactive arithmetic circuit.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Dnf {
     pub clauses: Vec<Vec<String>>,
 }
@@ -12,7 +12,7 @@ pub struct Dnf {
 impl Dnf {
     /// Creates an empty DNF with no clauses.
     pub fn new() -> Self {
-        Dnf { clauses: vec![] }
+        Self::default()
     }
 
     /// Appends a conjunctive clause to the formula.

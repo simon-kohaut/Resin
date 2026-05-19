@@ -132,21 +132,31 @@ impl AlgebraicCircuit {
 
     fn remove_col_inner(&mut self, col: usize) {
         match &self.columns[col] {
-            Column::Leaf(idx) => { self.leafs.remove(idx); }
-            Column::Memory(key) => { self.memories.remove(key); }
+            Column::Leaf(idx) => {
+                self.leafs.remove(idx);
+            }
+            Column::Memory(key) => {
+                self.memories.remove(key);
+            }
         }
         self.columns.remove(col);
         for row in &mut self.minterms {
             row.retain(|&c| c != col);
             for c in row.iter_mut() {
-                if *c > col { *c -= 1; }
+                if *c > col {
+                    *c -= 1;
+                }
             }
         }
         for v in self.leafs.values_mut() {
-            if *v > col { *v -= 1; }
+            if *v > col {
+                *v -= 1;
+            }
         }
         for v in self.memories.values_mut() {
-            if *v > col { *v -= 1; }
+            if *v > col {
+                *v -= 1;
+            }
         }
     }
 
@@ -235,10 +245,7 @@ impl AlgebraicCircuit {
         let (in_rows, out_rows): (Vec<_>, Vec<_>) =
             self.minterms.iter().partition(|row| row.contains(&col));
 
-        (
-            self.sub_circuit(in_rows),
-            self.sub_circuit(out_rows),
-        )
+        (self.sub_circuit(in_rows), self.sub_circuit(out_rows))
     }
 
     /// Build a sub-circuit from a subset of rows, remapping column indices.
@@ -257,8 +264,12 @@ impl AlgebraicCircuit {
             remap[old] = new_col;
             let col = self.columns[old].clone();
             match &col {
-                Column::Leaf(idx) => { ac.leafs.insert(*idx, new_col); }
-                Column::Memory(key) => { ac.memories.insert(*key, new_col); }
+                Column::Leaf(idx) => {
+                    ac.leafs.insert(*idx, new_col);
+                }
+                Column::Memory(key) => {
+                    ac.memories.insert(*key, new_col);
+                }
             }
             ac.columns.push(col);
         }
@@ -290,12 +301,18 @@ impl AlgebraicCircuit {
         // Apply to columns.
         let new_cols: Vec<Column> = order.iter().map(|&o| self.columns[o].clone()).collect();
         self.columns = new_cols;
-        for v in self.leafs.values_mut() { *v = inv[*v]; }
-        for v in self.memories.values_mut() { *v = inv[*v]; }
+        for v in self.leafs.values_mut() {
+            *v = inv[*v];
+        }
+        for v in self.memories.values_mut() {
+            *v = inv[*v];
+        }
 
         // Apply to rows and sort.
         for row in &mut self.minterms {
-            for c in row.iter_mut() { *c = inv[*c]; }
+            for c in row.iter_mut() {
+                *c = inv[*c];
+            }
             row.sort_unstable();
         }
         self.minterms.sort_unstable();
@@ -317,14 +334,22 @@ impl AlgebraicCircuit {
             return Array1::from_elem(self.value_size, S::zero()).into_shared();
         }
 
-        let cols: Vec<ndarray::ArrayView1<f64>> = self.columns.iter().map(|col| match col {
-            Column::Leaf(idx)   => rc.leafs[*idx as usize].get_encoded_value(),
-            Column::Memory(key) => rc.structure[EdgeIndex::new(*key as usize)].view(),
-        }).collect();
+        let cols: Vec<ndarray::ArrayView1<f64>> = self
+            .columns
+            .iter()
+            .map(|col| match col {
+                Column::Leaf(idx) => rc.leafs[*idx as usize].get_encoded_value(),
+                Column::Memory(key) => rc.structure[EdgeIndex::new(*key as usize)].view(),
+            })
+            .collect();
 
         let n = self.value_size;
         let mut sum_acc = S::sum_new(n);
-        let mut term    = { let mut t = Array1::zeros(n); S::reset_term(&mut t); t };
+        let mut term = {
+            let mut t = Array1::zeros(n);
+            S::reset_term(&mut t);
+            t
+        };
 
         for row in &self.minterms {
             S::reset_term(&mut term);
@@ -349,12 +374,19 @@ impl AlgebraicCircuit {
         dot.push_str("  node [shape=record];\n");
         dot.push_str(&format!(
             "  matrix [label=\"{{{}}}\" shape=record];\n",
-            self.minterms.iter().map(|row| {
-                row.iter().map(|&c| match &self.columns[c] {
-                    Column::Leaf(i) => format!("L{}", i),
-                    Column::Memory(k) => format!("M{}", k),
-                }).collect::<Vec<_>>().join("·")
-            }).collect::<Vec<_>>().join(" | ")
+            self.minterms
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|&c| match &self.columns[c] {
+                            Column::Leaf(i) => format!("L{}", i),
+                            Column::Memory(k) => format!("M{}", k),
+                        })
+                        .collect::<Vec<_>>()
+                        .join("·")
+                })
+                .collect::<Vec<_>>()
+                .join(" | ")
         ));
         dot.push_str("}\n");
         dot
@@ -366,7 +398,11 @@ impl AlgebraicCircuit {
     }
 
     pub fn to_svg(&self, path: &str, keep_dot: bool) -> std::io::Result<()> {
-        let dot_path = if keep_dot { path.to_owned() + ".dot" } else { path.to_owned() };
+        let dot_path = if keep_dot {
+            path.to_owned() + ".dot"
+        } else {
+            path.to_owned()
+        };
         self.to_dot(&dot_path)?;
         let svg = Command::new("dot").args(["-Tsvg", &dot_path]).output()?;
         let mut file = File::create(path)?;
@@ -374,7 +410,6 @@ impl AlgebraicCircuit {
         file.sync_all()
     }
 }
-
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 

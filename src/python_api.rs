@@ -56,15 +56,30 @@ macro_rules! with_rc {
     ($variant:expr, $c:ident => $body:expr) => {
         match $variant {
             #[allow(unused_mut)]
-            RCVariant::LogProb(arc) => { let mut $c = arc.lock().unwrap(); $body }
+            RCVariant::LogProb(arc) => {
+                let mut $c = arc.lock().unwrap();
+                $body
+            }
             #[allow(unused_mut)]
-            RCVariant::MaxProduct(arc) => { let mut $c = arc.lock().unwrap(); $body }
+            RCVariant::MaxProduct(arc) => {
+                let mut $c = arc.lock().unwrap();
+                $body
+            }
             #[allow(unused_mut)]
-            RCVariant::Fuzzy(arc) => { let mut $c = arc.lock().unwrap(); $body }
+            RCVariant::Fuzzy(arc) => {
+                let mut $c = arc.lock().unwrap();
+                $body
+            }
             #[allow(unused_mut)]
-            RCVariant::Boolean(arc) => { let mut $c = arc.lock().unwrap(); $body }
+            RCVariant::Boolean(arc) => {
+                let mut $c = arc.lock().unwrap();
+                $body
+            }
             #[allow(unused_mut)]
-            RCVariant::ProbGradient(arc) => { let mut $c = arc.lock().unwrap(); $body }
+            RCVariant::ProbGradient(arc) => {
+                let mut $c = arc.lock().unwrap();
+                $body
+            }
         }
     };
 }
@@ -220,18 +235,26 @@ impl PyCategoricalWriter {
         self.writer.write(Vector::from(probabilities), timestamp);
     }
 
-    pub fn n_categories(&self) -> usize { self.writer.n_categories() }
-    pub fn value_size(&self) -> usize { self.writer.value_size() }
+    pub fn n_categories(&self) -> usize {
+        self.writer.n_categories()
+    }
+    pub fn value_size(&self) -> usize {
+        self.writer.value_size()
+    }
 }
 
 /// Converts a `TypedWriter` into the appropriate Python writer object.
 fn typed_writer_to_py(py: Python<'_>, writer: TypedWriter) -> PyResult<Py<PyAny>> {
     match writer {
-        TypedWriter::Probability(w) => Ok(Py::new(py, PyProbabilityWriter { writer: w })?.into_any()),
+        TypedWriter::Probability(w) => {
+            Ok(Py::new(py, PyProbabilityWriter { writer: w })?.into_any())
+        }
         TypedWriter::Density(w) => Ok(Py::new(py, PyDensityWriter { writer: w })?.into_any()),
         TypedWriter::Number(w) => Ok(Py::new(py, PyNumberWriter { writer: w })?.into_any()),
         TypedWriter::Boolean(w) => Ok(Py::new(py, PyBooleanWriter { writer: w })?.into_any()),
-        TypedWriter::Categorical(w) => Ok(Py::new(py, PyCategoricalWriter { writer: w })?.into_any()),
+        TypedWriter::Categorical(w) => {
+            Ok(Py::new(py, PyCategoricalWriter { writer: w })?.into_any())
+        }
     }
 }
 
@@ -265,9 +288,11 @@ impl PyResin {
         let variant = py
             .detach(move || -> Result<ResinVariant, String> {
                 match semiring.as_str() {
-                    "logprob" | "log_prob" => Resin::<LogProb>::compile(&model, value_size, verbose)
-                        .map(ResinVariant::LogProb)
-                        .map_err(|e| e.to_string()),
+                    "logprob" | "log_prob" => {
+                        Resin::<LogProb>::compile(&model, value_size, verbose)
+                            .map(ResinVariant::LogProb)
+                            .map_err(|e| e.to_string())
+                    }
                     "maxproduct" | "max_product" => {
                         Resin::<MaxProduct>::compile(&model, value_size, verbose)
                             .map(ResinVariant::MaxProduct)
@@ -299,10 +324,14 @@ impl PyResin {
     fn get_reactive_circuit(&self) -> PyReactiveCircuit {
         let circuit = match &*self.resin.lock().unwrap() {
             ResinVariant::LogProb(r) => RCVariant::LogProb(r.manager.reactive_circuit.clone()),
-            ResinVariant::MaxProduct(r) => RCVariant::MaxProduct(r.manager.reactive_circuit.clone()),
+            ResinVariant::MaxProduct(r) => {
+                RCVariant::MaxProduct(r.manager.reactive_circuit.clone())
+            }
             ResinVariant::Fuzzy(r) => RCVariant::Fuzzy(r.manager.reactive_circuit.clone()),
             ResinVariant::Boolean(r) => RCVariant::Boolean(r.manager.reactive_circuit.clone()),
-            ResinVariant::ProbGradient(r) => RCVariant::ProbGradient(r.manager.reactive_circuit.clone()),
+            ResinVariant::ProbGradient(r) => {
+                RCVariant::ProbGradient(r.manager.reactive_circuit.clone())
+            }
         };
         PyReactiveCircuit { circuit }
     }
@@ -476,8 +505,9 @@ impl PyResin {
         let resin = self.resin.clone();
         py.detach(move || match &mut *resin.lock().unwrap() {
             ResinVariant::ProbGradient(r) => {
-                let params_ref: Option<Vec<&str>> =
-                    parameters.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect());
+                let params_ref: Option<Vec<&str>> = parameters
+                    .as_ref()
+                    .map(|v| v.iter().map(|s| s.as_str()).collect());
                 r.fit_parameters(&gradients, lr, loss, params_ref.as_deref(), timestamp);
                 Ok(())
             }
@@ -650,7 +680,9 @@ impl PyReactiveCircuit {
         let circuit = self.circuit.clone();
         py.detach(move || match circuit {
             RCVariant::ProbGradient(arc) => {
-                arc.lock().unwrap().fit(&gradients, lr, loss, atoms.as_deref(), timestamp);
+                arc.lock()
+                    .unwrap()
+                    .fit(&gradients, lr, loss, atoms.as_deref(), timestamp);
                 Ok(())
             }
             _ => Err("fit requires the ProbGradient semiring".to_string()),

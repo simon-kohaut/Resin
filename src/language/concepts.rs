@@ -97,7 +97,11 @@ fn process_body(body: &str) -> (Vec<String>, Vec<ComparisonLiteral>) {
             let args_str = args_of(&source_atom)
                 .map(|a| a.join(", "))
                 .unwrap_or_default();
-            format!("{}({})", parameterized_comparison_predicate(pred, op, threshold), args_str)
+            format!(
+                "{}({})",
+                parameterized_comparison_predicate(pred, op, threshold),
+                args_str
+            )
         } else {
             canonical_comparison_name(&source_atom, op, threshold)
         };
@@ -270,16 +274,14 @@ impl FromStr for Clause {
 
             panic::set_hook(Box::new(|_info| {}));
             let mut body = "".to_string();
-            match panic::catch_unwind(|| &captures["body"]) {
-                Ok(capture) => body += capture,
-                _ => (),
+            if let Ok(capture) = panic::catch_unwind(|| &captures["body"]) {
+                body += capture;
             }
             let (literals, comparison_literals) = process_body(&body);
 
             let mut probability = None;
-            match panic::catch_unwind(|| &captures["probability"]) {
-                Ok(capture) => probability = Some(capture.to_string().parse().unwrap()),
-                _ => (),
+            if let Ok(capture) = panic::catch_unwind(|| &captures["probability"]) {
+                probability = Some(capture.to_string().parse().unwrap());
             }
             let _ = panic::take_hook();
 
@@ -368,10 +370,22 @@ mod tests {
 
     #[test]
     fn test_resin_type_parsing() {
-        assert!(matches!("Probability".parse::<ResinType>().unwrap(), ResinType::Probability));
-        assert!(matches!("Density".parse::<ResinType>().unwrap(), ResinType::Density));
-        assert!(matches!("Number".parse::<ResinType>().unwrap(), ResinType::Number));
-        assert!(matches!("Boolean".parse::<ResinType>().unwrap(), ResinType::Boolean));
+        assert!(matches!(
+            "Probability".parse::<ResinType>().unwrap(),
+            ResinType::Probability
+        ));
+        assert!(matches!(
+            "Density".parse::<ResinType>().unwrap(),
+            ResinType::Density
+        ));
+        assert!(matches!(
+            "Number".parse::<ResinType>().unwrap(),
+            ResinType::Number
+        ));
+        assert!(matches!(
+            "Boolean".parse::<ResinType>().unwrap(),
+            ResinType::Boolean
+        ));
         assert!("Unknown".parse::<ResinType>().is_err());
     }
 
@@ -399,8 +413,16 @@ mod tests {
         let clause: Clause = code.parse().unwrap();
 
         assert_eq!(clause.comparison_literals.len(), 2);
-        let lt_comp = clause.comparison_literals.iter().find(|c| c.op == '<').unwrap();
-        let gt_comp = clause.comparison_literals.iter().find(|c| c.op == '>').unwrap();
+        let lt_comp = clause
+            .comparison_literals
+            .iter()
+            .find(|c| c.op == '<')
+            .unwrap();
+        let gt_comp = clause
+            .comparison_literals
+            .iter()
+            .find(|c| c.op == '>')
+            .unwrap();
 
         assert_eq!(lt_comp.threshold, 20.0);
         assert!(!lt_comp.is_upper_tail());
@@ -419,11 +441,16 @@ mod tests {
         let clause: Clause = code.parse().unwrap();
 
         assert_eq!(clause.comparison_literals.len(), 1);
-        assert_eq!(clause.comparison_literals[0].source_atom, "distance(hospital)");
+        assert_eq!(
+            clause.comparison_literals[0].source_atom,
+            "distance(hospital)"
+        );
         // "active" is a regular literal
         assert!(clause.body.contains(&"active".to_string()));
         // Canonical comparison name is also in body
-        assert!(clause.body.contains(&clause.comparison_literals[0].canonical_name));
+        assert!(clause
+            .body
+            .contains(&clause.comparison_literals[0].canonical_name));
     }
 
     #[test]
@@ -460,7 +487,9 @@ mod tests {
         assert_eq!(comp.threshold, 100.0);
         // Body uses the parameterized, groundable form
         assert_eq!(comp.canonical_name, "resin_distance_gt_100(T)");
-        assert!(clause.body.contains(&"resin_distance_gt_100(T)".to_string()));
+        assert!(clause
+            .body
+            .contains(&"resin_distance_gt_100(T)".to_string()));
     }
 
     #[test]
@@ -472,7 +501,9 @@ mod tests {
         assert!(comp.is_variable);
         assert_eq!(comp.source_atom, "distance(A, B)");
         assert_eq!(comp.canonical_name, "resin_distance_lt_50(A, B)");
-        assert!(clause.body.contains(&"resin_distance_lt_50(A, B)".to_string()));
+        assert!(clause
+            .body
+            .contains(&"resin_distance_lt_50(A, B)".to_string()));
     }
 
     #[test]

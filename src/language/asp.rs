@@ -23,7 +23,7 @@ pub fn solve(asp: &str, verbose: bool) -> Dnf {
     // Ground the program
     let part = Part::new("base", vec![]).unwrap();
     clingo_control
-        .ground(&vec![part])
+        .ground(&[part])
         .expect("Failed to ground the ASP with Clingo.");
 
     // Get the solver handle

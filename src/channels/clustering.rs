@@ -59,7 +59,7 @@ pub fn flip(bins: &[usize]) -> Vec<usize> {
 
     // Collect the absolute difference to the max value
     // In the example above, |2 - 5| = 3
-    let max = bins.iter().max().unwrap().clone();
+    let max = *bins.iter().max().unwrap();
     for bin in bins {
         flipped.push(bin.abs_diff(max));
     }
@@ -84,7 +84,7 @@ pub fn create_boundaries(bin_size: f64, number_bins: usize) -> Vec<f64> {
 /// so the highest frequency gets priority `0` and the lowest gets the highest
 /// priority value.  Used by `ReactiveCircuit::adapt` for leaf scheduling.
 pub fn partitioning(frequencies: &[f64], boundaries: &[f64]) -> Vec<usize> {
-    flip(&pack(&binning(&frequencies, boundaries)))
+    flip(&pack(&binning(frequencies, boundaries)))
 }
 
 #[cfg(test)]
