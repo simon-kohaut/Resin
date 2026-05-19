@@ -22,7 +22,7 @@ jobs:
         run: |
           sudo add-apt-repository ppa:potassco/stable
           sudo apt update
-          sudo apt-get install -y clingo
+          sudo apt-get install -y clingo graphviz
           CLINGO_LIB=$(find /usr -name "libclingo.so*" | head -1)
           echo "CLINGO_LIBRARY_PATH=$(dirname "$CLINGO_LIB")" >> $GITHUB_ENV
 
