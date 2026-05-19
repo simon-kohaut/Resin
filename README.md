@@ -1,5 +1,11 @@
 # Resin — Reactive Signal Inference
 
+[![CI](https://github.com/simon-kohaut/resin/actions/workflows/ci.yml/badge.svg)](https://github.com/simon-kohaut/resin/actions/workflows/ci.yml)
+[![Release](https://github.com/simon-kohaut/resin/actions/workflows/pypi_release.yml/badge.svg)](https://github.com/simon-kohaut/resin/actions/workflows/pypi_release.yml)
+[![PyPI version](https://img.shields.io/pypi/v/pyresin)](https://pypi.org/project/pyresin/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pyresin)](https://pypi.org/project/pyresin/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
+
 **Resin** is a probabilistic first-order logic programming language for building reactive inference pipelines over continuous, asynchronous data streams. 
 Resin programs are compiled via Answer Set Programming (ASP) into **Reactive Circuits**: vectorised, self-adapting computation graphs that perform Algebraic Model Counting (AMC) in real time.
 
