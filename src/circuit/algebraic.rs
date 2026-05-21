@@ -213,6 +213,7 @@ impl AlgebraicCircuit {
 
     /// Add many minterms efficiently.
     pub fn add_sum_product(&mut self, sum_product: &[Vec<u32>]) {
+        self.minterms.reserve(sum_product.len());
         for product in sum_product {
             self.add(product);
         }

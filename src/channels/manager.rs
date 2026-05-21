@@ -485,7 +485,7 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs_f64();
-            leaf.set_value(array![1.0 / i as f64].into(), now);
+            leaf.set_value(array![1.0 / i as f64].into(), now, 1e-3);
             sleep(Duration::from_millis(10));
         }
         drop(rc_guard);

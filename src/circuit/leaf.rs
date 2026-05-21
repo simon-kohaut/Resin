@@ -97,13 +97,13 @@ impl<S: Semiring> Leaf<S> {
     }
 
     /// Updates the leaf value and FoC estimate if the new `value` differs from
-    /// the current value by more than `1e-3` in the encoded representation.
+    /// the current value by more than `threshold` in the encoded representation.
     ///
     /// Returns `true` when the value changed (dependent circuits should be
     /// re-queued), `false` when the change was below threshold.
-    pub fn set_value(&mut self, value: Vector, timestamp: f64) -> bool {
+    pub fn set_value(&mut self, value: Vector, timestamp: f64, threshold: f64) -> bool {
         let encoded = S::encode_leaf_vec(value.view(), self.leaf_index);
-        if !self.encoded_value.abs_diff_eq(&encoded, 1e-3) {
+        if !self.encoded_value.abs_diff_eq(&encoded, threshold) {
             self.encoded_value = encoded.into_shared();
             self.frequency = self.foc_estimator.update(timestamp);
             true
@@ -164,7 +164,7 @@ impl<S: Semiring> Leaf<S> {
 }
 
 /// Updates the leaf at `leaf_index` to `value` and, if the change exceeds the
-/// threshold, queues all dependent circuit nodes for recomputation.
+/// circuit's `update_threshold`, queues all dependent circuit nodes for recomputation.
 pub fn update<S: Semiring>(
     reactive_circuit: &mut ReactiveCircuit<S>,
     leaf_index: u32,
@@ -172,8 +172,9 @@ pub fn update<S: Semiring>(
     timestamp: f64,
 ) {
     let value = S::expand_input(value, reactive_circuit.value_size);
+    let threshold = reactive_circuit.update_threshold;
     let leaf = &mut reactive_circuit.leafs[leaf_index as usize];
-    if leaf.set_value(value, timestamp) {
+    if leaf.set_value(value, timestamp, threshold) {
         reactive_circuit.queue.extend(&leaf.dependencies);
     }
 }

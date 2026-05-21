@@ -34,6 +34,9 @@ pub struct ReactiveCircuit<S: Semiring = LogProb> {
     pub queue: HashSet<u32>,
     pub targets: HashMap<String, NodeIndex>,
     pub partitioning: Vec<usize>,
+    /// Minimum change in encoded leaf value required to trigger recomputation of
+    /// dependent nodes.  Defaults to `1e-3`.
+    pub update_threshold: f64,
     /// Nodes grouped by evaluation level: level 0 = leaf ACs (no child circuits),
     /// higher levels depend only on nodes at lower levels.  Cached across updates,
     /// invalidated whenever the graph structure changes.
@@ -55,6 +58,7 @@ impl<S: Semiring> ReactiveCircuit<S> {
             queue: HashSet::new(),
             targets: HashMap::new(),
             partitioning: Vec::new(),
+            update_threshold: 1e-3,
             topo_levels: None,
         }
     }
