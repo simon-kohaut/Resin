@@ -12,7 +12,7 @@ use crate::language::Dnf;
 /// # Panics
 /// Panics if Clingo fails to create, ground, or solve the program, or if the
 /// solver returns an error during iteration.
-pub fn solve(asp: &str, verbose: bool) -> Dnf {
+pub fn solve(asp: &str) -> Dnf {
     // Setup Clingo solver
     let mut clingo_control =
         control(vec!["--models=0".to_string()]).expect("Failed creating Clingo control.");
@@ -56,9 +56,6 @@ pub fn solve(asp: &str, verbose: bool) -> Dnf {
                     clause.push(Dnf::negate(&format!("{}", symbol)));
                 }
 
-                if verbose {
-                    println!("Found stable model: {:#?}", clause);
-                }
                 formula.add_clause(clause);
             }
             Ok(None) => {
@@ -93,7 +90,7 @@ mod tests {
         innocent(Suspect) :- motive(Suspect), not guilty(Suspect).
         ";
 
-        let formula = solve(asp, true);
+        let formula = solve(asp);
 
         assert_eq!(formula.clauses.len(), 1);
         assert_eq!(

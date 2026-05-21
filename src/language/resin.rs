@@ -65,18 +65,13 @@ impl<S: Semiring> Resin<S> {
         resin.value_size = value_size;
         resin.manager.reactive_circuit.lock().unwrap().value_size = value_size;
 
-        if verbose {
-            println!("Compiling Resin from program:");
-            println!("{}", model);
-        }
-
         // Setup data distribution through signal leafs
         resin.value_size = value_size;
         resin.setup_signals()?;
         if verbose {
             println!(
-                "Setup {} signals.",
-                resin.manager.reactive_circuit.lock().unwrap().leafs.len()
+                "Resin setup with {} source signals",
+                resin.manager.reactive_circuit.lock().unwrap().leafs.len(),
             );
         }
 
@@ -87,20 +82,17 @@ impl<S: Semiring> Resin<S> {
 
             // Compile Resin into ASP
             let program = resin.to_asp(target_index);
-            if verbose {
-                println!(
-                    "Compiled Resin for target {} into ASP:",
-                    resin.targets[target_index].name
-                );
-                println!("{}", program);
-            }
 
             // Solve ASP and obtain DNF formula from which the target is removed
-            let mut dnf = solve(&program, verbose);
+            let mut dnf = solve(&program);
             dnf.remove(&resin.targets[target_index].name);
 
             if verbose {
-                println!("Solved Resin into a DNF with {} clauses", dnf.clauses.len());
+                println!(
+                    "Compiled Resin for target atom {} into formula over {} models",
+                    resin.targets[target_index].name,
+                    dnf.clauses.len()
+                );
             }
 
             // Create leaves for grounded FOL probabilistic cause atoms now that
@@ -843,7 +835,7 @@ mod tests {
             safe -> target("/safety").
         "#;
 
-        let mut resin = TestResin::compile(model, 1, false).expect("Compile failed");
+        let mut resin = TestResin::compile(model, 1, true).expect("Compile failed");
 
         // Two comparison leaf pairs should have been created
         let names = resin.manager.get_names();
