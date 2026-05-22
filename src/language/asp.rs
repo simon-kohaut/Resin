@@ -9,10 +9,13 @@ use crate::language::Dnf;
 /// as-is, complementary atoms are negated with `Dnf::negate`.  If `verbose`
 /// is `true`, each model is printed to stdout.
 ///
+/// If `max_models` is `Some(n)`, returns an error as soon as more than `n`
+/// stable models have been found; the solve handle is closed before returning.
+///
 /// # Panics
 /// Panics if Clingo fails to create, ground, or solve the program, or if the
 /// solver returns an error during iteration.
-pub fn solve(asp: &str) -> Dnf {
+pub fn solve(asp: &str, max_models: Option<usize>) -> Result<Dnf, Box<dyn std::error::Error>> {
     // Setup Clingo solver
     let mut clingo_control =
         control(vec!["--models=0".to_string()]).expect("Failed creating Clingo control.");
@@ -57,6 +60,18 @@ pub fn solve(asp: &str) -> Dnf {
                 }
 
                 formula.add_clause(clause);
+
+                if let Some(limit) = max_models {
+                    if formula.clauses.len() > limit {
+                        handle.close().expect("Failed to close solve handle.");
+                        return Err(format!(
+                            "Stable model limit exceeded: found more than {} stable model(s). \
+                             Simplify the program or increase max_models.",
+                            limit
+                        )
+                        .into());
+                    }
+                }
             }
             Ok(None) => {
                 break;
@@ -70,7 +85,7 @@ pub fn solve(asp: &str) -> Dnf {
     // close the solve handle
     handle.close().expect("Failed to close solve handle.");
 
-    formula
+    Ok(formula)
 }
 
 #[cfg(test)]
@@ -90,7 +105,7 @@ mod tests {
         innocent(Suspect) :- motive(Suspect), not guilty(Suspect).
         ";
 
-        let formula = solve(asp);
+        let formula = solve(asp, None).unwrap();
 
         assert_eq!(formula.clauses.len(), 1);
         assert_eq!(

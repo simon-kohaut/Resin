@@ -275,7 +275,7 @@ impl PyResin {
     /// `semiring` selects the inference algebra.  Supported values (case-insensitive):
     /// `"LogProb"` (default), `"MaxProduct"`, `"Fuzzy"`, `"Boolean"`, `"ProbGradient"`.
     #[staticmethod]
-    #[pyo3(signature = (model, value_size=1, verbose=false, semiring=None, update_threshold=1e-3))]
+    #[pyo3(signature = (model, value_size=1, verbose=false, semiring=None, update_threshold=1e-3, max_models=None))]
     fn compile(
         py: Python<'_>,
         model: &str,
@@ -283,38 +283,78 @@ impl PyResin {
         verbose: bool,
         semiring: Option<&str>,
         update_threshold: f64,
+        max_models: Option<usize>,
     ) -> PyResult<Self> {
         let model = model.to_string();
         let semiring = semiring.unwrap_or("logprob").to_ascii_lowercase();
         let variant = py
             .detach(move || -> Result<ResinVariant, String> {
                 match semiring.as_str() {
-                    "logprob" | "log_prob" => {
-                        Resin::<LogProb>::compile(&model, value_size, update_threshold, verbose)
-                            .map(|r| { r.manager.reactive_circuit.lock().unwrap().update_threshold = update_threshold; r })
-                            .map(ResinVariant::LogProb)
-                            .map_err(|e| e.to_string())
-                    }
-                    "maxproduct" | "max_product" => {
-                        Resin::<MaxProduct>::compile(&model, value_size, update_threshold, verbose)
-                            .map(|r| { r.manager.reactive_circuit.lock().unwrap().update_threshold = update_threshold; r })
-                            .map(ResinVariant::MaxProduct)
-                            .map_err(|e| e.to_string())
-                    }
-                    "fuzzy" => Resin::<Fuzzy>::compile(&model, value_size, update_threshold, verbose)
-                        .map(|r| { r.manager.reactive_circuit.lock().unwrap().update_threshold = update_threshold; r })
-                        .map(ResinVariant::Fuzzy)
-                        .map_err(|e| e.to_string()),
-                    "boolean" => Resin::<Boolean>::compile(&model, value_size, update_threshold, verbose)
-                        .map(|r| { r.manager.reactive_circuit.lock().unwrap().update_threshold = update_threshold; r })
-                        .map(ResinVariant::Boolean)
-                        .map_err(|e| e.to_string()),
-                    "probgradient" | "prob_gradient" => {
-                        Resin::<ProbGradient>::compile(&model, value_size, update_threshold, verbose)
-                            .map(|r| { r.manager.reactive_circuit.lock().unwrap().update_threshold = update_threshold; r })
-                            .map(ResinVariant::ProbGradient)
-                            .map_err(|e| e.to_string())
-                    }
+                    "logprob" | "log_prob" => Resin::<LogProb>::compile(
+                        &model,
+                        value_size,
+                        update_threshold,
+                        verbose,
+                        max_models,
+                    )
+                    .inspect(|r| {
+                        r.manager.reactive_circuit.lock().unwrap().update_threshold =
+                            update_threshold;
+                    })
+                    .map(ResinVariant::LogProb)
+                    .map_err(|e| e.to_string()),
+                    "maxproduct" | "max_product" => Resin::<MaxProduct>::compile(
+                        &model,
+                        value_size,
+                        update_threshold,
+                        verbose,
+                        max_models,
+                    )
+                    .inspect(|r| {
+                        r.manager.reactive_circuit.lock().unwrap().update_threshold =
+                            update_threshold;
+                    })
+                    .map(ResinVariant::MaxProduct)
+                    .map_err(|e| e.to_string()),
+                    "fuzzy" => Resin::<Fuzzy>::compile(
+                        &model,
+                        value_size,
+                        update_threshold,
+                        verbose,
+                        max_models,
+                    )
+                    .inspect(|r| {
+                        r.manager.reactive_circuit.lock().unwrap().update_threshold =
+                            update_threshold;
+                    })
+                    .map(ResinVariant::Fuzzy)
+                    .map_err(|e| e.to_string()),
+                    "boolean" => Resin::<Boolean>::compile(
+                        &model,
+                        value_size,
+                        update_threshold,
+                        verbose,
+                        max_models,
+                    )
+                    .inspect(|r| {
+                        r.manager.reactive_circuit.lock().unwrap().update_threshold =
+                            update_threshold;
+                    })
+                    .map(ResinVariant::Boolean)
+                    .map_err(|e| e.to_string()),
+                    "probgradient" | "prob_gradient" => Resin::<ProbGradient>::compile(
+                        &model,
+                        value_size,
+                        update_threshold,
+                        verbose,
+                        max_models,
+                    )
+                    .inspect(|r| {
+                        r.manager.reactive_circuit.lock().unwrap().update_threshold =
+                            update_threshold;
+                    })
+                    .map(ResinVariant::ProbGradient)
+                    .map_err(|e| e.to_string()),
                     other => Err(format!(
                         "Unknown semiring '{other}'. \
                          Supported: LogProb, MaxProduct, Fuzzy, Boolean, ProbGradient"

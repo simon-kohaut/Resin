@@ -58,6 +58,7 @@ impl<S: Semiring> Resin<S> {
         value_size: usize,
         update_threshold: f64,
         verbose: bool,
+        max_models: Option<usize>,
     ) -> Result<Resin<S>, Box<dyn std::error::Error>> {
         S::validate_value_size(value_size);
 
@@ -89,7 +90,7 @@ impl<S: Semiring> Resin<S> {
             let program = resin.to_asp(target_index);
 
             // Solve ASP and obtain DNF formula from which the target is removed
-            let mut dnf = solve(&program);
+            let mut dnf = solve(&program, max_models)?;
             dnf.remove(&resin.targets[target_index].name);
 
             if verbose {
@@ -840,7 +841,7 @@ mod tests {
             safe -> target("/safety").
         "#;
 
-        let mut resin = TestResin::compile(model, 1, 1e-3, true).expect("Compile failed");
+        let mut resin = TestResin::compile(model, 1, 1e-3, true, None).expect("Compile failed");
 
         // Two comparison leaf pairs should have been created
         let names = resin.manager.get_names();
@@ -875,7 +876,7 @@ mod tests {
             safe -> target("/safety").
         "#;
 
-        let mut resin = TestResin::compile(model, 1, 1e-3, false).expect("Compile failed");
+        let mut resin = TestResin::compile(model, 1, 1e-3, false, None).expect("Compile failed");
         let writer = resin.make_writer_for("dist").unwrap();
 
         let TypedWriter::Density(density_writer) = writer else {
@@ -915,7 +916,7 @@ mod tests {
             moving -> target("/moving").
         "#;
 
-        let mut resin = TestResin::compile(model, 1, 1e-3, false).expect("Compile failed");
+        let mut resin = TestResin::compile(model, 1, 1e-3, false, None).expect("Compile failed");
         let writer = resin.make_writer_for("speed").unwrap();
         assert!(matches!(
             writer,
@@ -951,7 +952,7 @@ mod tests {
             alarm -> target("/alarm").
         "#;
 
-        let mut resin = TestResin::compile(model, 1, 1e-3, false).expect("Compile failed");
+        let mut resin = TestResin::compile(model, 1, 1e-3, false, None).expect("Compile failed");
         let writer = resin.make_writer_for("active").unwrap();
         assert!(matches!(
             writer,
@@ -990,7 +991,7 @@ mod tests {
         ";
 
         // Compile Resin runtime environment
-        let resin = TestResin::compile(model, 1, 1e-3, true);
+        let resin = TestResin::compile(model, 1, 1e-3, true, None);
         assert!(resin.is_ok());
         let resin = resin.unwrap();
 
@@ -1049,8 +1050,8 @@ mod tests {
     /// both links are simultaneously active.
     #[test]
     fn test_max_product_most_probable_explanation() {
-        let resin =
-            Resin::<MaxProduct>::compile(PROXIMITY_MODEL, 1, 1e-3, false).expect("compile failed");
+        let resin = Resin::<MaxProduct>::compile(PROXIMITY_MODEL, 1, 1e-3, false, None)
+            .expect("compile failed");
         let result = resin.manager.reactive_circuit.lock().unwrap().full_update();
         let expected = 0.8_f64 * 0.7; // max(0.56, 0.14, 0.24) = 0.56
         assert!(
@@ -1068,7 +1069,8 @@ mod tests {
     /// to which both proximity conditions hold jointly — which dominates.
     #[test]
     fn test_fuzzy_degree_of_unsafety() {
-        let resin = Resin::<Fuzzy>::compile(PROXIMITY_MODEL, 1, 1e-3, false).expect("compile failed");
+        let resin =
+            Resin::<Fuzzy>::compile(PROXIMITY_MODEL, 1, 1e-3, false, None).expect("compile failed");
         let result = resin.manager.reactive_circuit.lock().unwrap().full_update();
         // max(min(0.8,0.7), min(0.2,0.7), min(0.8,0.3)) = max(0.7, 0.2, 0.3) = 0.7
         let expected = 0.7_f64;
@@ -1087,7 +1089,8 @@ mod tests {
     /// and the circuit returns 1 — unsafe is satisfiable.
     #[test]
     fn test_boolean_unsafe_satisfiability() {
-        let resin = Resin::<Boolean>::compile(PROXIMITY_MODEL, 1, 1e-3, false).expect("compile failed");
+        let resin = Resin::<Boolean>::compile(PROXIMITY_MODEL, 1, 1e-3, false, None)
+            .expect("compile failed");
         let result = resin.manager.reactive_circuit.lock().unwrap().full_update();
         assert_eq!(
             result["/safety"][0], 1.0,
@@ -1110,8 +1113,8 @@ mod tests {
     ///   ∂WMC/∂p3 = p0      = 0.8
     #[test]
     fn test_prob_gradient_wmc_and_derivatives() {
-        let resin =
-            Resin::<ProbGradient>::compile(PROXIMITY_MODEL, 1, 1e-3, false).expect("compile failed");
+        let resin = Resin::<ProbGradient>::compile(PROXIMITY_MODEL, 1, 1e-3, false, None)
+            .expect("compile failed");
         let result = resin.manager.reactive_circuit.lock().unwrap().full_update();
         let grad = &result["/safety"];
 
@@ -1158,8 +1161,8 @@ mod tests {
     /// steps the circuit should converge to P(unsafe) ≈ 0.5.
     #[test]
     fn test_prob_gradient_learns_parameter() {
-        let resin =
-            Resin::<ProbGradient>::compile(PROXIMITY_MODEL, 1, 1e-3, false).expect("compile failed");
+        let resin = Resin::<ProbGradient>::compile(PROXIMITY_MODEL, 1, 1e-3, false, None)
+            .expect("compile failed");
 
         let mut rc = resin.manager.reactive_circuit.lock().unwrap();
         let target_p = 0.5_f64;
@@ -1316,7 +1319,7 @@ mod tests {
             risky -> target("/risky").
         "#;
 
-        let resin = TestResin::compile(model, 1, 1e-3, false).expect("compile failed");
+        let resin = TestResin::compile(model, 1, 1e-3, false, None).expect("compile failed");
         let result = resin.manager.reactive_circuit.lock().unwrap().update();
         let expected = 1.0 - 0.7_f64 * 0.4_f64;
         assert!(
@@ -1339,7 +1342,7 @@ mod tests {
             any_heads -> target("/any_heads").
         "#;
 
-        let resin = TestResin::compile(model, 1, 1e-3, true).expect("compile failed");
+        let resin = TestResin::compile(model, 1, 1e-3, true, None).expect("compile failed");
         let result = resin.manager.reactive_circuit.lock().unwrap().update();
         let expected = 0.9744;
         assert!(
@@ -1416,7 +1419,7 @@ mod tests {
             safe -> target("/safety").
         "#;
 
-        let resin = TestResin::compile(model, 1, 1e-3, false).expect("compile failed");
+        let resin = TestResin::compile(model, 1, 1e-3, false, None).expect("compile failed");
 
         // Both comparison leaves must have been created
         let names = resin.manager.get_names();
@@ -1504,7 +1507,7 @@ mod tests {
         safe -> target("/output/safe").
         "#;
 
-        let mut resin = TestResin::compile(model, 1, 1e-3, true).expect("compile failed");
+        let mut resin = TestResin::compile(model, 1, 1e-3, true, None).expect("compile failed");
 
         // All expected leaves must exist after compilation.
         let names = resin.manager.get_names();
@@ -1622,7 +1625,8 @@ mod tests {
         use std::thread::sleep;
         use std::time::Duration;
 
-        let mut resin = TestResin::compile(MNIST_MODEL, 1, 1e-3, false).expect("compile failed");
+        let mut resin =
+            TestResin::compile(MNIST_MODEL, 1, 1e-3, false, None).expect("compile failed");
 
         // Verify the categorical leaves were created (positive only, no negatives).
         let names = resin.manager.get_names();
