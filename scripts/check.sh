@@ -1,3 +1,3 @@
 cargo fmt
-cargo clippy --fix
+cargo clippy --all-targets --features python-bindings -- -D warnings
 cargo test

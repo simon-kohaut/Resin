@@ -100,7 +100,9 @@ pub fn args_of(atom: &str) -> Option<Vec<&str>> {
 /// E.g. predicate `"distance"`, op `'>'`, threshold `100.0` → `"resin_distance_gt_100"`.
 pub fn parameterized_comparison_predicate(predicate: &str, op: char, threshold: f64) -> String {
     let op_str = if op == '<' { "lt" } else { "gt" };
-    let t_str = format!("{}", threshold).replace('.', "_");
+    let t_str = format!("{}", threshold)
+        .replace('.', "_")
+        .replace('-', "neg");
     format!("resin_{}_{}_{}", predicate, op_str, t_str)
 }
 
@@ -159,7 +161,9 @@ pub fn canonical_comparison_name(atom: &str, op: char, threshold: f64) -> String
         .collect();
     let sanitized = sanitized.trim_matches('_');
     let op_str = if op == '<' { "lt" } else { "gt" };
-    let t_str = format!("{}", threshold).replace('.', "_");
+    let t_str = format!("{}", threshold)
+        .replace('.', "_")
+        .replace('-', "neg");
     format!("{}_{}_{}", sanitized, op_str, t_str)
 }
 
@@ -243,6 +247,14 @@ mod tests {
             canonical_comparison_name("temperature(room_1)", '>', 22.5),
             "temperature_room_1_gt_22_5"
         );
+        assert_eq!(
+            canonical_comparison_name("temperature", '<', -5.0),
+            "temperature_lt_neg5"
+        );
+        assert_eq!(
+            canonical_comparison_name("offset(sensor)", '>', -2.5),
+            "offset_sensor_gt_neg2_5"
+        );
     }
 
     #[test]
@@ -263,6 +275,19 @@ mod tests {
         let body = "distance(hospital) < 20.0 and distance(hospital) > 55.0";
         let matches: Vec<_> = COMPARISON_LITERAL_REGEX.find_iter(body).collect();
         assert_eq!(matches.len(), 2);
+
+        // Negative threshold
+        let input = "temperature > -5";
+        let caps = COMPARISON_LITERAL_REGEX.captures(input).unwrap();
+        assert_eq!(&caps["comp_atom"], "temperature");
+        assert_eq!(&caps["comp_op"], ">");
+        assert_eq!(&caps["comp_threshold"], "-5");
+
+        let input = "offset(sensor) < -2.5";
+        let caps = COMPARISON_LITERAL_REGEX.captures(input).unwrap();
+        assert_eq!(&caps["comp_atom"], "offset(sensor)");
+        assert_eq!(&caps["comp_op"], "<");
+        assert_eq!(&caps["comp_threshold"], "-2.5");
     }
 
     #[test]
@@ -346,6 +371,14 @@ mod tests {
         assert_eq!(
             parameterized_comparison_predicate("distance", '<', 20.5),
             "resin_distance_lt_20_5"
+        );
+        assert_eq!(
+            parameterized_comparison_predicate("offset", '<', -3.0),
+            "resin_offset_lt_neg3"
+        );
+        assert_eq!(
+            parameterized_comparison_predicate("temp", '>', -10.5),
+            "resin_temp_gt_neg10_5"
         );
     }
 }
