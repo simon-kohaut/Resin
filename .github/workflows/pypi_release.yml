@@ -93,17 +93,27 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.10"
+          python-version: 3.x
           architecture: ${{ matrix.platform.python_arch }}
       - name: Install dependencies
         run: |
-          pip install clingo delvewheel
-      - name: Set Clingo Environment
+          pip install delvewheel
+      - name: Install miniconda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+      - name: Get clingo C library via conda
         shell: powershell
         run: |
-          $ClingoDir = python -c "import clingo, os; print(os.path.dirname(clingo.__file__))"
+          # Pinned to match clingo-sys 0.7.2, which is generated against clingo 5.6.2.
+          conda create -n clingo-build -c conda-forge clingo=5.6.2 -y
+          $CondaRoot = (conda info --base).Trim()
+          $ClingoDir = Join-Path $CondaRoot "envs\clingo-build\Library\lib"
           echo "CLINGO_LIBRARY_PATH=$ClingoDir" >> $env:GITHUB_ENV
-          echo "$ClingoDir" >> $env:GITHUB_PATH
+      - name: Debug - list clingo lib dir
+        shell: powershell
+        run: |
+          Get-ChildItem "$env:CLINGO_LIBRARY_PATH"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -146,7 +156,7 @@ jobs:
           brew install clingo
           CLINGO_PREFIX=$(brew --prefix clingo)
           echo "CLINGO_LIBRARY_PATH=${CLINGO_PREFIX}/lib" >> $GITHUB_ENV
-          
+
           pip install delocate
       - name: Build wheels
         uses: PyO3/maturin-action@v1
