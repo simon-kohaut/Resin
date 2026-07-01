@@ -102,13 +102,8 @@ jobs:
         shell: powershell
         run: |
           $ClingoDir = python -c "import clingo, os; print(os.path.dirname(clingo.__file__))"
-          $SourceLib = Get-ChildItem -Path $ClingoDir -Filter "*.lib" | Select-Object -First 1
-          if ($SourceLib) {
-              $TargetPath = Join-Path $ClingoDir "import_clingo.lib"
-              Copy-Item $SourceLib.FullName $TargetPath
-              echo "CLINGO_LIBRARY_PATH=$ClingoDir" >> $env:GITHUB_ENV
-              echo "$ClingoDir" >> $env:GITHUB_PATH
-          }
+          echo "CLINGO_LIBRARY_PATH=$ClingoDir" >> $env:GITHUB_ENV
+          echo "$ClingoDir" >> $env:GITHUB_PATH
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
