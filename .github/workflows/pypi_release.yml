@@ -108,12 +108,18 @@ jobs:
           # Pinned to match clingo-sys 0.7.2, which is generated against clingo 5.6.2.
           conda create -n clingo-build -c conda-forge clingo=5.6.2 -y
           $CondaRoot = (conda info --base).Trim()
-          $ClingoDir = Join-Path $CondaRoot "envs\clingo-build\Library\lib"
-          echo "CLINGO_LIBRARY_PATH=$ClingoDir" >> $env:GITHUB_ENV
-      - name: Debug - list clingo lib dir
+          $CondaEnv = Join-Path $CondaRoot "envs\clingo-build"
+          # Library\lib holds the .lib import library used at link time.
+          # Library\bin holds the actual clingo.dll needed at runtime by delvewheel.
+          $ClingoLibDir = Join-Path $CondaEnv "Library\lib"
+          $ClingoBinDir = Join-Path $CondaEnv "Library\bin"
+          echo "CLINGO_LIBRARY_PATH=$ClingoLibDir" >> $env:GITHUB_ENV
+          echo "CLINGO_BIN_PATH=$ClingoBinDir" >> $env:GITHUB_ENV
+      - name: Debug - list clingo lib and bin dirs
         shell: powershell
         run: |
           Get-ChildItem "$env:CLINGO_LIBRARY_PATH"
+          Get-ChildItem "$env:CLINGO_BIN_PATH"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -125,7 +131,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path repaired_dist
           Get-ChildItem -Path dist\*.whl | ForEach-Object {
-              delvewheel repair --add-path "$env:CLINGO_LIBRARY_PATH" -w repaired_dist $_.FullName
+              delvewheel repair --add-path "$env:CLINGO_LIBRARY_PATH;$env:CLINGO_BIN_PATH" -w repaired_dist $_.FullName
           }
           Remove-Item -Recurse -Force dist
           Move-Item repaired_dist dist
