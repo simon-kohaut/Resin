@@ -1,7 +1,7 @@
 [package]
 name = "resin"
 edition = "2021"
-version = "0.0.12"
+version = "0.0.13"
 description = "A reactive, probabilistic logic programming language using Reactive Circuits."
 repository = "https://github.com/simon-kohaut/resin"
 keywords = [
@@ -55,6 +55,8 @@ rand_chacha = "*"
 polars = { version = "*", features = ["rows"] }
 tempfile = "*"
 pyo3 = { version = "0.27", features = ["extension-module"], optional = true }
+numpy = { version = "0.27", optional = true }
+rustc-hash = "2.1.3"
 
 [features]
-python-bindings = ["dep:pyo3"]
+python-bindings = ["dep:pyo3", "dep:numpy"]

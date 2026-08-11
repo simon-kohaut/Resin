@@ -1,3 +1,4 @@
+use numpy::{PyArray1, PyArrayLike1};
 use pyo3::exceptions::{PyIOError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -12,6 +13,32 @@ use crate::circuit::reactive::ReactiveCircuit;
 use crate::circuit::semiring::{Boolean, Fuzzy, LogProb, MaxProduct, ProbGradient};
 use crate::circuit::Vector;
 use crate::language::Resin;
+
+// ---------------------------------------------------------------------------
+// Fast numpy <-> Vector conversion
+// ---------------------------------------------------------------------------
+
+/// Accepts a numpy `float64` array (bulk-copied in one pass, no per-element
+/// boxing) or, as a fallback, any Python sequence of floats (e.g. a plain
+/// `list`), so existing call sites keep working.
+///
+/// Bridges `PyArrayLike1<f64>` to `Vector` (`ArcArray1<f64>`): the two types
+/// aren't directly convertible since one comes from the `numpy` crate and the
+/// other is an `ndarray` type alias defined in this crate.
+fn array_like_to_vector(value: PyArrayLike1<'_, f64>) -> Vector {
+    match value.as_array().as_slice() {
+        Some(slice) => Vector::from(slice.to_vec()),
+        None => Vector::from(value.as_array().to_vec()),
+    }
+}
+
+/// Converts a `Vector` into a numpy array in one bulk copy for return to Python.
+fn vector_to_pyarray<'py>(py: Python<'py>, vector: &Vector) -> Bound<'py, PyArray1<f64>> {
+    match vector.as_slice() {
+        Some(slice) => PyArray1::from_slice(py, slice),
+        None => PyArray1::from_iter(py, vector.iter().copied()),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Semiring dispatch
@@ -96,14 +123,16 @@ struct PySharedVector {
 
 #[pymethods]
 impl PySharedVector {
-    pub fn set(&self, py: Python<'_>, value: Vec<f64>) {
+    pub fn set(&self, py: Python<'_>, value: PyArrayLike1<'_, f64>) {
+        let value = array_like_to_vector(value);
         py.detach(move || {
-            *self.vec.lock().unwrap() = Vector::from(value);
+            *self.vec.lock().unwrap() = value;
         })
     }
 
-    pub fn get(&self, py: Python<'_>) -> Vec<f64> {
-        py.detach(|| self.vec.lock().unwrap().iter().copied().collect())
+    pub fn get<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        let vector = py.detach(|| self.vec.lock().unwrap().clone());
+        vector_to_pyarray(py, &vector)
     }
 }
 
@@ -115,8 +144,8 @@ struct PyProbabilityWriter {
 
 #[pymethods]
 impl PyProbabilityWriter {
-    pub fn write(&self, _py: Python<'_>, value: Vec<f64>, timestamp: Option<f64>) {
-        self.writer.write(Vector::from(value), timestamp);
+    pub fn write(&self, _py: Python<'_>, value: PyArrayLike1<'_, f64>, timestamp: Option<f64>) {
+        self.writer.write(array_like_to_vector(value), timestamp);
     }
 }
 
@@ -141,17 +170,18 @@ impl PyDensityWriter {
         &self,
         _py: Python<'_>,
         distribution: &str,
-        params: Vec<Vec<f64>>,
+        params: Vec<PyArrayLike1<'_, f64>>,
         timestamp: Option<f64>,
     ) -> PyResult<()> {
+        let params: Vec<Vector> = params.into_iter().map(array_like_to_vector).collect();
         let dist = match distribution.to_ascii_lowercase().as_str() {
             "normal" => {
                 if params.len() < 2 {
                     return Err(PyValueError::new_err("Normal requires [[means], [stds]]"));
                 }
                 VectorDistribution::Normal {
-                    mean: Vector::from(params[0].clone()),
-                    std: Vector::from(params[1].clone()),
+                    mean: params[0].clone(),
+                    std: params[1].clone(),
                 }
             }
             "lognormal" => {
@@ -161,8 +191,8 @@ impl PyDensityWriter {
                     ));
                 }
                 VectorDistribution::LogNormal {
-                    log_mean: Vector::from(params[0].clone()),
-                    log_std: Vector::from(params[1].clone()),
+                    log_mean: params[0].clone(),
+                    log_std: params[1].clone(),
                 }
             }
             "exponential" => {
@@ -170,7 +200,7 @@ impl PyDensityWriter {
                     return Err(PyValueError::new_err("Exponential requires [[rates]]"));
                 }
                 VectorDistribution::Exponential {
-                    rate: Vector::from(params[0].clone()),
+                    rate: params[0].clone(),
                 }
             }
             "uniform" => {
@@ -178,8 +208,8 @@ impl PyDensityWriter {
                     return Err(PyValueError::new_err("Uniform requires [[lows], [highs]]"));
                 }
                 VectorDistribution::Uniform {
-                    low: Vector::from(params[0].clone()),
-                    high: Vector::from(params[1].clone()),
+                    low: params[0].clone(),
+                    high: params[1].clone(),
                 }
             }
             other => {
@@ -203,8 +233,8 @@ struct PyNumberWriter {
 
 #[pymethods]
 impl PyNumberWriter {
-    pub fn write(&self, _py: Python<'_>, value: Vec<f64>, timestamp: Option<f64>) {
-        self.writer.write(Vector::from(value), timestamp);
+    pub fn write(&self, _py: Python<'_>, value: PyArrayLike1<'_, f64>, timestamp: Option<f64>) {
+        self.writer.write(array_like_to_vector(value), timestamp);
     }
 }
 
@@ -231,8 +261,14 @@ struct PyCategoricalWriter {
 
 #[pymethods]
 impl PyCategoricalWriter {
-    pub fn write(&self, _py: Python<'_>, probabilities: Vec<f64>, timestamp: Option<f64>) {
-        self.writer.write(Vector::from(probabilities), timestamp);
+    pub fn write(
+        &self,
+        _py: Python<'_>,
+        probabilities: PyArrayLike1<'_, f64>,
+        timestamp: Option<f64>,
+    ) {
+        self.writer
+            .write(array_like_to_vector(probabilities), timestamp);
     }
 
     pub fn n_categories(&self) -> usize {
@@ -461,24 +497,22 @@ impl PyResin {
         })
     }
 
-    fn get_frequencies(&self, py: Python<'_>) -> Vec<f64> {
+    fn get_frequencies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         let resin = self.resin.clone();
-        py.detach(move || {
+        let frequencies = py.detach(move || {
             let mut guard = resin.lock().unwrap();
             with_resin!(guard, r => r.manager.get_frequencies())
-        })
+        });
+        PyArray1::from_vec(py, frequencies)
     }
 
-    fn get_values(&self, py: Python<'_>) -> Vec<Vec<f64>> {
+    fn get_values<'py>(&self, py: Python<'py>) -> Vec<Bound<'py, PyArray1<f64>>> {
         let resin = self.resin.clone();
-        py.detach(move || {
+        let values = py.detach(move || {
             let mut guard = resin.lock().unwrap();
-            with_resin!(guard, r => r.manager
-                .get_values()
-                .into_iter()
-                .map(|v| v.iter().copied().collect())
-                .collect())
-        })
+            with_resin!(guard, r => r.manager.get_values())
+        });
+        values.iter().map(|v| vector_to_pyarray(py, v)).collect()
     }
 
     /// Returns the parameter groups discovered during compilation.
@@ -627,15 +661,16 @@ impl PyReactiveCircuit {
     fn add_leaf(
         &self,
         py: Python<'_>,
-        initial_value: Vec<f64>,
+        initial_value: PyArrayLike1<'_, f64>,
         initial_timestamp: f64,
         token: String,
     ) -> PyResult<usize> {
+        let initial_value = array_like_to_vector(initial_value);
         let circuit = self.circuit.clone();
         Ok(py.detach(move || {
             with_rc!(circuit, c => {
                 let leaf_index = c.leafs.len();
-                c.leafs.push(Leaf::new(Vector::from(initial_value), initial_timestamp, &token, leaf_index));
+                c.leafs.push(Leaf::new(initial_value, initial_timestamp, &token, leaf_index));
                 leaf_index
             })
         }))
@@ -645,13 +680,14 @@ impl PyReactiveCircuit {
         &self,
         py: Python<'_>,
         leaf_index: u32,
-        new_value: Vec<f64>,
+        new_value: PyArrayLike1<'_, f64>,
         timestamp: f64,
     ) -> PyResult<()> {
+        let new_value = array_like_to_vector(new_value);
         let circuit = self.circuit.clone();
-        py.detach(move || {
-            with_rc!(circuit, c => leaf::update(&mut c, leaf_index, Vector::from(new_value), timestamp))
-        });
+        py.detach(
+            move || with_rc!(circuit, c => leaf::update(&mut c, leaf_index, new_value, timestamp)),
+        );
         Ok(())
     }
 
@@ -673,8 +709,8 @@ impl PyReactiveCircuit {
         let circuit = self.circuit.clone();
         let results = py.detach(move || with_rc!(circuit, c => c.update()));
         let dict = PyDict::new(py);
-        for (token, vector) in results {
-            dict.set_item(token, vector.iter().copied().collect::<Vec<_>>())?;
+        for (token, vector) in &results {
+            dict.set_item(token, vector_to_pyarray(py, vector))?;
         }
         Ok(dict.into())
     }
@@ -683,8 +719,8 @@ impl PyReactiveCircuit {
         let circuit = self.circuit.clone();
         let results = py.detach(move || with_rc!(circuit, c => c.full_update()));
         let dict = PyDict::new(py);
-        for (token, vector) in results {
-            dict.set_item(token, vector.iter().copied().collect::<Vec<_>>())?;
+        for (token, vector) in &results {
+            dict.set_item(token, vector_to_pyarray(py, vector))?;
         }
         Ok(dict.into())
     }

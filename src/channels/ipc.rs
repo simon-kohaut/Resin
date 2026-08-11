@@ -56,7 +56,14 @@ impl IpcReader {
         receiver: mpsc::Receiver<(Vector, f64)>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let handle = std::thread::spawn(move || {
-            while let Ok((value, timestamp)) = receiver.recv() {
+            while let Ok(mut latest) = receiver.recv() {
+                // Collapse any backlog that built up while we were busy —
+                // leaves represent current state, so only the most recent
+                // value matters and applying stale ones is wasted work.
+                while let Ok(next) = receiver.try_recv() {
+                    latest = next;
+                }
+                let (value, timestamp) = latest;
                 let final_value = if invert {
                     Vector::ones(value.len()) - value
                 } else {
@@ -90,7 +97,14 @@ impl IpcDualReader {
         receiver: mpsc::Receiver<(Vector, f64)>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let handle = std::thread::spawn(move || {
-            while let Ok((value, timestamp)) = receiver.recv() {
+            while let Ok(mut latest) = receiver.recv() {
+                // Collapse any backlog that built up while we were busy —
+                // leaves represent current state, so only the most recent
+                // value matters and applying stale ones is wasted work.
+                while let Ok(next) = receiver.try_recv() {
+                    latest = next;
+                }
+                let (value, timestamp) = latest;
                 let inverted_value = Vector::ones(value.len()) - &*value;
                 let mut circuit_guard = shared_reactive_circuit.lock().unwrap();
                 update(&mut circuit_guard, index_normal, value.clone(), timestamp);
@@ -439,7 +453,14 @@ impl IpcCategoricalReader {
         receiver: mpsc::Receiver<(Vector, f64)>,
     ) -> Self {
         let handle = std::thread::spawn(move || {
-            while let Ok((probs, timestamp)) = receiver.recv() {
+            while let Ok(mut latest) = receiver.recv() {
+                // Collapse any backlog that built up while we were busy —
+                // leaves represent current state, so only the most recent
+                // value matters and applying stale ones is wasted work.
+                while let Ok(next) = receiver.try_recv() {
+                    latest = next;
+                }
+                let (probs, timestamp) = latest;
                 let mut circuit = shared_rc.lock().unwrap();
                 for (k, &leaf_idx) in category_indices.iter().enumerate() {
                     let start = k * value_size;

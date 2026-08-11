@@ -11,6 +11,7 @@ use petgraph::{
     visit::EdgeRef,
 };
 use rayon::prelude::*;
+use rustc_hash::FxHashSet;
 
 use ndarray::Array1;
 
@@ -31,7 +32,10 @@ pub struct ReactiveCircuit<S: Semiring = LogProb> {
     pub structure: StableGraph<AlgebraicCircuit, Vector>,
     pub value_size: usize,
     pub leafs: Vec<Leaf<S>>,
-    pub queue: HashSet<u32>,
+    /// Node indices pending recomputation. Keys are internal `u32` indices on
+    /// the hot leaf-update path, so a non-cryptographic hasher is used instead
+    /// of the DoS-resistant default.
+    pub queue: FxHashSet<u32>,
     pub targets: HashMap<String, NodeIndex>,
     pub partitioning: Vec<usize>,
     /// Minimum change in encoded leaf value required to trigger recomputation of
@@ -55,7 +59,7 @@ impl<S: Semiring> ReactiveCircuit<S> {
             structure: StableGraph::new(),
             value_size,
             leafs: Vec::new(),
-            queue: HashSet::new(),
+            queue: FxHashSet::default(),
             targets: HashMap::new(),
             partitioning: Vec::new(),
             update_threshold: 1e-3,
