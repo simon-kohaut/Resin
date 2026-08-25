@@ -412,6 +412,98 @@ impl IpcNumberWriter {
     }
 }
 
+/// Interval writer for `Density` sources.  A single `write` computes the mass
+/// of each interval induced by the source's thresholds:
+///   u_0 = F(t_0),  u_k = F(t_k) - F(t_{k-1}),  u_K = 1 - F(t_{K-1}).
+/// Emits one flat `[col_0, col_1, ..., col_K]` vector, matching the layout of
+/// `IpcCategoricalReader`.
+pub struct IpcDensityIntervalWriter {
+    thresholds: Vec<f64>, // sorted ascending
+    inner: IpcWriter,
+}
+
+impl IpcDensityIntervalWriter {
+    pub fn new(sender: Sender<(Vector, f64)>, mut thresholds: Vec<f64>) -> Self {
+        thresholds.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        thresholds.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+        Self {
+            thresholds,
+            inner: IpcWriter::new(sender).unwrap(),
+        }
+    }
+
+    pub fn n_intervals(&self) -> usize {
+        self.thresholds.len() + 1
+    }
+
+    /// Computes each interval's mass for `distribution` and sends the flat
+    /// `[col_0, ..., col_K]` vector.  The CDF is evaluated once per threshold
+    /// (not once per interval) and consecutive evaluations are differenced.
+    pub fn write(&self, distribution: &VectorDistribution, timestamp: Option<f64>) {
+        let cdfs: Vec<Vector> = self
+            .thresholds
+            .iter()
+            .map(|&t| distribution.cdf(t))
+            .collect();
+        let value_size = cdfs.first().map(|c| c.len()).unwrap_or(1);
+
+        let mut flat: Vec<f64> = Vec::with_capacity(self.n_intervals() * value_size);
+        for k in 0..self.n_intervals() {
+            #[allow(clippy::needless_range_loop)] // indexes cdfs[k-1] and cdfs[k] by the same i
+            for i in 0..value_size {
+                let lo = if k == 0 { 0.0 } else { cdfs[k - 1][i] };
+                let hi = if k == self.thresholds.len() {
+                    1.0
+                } else {
+                    cdfs[k][i]
+                };
+                flat.push((hi - lo).max(0.0)); // guard against CDF round-off
+            }
+        }
+        self.inner
+            .write(ndarray::Array1::from(flat).into_shared(), timestamp);
+    }
+}
+
+/// Interval writer for `Number` sources.  One-hot on the interval containing
+/// the observed value: u_k = 1 iff t_{k-1} < v <= t_k.
+pub struct IpcNumberIntervalWriter {
+    thresholds: Vec<f64>,
+    inner: IpcWriter,
+}
+
+impl IpcNumberIntervalWriter {
+    pub fn new(sender: Sender<(Vector, f64)>, mut thresholds: Vec<f64>) -> Self {
+        thresholds.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        thresholds.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+        Self {
+            thresholds,
+            inner: IpcWriter::new(sender).unwrap(),
+        }
+    }
+
+    pub fn n_intervals(&self) -> usize {
+        self.thresholds.len() + 1
+    }
+
+    /// One-hots `value` element-wise into its containing interval and sends
+    /// the flat `[col_0, ..., col_K]` vector.
+    pub fn write(&self, value: Vector, timestamp: Option<f64>) {
+        let value_size = value.len();
+        let mut flat = vec![0.0; self.n_intervals() * value_size];
+        for (i, &v) in value.iter().enumerate() {
+            let k = self
+                .thresholds
+                .iter()
+                .position(|&t| v <= t)
+                .unwrap_or(self.thresholds.len());
+            flat[k * value_size + i] = 1.0;
+        }
+        self.inner
+            .write(ndarray::Array1::from(flat).into_shared(), timestamp);
+    }
+}
+
 /// Maps a boolean to a probability: `true` → 1.0, `false` → 0.0.
 pub struct IpcBooleanWriter {
     inner: IpcWriter,
@@ -448,7 +540,6 @@ impl IpcCategoricalReader {
     pub fn new<S: Semiring>(
         shared_rc: Arc<Mutex<ReactiveCircuit<S>>>,
         category_indices: Vec<u32>,
-        value_size: usize,
         channel: &str,
         receiver: mpsc::Receiver<(Vector, f64)>,
     ) -> Self {
@@ -461,6 +552,15 @@ impl IpcCategoricalReader {
                     latest = next;
                 }
                 let (probs, timestamp) = latest;
+                // Stride is recomputed from the message itself rather than
+                // captured at construction time: `Resin::compile` can override
+                // `value_size` (e.g. `ProbGradient::auto_value_size`) after this
+                // reader is created, which would otherwise leave it slicing the
+                // wrong columns.
+                if category_indices.is_empty() {
+                    continue;
+                }
+                let value_size = probs.len() / category_indices.len();
                 let mut circuit = shared_rc.lock().unwrap();
                 for (k, &leaf_idx) in category_indices.iter().enumerate() {
                     let start = k * value_size;
@@ -521,8 +621,8 @@ impl IpcCategoricalWriter {
 /// Groups all typed writers so callers can handle them in a single `match`.
 pub enum TypedWriter {
     Probability(IpcProbabilityWriter),
-    Density(IpcDensityWriter),
-    Number(IpcNumberWriter),
+    Density(IpcDensityIntervalWriter),
+    Number(IpcNumberIntervalWriter),
     Boolean(IpcBooleanWriter),
     Categorical(IpcCategoricalWriter),
 }
@@ -641,6 +741,82 @@ mod tests {
         assert!((p_lt - 0.159).abs() < 0.001, "p_lt = {}", p_lt);
         // P(X > 55) for Normal(25, 5): z = (55-25)/5 = 6 → SF ≈ 0
         assert!(p_gt < 1e-6, "p_gt = {}", p_gt);
+    }
+
+    #[test]
+    fn test_density_interval_writer_single_threshold() {
+        let (tx, rx) = mpsc::channel::<(Vector, f64)>();
+        let writer = IpcDensityIntervalWriter::new(tx, vec![20.0]);
+        assert_eq!(writer.n_intervals(), 2);
+
+        let dist = VectorDistribution::Normal {
+            mean: Vector::from_elem(1, 25.0),
+            std: Vector::from_elem(1, 5.0),
+        };
+        writer.write(&dist, None);
+
+        let (flat, _) = rx.try_recv().unwrap();
+        assert_eq!(flat.len(), 2);
+        // u_0 = F(20), u_1 = 1 - F(20); z = (20-25)/5 = -1 -> F(20) ≈ 0.159
+        assert!((flat[0] - 0.159).abs() < 0.001, "u_0 = {}", flat[0]);
+        assert!(
+            (flat[0] + flat[1] - 1.0).abs() < 1e-9,
+            "masses must sum to 1"
+        );
+    }
+
+    #[test]
+    fn test_density_interval_writer_two_thresholds_sum_to_one() {
+        let (tx, rx) = mpsc::channel::<(Vector, f64)>();
+        let writer = IpcDensityIntervalWriter::new(tx, vec![20.0, 30.0]);
+        assert_eq!(writer.n_intervals(), 3);
+
+        let dist = VectorDistribution::Normal {
+            mean: Vector::from_elem(1, 25.0),
+            std: Vector::from_elem(1, 1.0),
+        };
+        writer.write(&dist, None);
+
+        let (flat, _) = rx.try_recv().unwrap();
+        assert_eq!(flat.len(), 3);
+        let total: f64 = flat.iter().sum();
+        assert!((total - 1.0).abs() < 1e-9, "masses must sum to 1: {flat:?}");
+        assert!(
+            flat.iter().all(|&m| m >= 0.0),
+            "no negative masses: {flat:?}"
+        );
+    }
+
+    #[test]
+    fn test_number_interval_writer_one_hot() {
+        let (tx, rx) = mpsc::channel::<(Vector, f64)>();
+        // Thresholds 20, 30 -> I_0=(-inf,20], I_1=(20,30], I_2=(30,inf)
+        let writer = IpcNumberIntervalWriter::new(tx, vec![20.0, 30.0]);
+
+        writer.write(array![25.0].into(), None);
+        let (flat, _) = rx.try_recv().unwrap();
+        assert_eq!(&flat.to_vec(), &[0.0, 1.0, 0.0]);
+
+        writer.write(array![5.0].into(), None);
+        let (flat, _) = rx.try_recv().unwrap();
+        assert_eq!(&flat.to_vec(), &[1.0, 0.0, 0.0]);
+
+        writer.write(array![100.0].into(), None);
+        let (flat, _) = rx.try_recv().unwrap();
+        assert_eq!(&flat.to_vec(), &[0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn test_number_interval_writer_boundary_is_inclusive_left_side() {
+        // Half-open right convention: v == t falls in the interval ending at t,
+        // unlike the old strict IpcNumberWriter where v == t satisfied neither
+        // `< t` nor `> t`.
+        let (tx, rx) = mpsc::channel::<(Vector, f64)>();
+        let writer = IpcNumberIntervalWriter::new(tx, vec![10.0]);
+
+        writer.write(array![10.0].into(), None);
+        let (flat, _) = rx.try_recv().unwrap();
+        assert_eq!(&flat.to_vec(), &[1.0, 0.0], "v == t must land in I_0 (< t)");
     }
 
     // -----------------------------------------------------------------------

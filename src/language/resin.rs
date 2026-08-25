@@ -10,8 +10,9 @@ use crate::circuit::leaf;
 use crate::circuit::semiring::{LogProb, Semiring};
 use crate::language::concepts::{ComparisonLiteral, ResinType};
 use crate::language::matching::{
-    args_of, cause_atom_base_name, cause_atom_name, has_variable_arg,
-    parameterized_comparison_predicate, predicate_of, split_statements,
+    args_of, cause_atom_base_name, cause_atom_name, has_variable_arg, interval_atom_name,
+    parameterized_comparison_predicate, predicate_of, sorted_thresholds, split_statements,
+    subsumed_intervals,
 };
 use crate::language::{asp::solve, Dnf};
 
@@ -88,6 +89,9 @@ impl<S: Semiring> Resin<S> {
 
             // Compile Resin into ASP
             let program = resin.to_asp(target_index);
+            if verbose {
+                println!("Generated ASP program:\n{program}");
+            }
 
             // Solve ASP and obtain DNF formula from which the target is removed
             let mut dnf = solve(&program, max_models)?;
@@ -135,6 +139,21 @@ impl<S: Semiring> Resin<S> {
     pub fn to_asp(&self, target_index: usize) -> String {
         let mut asp = "".to_string();
 
+        // Precomputed once so the referenced-source check below is a HashSet
+        // lookup per source instead of a re-scan of every clause body.
+        let mut body_literals: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut variable_arg_predicates: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
+        for clause in &self.clauses {
+            for lit in &clause.body {
+                let base = lit.trim_start_matches("not ");
+                body_literals.insert(base);
+                if has_variable_arg(base) {
+                    variable_arg_predicates.insert(predicate_of(base));
+                }
+            }
+        }
+
         for source in &self.sources {
             match source.message_type {
                 // Probability and Boolean sources are simple probabilistic atoms.
@@ -143,22 +162,38 @@ impl<S: Semiring> Resin<S> {
                     // if a variable body literal shares the same predicate name (e.g. `active(T)`
                     // for source `active(hospital)`, or `rel(A, hub, B)` for `rel(x, hub, y)`).
                     let source_pred = predicate_of(&source.name);
-                    let referenced = self.clauses.iter().any(|c| {
-                        c.body.iter().any(|lit| {
-                            let base = lit.trim_start_matches("not ");
-                            base == source.name
-                                || (predicate_of(base) == source_pred && has_variable_arg(base))
-                        })
-                    });
+                    let referenced = body_literals.contains(source.name.as_str())
+                        || variable_arg_predicates.contains(source_pred);
                     if referenced {
                         asp.push_str(&source.to_asp());
                     }
                 }
-                // Density and Number sources manifest as one choice atom per comparison.
+                // Density and Number sources: the thresholds registered for this
+                // source partition ℝ into intervals.  Emit one interval atom per
+                // interval under an exactly-one choice, then derive each
+                // comparison atom from the intervals it subsumes.  This keeps
+                // multiple thresholds on the same source mutually exclusive —
+                // unlike one independent choice atom per comparison, which
+                // assigns positive weight to logically impossible combinations
+                // (e.g. `s < 20` true and `s < 30` false).
                 ResinType::Density | ResinType::Number => {
-                    if let Some(comparisons) = self.comparison_registry.get(&source.name) {
-                        for (_, _, canonical) in comparisons {
-                            asp.push_str(&format!("{{{}}}.\n", canonical));
+                    let Some(comparisons) = self.comparison_registry.get(&source.name) else {
+                        continue;
+                    };
+                    if comparisons.is_empty() {
+                        continue;
+                    }
+
+                    let thresholds = sorted_thresholds(comparisons);
+                    let atoms: Vec<String> = (0..=thresholds.len())
+                        .map(|k| interval_atom_name(&source.name, k))
+                        .collect();
+
+                    asp.push_str(&format!("1 {{ {} }} 1.\n", atoms.join(" ; ")));
+
+                    for (threshold, upper_tail, canonical) in comparisons {
+                        for k in subsumed_intervals(&thresholds, *threshold, *upper_tail) {
+                            asp.push_str(&format!("{} :- {}.\n", canonical, atoms[k]));
                         }
                     }
                 }
@@ -301,6 +336,24 @@ impl<S: Semiring> Resin<S> {
     /// Also populates `comparison_registry` so that `make_writer_for` can later
     /// build the correct fan-out writer.
     pub fn setup_signals(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut ground_by_source: HashMap<String, Vec<ComparisonLiteral>> = HashMap::new();
+        let mut variable_by_predicate: HashMap<String, Vec<ComparisonLiteral>> = HashMap::new();
+        for clause in &self.clauses {
+            for comp in &clause.comparison_literals {
+                if comp.is_variable {
+                    variable_by_predicate
+                        .entry(predicate_of(&comp.source_atom).to_string())
+                        .or_default()
+                        .push(comp.clone());
+                } else {
+                    ground_by_source
+                        .entry(comp.source_atom.clone())
+                        .or_default()
+                        .push(comp.clone());
+                }
+            }
+        }
+
         for source in &self.sources {
             match source.message_type {
                 ResinType::Probability | ResinType::Boolean => {
@@ -317,27 +370,51 @@ impl<S: Semiring> Resin<S> {
                         .read_dual(idx_normal, idx_inverted, &source.channel)?;
                 }
                 ResinType::Density | ResinType::Number => {
-                    // One leaf pair per unique comparison found in clause bodies.
-                    let comparisons = self.collect_comparisons_for(&source.name);
-                    let mut registry_entry: Vec<(f64, bool, String)> = Vec::new();
+                    // Interval leaves replace comparison leaves: the thresholds
+                    // found in clause bodies for this source partition ℝ into
+                    // `K+1` mutually exclusive intervals, each with its own
+                    // positive-only leaf (no complement — exclusivity is
+                    // enforced by the ASP's `1{...}1`, same as Categorical).
+                    let mut seen = std::collections::HashSet::new();
+                    let mut comparisons: Vec<ComparisonLiteral> = Vec::new();
+                    if let Some(list) = ground_by_source.get(&source.name) {
+                        for comp in list {
+                            if seen.insert(comp.canonical_name.clone()) {
+                                comparisons.push(comp.clone());
+                            }
+                        }
+                    }
+                    if let Some(list) = variable_by_predicate.get(predicate_of(&source.name)) {
+                        for comp in list {
+                            if let Some(ground) = comp.ground_for(&source.name) {
+                                if seen.insert(ground.canonical_name.clone()) {
+                                    comparisons.push(ground);
+                                }
+                            }
+                        }
+                    }
+                    let registry_entry: Vec<(f64, bool, String)> = comparisons
+                        .iter()
+                        .map(|c| (c.threshold, c.is_upper_tail(), c.canonical_name.clone()))
+                        .collect();
 
-                    for comp in comparisons {
-                        let idx_normal =
-                            self.manager
-                                .create_leaf(&comp.canonical_name, Vector::zeros(1), 0.0);
-                        let idx_inverted = self.manager.create_leaf(
-                            &format!("-{}", comp.canonical_name),
-                            Vector::ones(1),
-                            0.0,
-                        );
+                    if !registry_entry.is_empty() {
+                        let thresholds = sorted_thresholds(&registry_entry);
+                        let mut interval_indices = Vec::new();
+                        for k in 0..=thresholds.len() {
+                            let name = interval_atom_name(&source.name, k);
+                            // No complement leaf here, so an unwritten source
+                            // needs its mass somewhere to avoid every interval
+                            // reading 0 and zeroing out the whole product.
+                            let initial = if k == 0 {
+                                Vector::ones(self.value_size)
+                            } else {
+                                Vector::zeros(self.value_size)
+                            };
+                            interval_indices.push(self.manager.create_leaf(&name, initial, 0.0));
+                        }
                         self.manager
-                            .read_dual(idx_normal, idx_inverted, &comp.canonical_name)?;
-
-                        registry_entry.push((
-                            comp.threshold,
-                            comp.is_upper_tail(),
-                            comp.canonical_name.clone(),
-                        ));
+                            .read_categorical(interval_indices, &source.channel)?;
                     }
 
                     self.comparison_registry
@@ -454,29 +531,6 @@ impl<S: Semiring> Resin<S> {
         }
     }
 
-    /// Returns all unique comparison literals across all clauses that reference `source_name`,
-    /// including variable comparisons whose predicate matches the source's predicate.
-    fn collect_comparisons_for(&self, source_name: &str) -> Vec<ComparisonLiteral> {
-        let mut seen = std::collections::HashSet::new();
-        let mut result = Vec::new();
-        for clause in &self.clauses {
-            for comp in &clause.comparison_literals {
-                if !comp.is_variable && comp.source_atom == source_name {
-                    if seen.insert(comp.canonical_name.clone()) {
-                        result.push(comp.clone());
-                    }
-                } else if comp.is_variable {
-                    if let Some(ground) = comp.ground_for(source_name) {
-                        if seen.insert(ground.canonical_name.clone()) {
-                            result.push(ground);
-                        }
-                    }
-                }
-            }
-        }
-        result
-    }
-
     /// Returns the typed writer for the source whose IPC channel matches
     /// `channel`.  Looks up the source atom name and delegates to
     /// `make_writer_for`.
@@ -513,23 +567,27 @@ impl<S: Semiring> Resin<S> {
                 self.manager.make_boolean_writer(&source.channel)?,
             )),
             ResinType::Density => {
-                let channels = self
+                let entries = self
                     .comparison_registry
                     .get(source_name)
                     .cloned()
                     .unwrap_or_default();
+                let thresholds = sorted_thresholds(&entries);
                 Ok(TypedWriter::Density(
-                    self.manager.make_density_writer_for_channels(&channels),
+                    self.manager
+                        .make_density_interval_writer(&source.channel, thresholds)?,
                 ))
             }
             ResinType::Number => {
-                let channels = self
+                let entries = self
                     .comparison_registry
                     .get(source_name)
                     .cloned()
                     .unwrap_or_default();
+                let thresholds = sorted_thresholds(&entries);
                 Ok(TypedWriter::Number(
-                    self.manager.make_number_writer_for_channels(&channels),
+                    self.manager
+                        .make_number_interval_writer(&source.channel, thresholds)?,
                 ))
             }
             ResinType::Categorical => unreachable!(),
@@ -584,8 +642,9 @@ impl<S: Semiring> Resin<S> {
     /// by source atom name **or** IPC channel name.
     ///
     /// - `Probability` / `Boolean`: one leaf (the atom name itself).
-    /// - `Density` / `Number`: one leaf per registered comparison threshold
-    ///   (e.g. `"speed_lt_25"`, `"speed_gt_50"`).
+    /// - `Density` / `Number`: one leaf per interval induced by the source's
+    ///   registered thresholds (e.g. `"u_speed_0"`, `"u_speed_1"`), not one per
+    ///   comparison — gradients w.r.t. a density source are per-interval.
     /// - `Categorical`: one leaf per category atom.
     ///
     /// Returns an empty `Vec` when `name` does not match any source.
@@ -601,7 +660,12 @@ impl<S: Semiring> Resin<S> {
                 ResinType::Density | ResinType::Number => self
                     .comparison_registry
                     .get(&source.name)
-                    .map(|entries| entries.iter().map(|(_, _, n)| n.clone()).collect())
+                    .map(|entries| {
+                        let thresholds = sorted_thresholds(entries);
+                        (0..=thresholds.len())
+                            .map(|k| interval_atom_name(&source.name, k))
+                            .collect()
+                    })
                     .unwrap_or_default(),
                 ResinType::Categorical => unreachable!(),
             };
@@ -843,10 +907,16 @@ mod tests {
 
         let mut resin = TestResin::compile(model, 1, 1e-3, true, None).expect("Compile failed");
 
-        // Two comparison leaf pairs should have been created
+        // Two thresholds (20, 55) partition the source into three interval leaves.
         let names = resin.manager.get_names();
-        assert!(names.iter().any(|n| n.contains("lt")), "lt leaf missing");
-        assert!(names.iter().any(|n| n.contains("gt")), "gt leaf missing");
+        for k in 0..3 {
+            let expected = format!("u_distance_hospital_{k}");
+            assert!(
+                names.iter().any(|n| n == &expected),
+                "{expected} leaf missing; all leaves: {:?}",
+                names
+            );
+        }
 
         // The comparison registry should have two entries for distance(hospital)
         let registry = resin.comparison_registry.get("distance(hospital)").unwrap();
@@ -894,18 +964,99 @@ mod tests {
         let values = resin.manager.get_values();
         let names = resin.manager.get_names();
 
-        // Find the lt leaf value
-        let lt_idx = names.iter().position(|n| n.contains("lt")).unwrap();
-        let gt_idx = names.iter().position(|n| n.contains("gt")).unwrap();
+        // Thresholds (20, 55) -> I_0=(-inf,20], I_1=(20,55], I_2=(55,inf).
+        // `dist < 20` derives from u_dist_0 alone; `dist > 55` from u_dist_2 alone.
+        let u0_idx = names.iter().position(|n| n == "u_dist_0").unwrap();
+        let u2_idx = names.iter().position(|n| n == "u_dist_2").unwrap();
 
-        // P(X < 20) for Normal(25, 5) ≈ 0.159
+        // u_dist_0 = P(X < 20) for Normal(25, 5) ≈ 0.159
         assert!(
-            (values[lt_idx][0] - 0.159).abs() < 0.001,
-            "lt leaf = {}",
-            values[lt_idx][0]
+            (values[u0_idx][0] - 0.159).abs() < 0.001,
+            "u_dist_0 = {}",
+            values[u0_idx][0]
         );
-        // P(X > 55) for Normal(25, 5) ≈ 0 (extremely small)
-        assert!(values[gt_idx][0] < 1e-6, "gt leaf = {}", values[gt_idx][0]);
+        // u_dist_2 = P(X > 55) for Normal(25, 5) ≈ 0 (extremely small)
+        assert!(values[u2_idx][0] < 1e-6, "u_dist_2 = {}", values[u2_idx][0]);
+    }
+
+    /// Two thresholds on the same source must partition it into mutually
+    /// exclusive intervals, so their masses always sum to exactly 1.
+    #[test]
+    fn test_two_thresholds_on_one_source_are_exclusive() {
+        use crate::channels::ipc::VectorDistribution;
+        use std::thread::sleep;
+        use std::time::Duration;
+
+        let model = r#"
+            s <- source("/s", Density).
+            near if s < 20.0.
+            far  if s < 30.0.
+            both if near and far.
+            both -> target("/both").
+        "#;
+        let mut resin = TestResin::compile(model, 1, 1e-3, false, None).expect("compile failed");
+        let TypedWriter::Density(w) = resin.make_writer_for("s").unwrap() else {
+            panic!("Expected Density writer");
+        };
+
+        w.write(
+            &VectorDistribution::Normal {
+                mean: Vector::from_elem(1, 25.0),
+                std: Vector::from_elem(1, 1.0),
+            },
+            None,
+        );
+        sleep(Duration::from_millis(30));
+
+        let names = resin.manager.get_names();
+        let values = resin.manager.get_values();
+        let mass: f64 = names
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.starts_with("u_s_"))
+            .map(|(i, _)| values[i][0])
+            .sum();
+        assert!(
+            (mass - 1.0).abs() < 1e-6,
+            "interval masses must sum to 1, got {mass}"
+        );
+    }
+
+    #[test]
+    fn test_two_thresholds_on_one_source_generate_exclusive_asp() {
+        let model = r#"
+            s <- source("/s", Density).
+            near if s < 20.0.
+            far  if s < 30.0.
+            both if near and far.
+            both -> target("/both").
+        "#;
+        let mut resin: Resin = model.parse().unwrap();
+        resin.setup_signals().unwrap();
+        let asp = resin.to_asp(0);
+
+        assert!(
+            asp.contains("1 { u_s_0 ; u_s_1 ; u_s_2 } 1."),
+            "missing exactly-one interval choice: {asp}"
+        );
+        // `s < 20` (the smaller threshold) subsumes only I_0.
+        assert!(
+            asp.contains("s_lt_20 :- u_s_0."),
+            "missing derivation for s < 20: {asp}"
+        );
+        assert!(
+            !asp.contains("s_lt_20 :- u_s_1."),
+            "s < 20 must not derive from I_1: {asp}"
+        );
+        // `s < 30` subsumes I_0 and I_1.
+        assert!(
+            asp.contains("s_lt_30 :- u_s_0.") && asp.contains("s_lt_30 :- u_s_1."),
+            "missing derivations for s < 30: {asp}"
+        );
+        assert!(
+            !asp.contains("s_lt_30 :- u_s_2."),
+            "s < 30 must not derive from I_2: {asp}"
+        );
     }
 
     #[test]
@@ -927,7 +1078,8 @@ mod tests {
             panic!("Expected Number writer");
         };
 
-        // value > 5.0 → 1.0; value < 5.0 → 0.0
+        // Single threshold at 5.0 -> I_0=(-inf,5], I_1=(5,inf).
+        // `speed > 5.0` derives from u_speed_1 alone.
         use std::thread::sleep;
         use std::time::Duration;
 
@@ -935,13 +1087,13 @@ mod tests {
         sleep(Duration::from_millis(30));
         let values = resin.manager.get_values();
         let names = resin.manager.get_names();
-        let gt_idx = names.iter().position(|n| n.contains("gt")).unwrap();
-        assert_eq!(values[gt_idx][0], 1.0, "speed=10 should be > 5");
+        let u1_idx = names.iter().position(|n| n == "u_speed_1").unwrap();
+        assert_eq!(values[u1_idx][0], 1.0, "speed=10 should be > 5");
 
         num_writer.write(Vector::from(vec![2.0]), None);
         sleep(Duration::from_millis(30));
         let values = resin.manager.get_values();
-        assert_eq!(values[gt_idx][0], 0.0, "speed=2 should not be > 5");
+        assert_eq!(values[u1_idx][0], 0.0, "speed=2 should not be > 5");
     }
 
     #[test]
@@ -1373,14 +1525,27 @@ mod tests {
         resin.setup_signals().unwrap();
         let asp = resin.to_asp(0);
 
-        // One ground choice atom per source instance
+        // Each ground source instance has a single threshold (100), so it gets
+        // an exactly-one choice over two interval atoms instead of a raw choice
+        // atom on the comparison itself.
         assert!(
-            asp.contains("{distance_hospital_gt_100}"),
-            "missing hospital choice"
+            asp.contains("1 { u_distance_hospital_0 ; u_distance_hospital_1 } 1."),
+            "missing hospital interval choice"
         );
         assert!(
-            asp.contains("{distance_airport_gt_100}"),
-            "missing airport choice"
+            asp.contains("1 { u_distance_airport_0 ; u_distance_airport_1 } 1."),
+            "missing airport interval choice"
+        );
+
+        // The comparison atom derives from the upper interval (index 1, since
+        // `> 100` subsumes everything above the single threshold).
+        assert!(
+            asp.contains("distance_hospital_gt_100 :- u_distance_hospital_1."),
+            "missing hospital derivation rule"
+        );
+        assert!(
+            asp.contains("distance_airport_gt_100 :- u_distance_airport_1."),
+            "missing airport derivation rule"
         );
 
         // Helper rules that let Clingo ground the parameterized predicate
@@ -1421,15 +1586,16 @@ mod tests {
 
         let resin = TestResin::compile(model, 1, 1e-3, false, None).expect("compile failed");
 
-        // Both comparison leaves must have been created
+        // Both sources get interval leaves; the comparison atom itself is a
+        // derived (rule-headed) atom now, not a leaf.
         let names = resin.manager.get_names();
         assert!(
-            names.iter().any(|n| n == "distance_hospital_gt_100"),
+            names.iter().any(|n| n == "u_distance_hospital_1"),
             "hospital leaf missing: {:?}",
             names
         );
         assert!(
-            names.iter().any(|n| n == "distance_airport_gt_100"),
+            names.iter().any(|n| n == "u_distance_airport_1"),
             "airport leaf missing: {:?}",
             names
         );
@@ -1509,20 +1675,31 @@ mod tests {
 
         let mut resin = TestResin::compile(model, 1, 1e-3, true, None).expect("compile failed");
 
-        // All expected leaves must exist after compilation.
+        // All expected leaves must exist after compilation.  Each Density/Number
+        // source here has a single threshold, so it partitions into two interval
+        // leaves (`u_<source>_0`, `u_<source>_1`) rather than one leaf per
+        // comparison — `distance_hospital_gt_100` etc. are now derived ASP atoms
+        // with no leaf of their own.
         let names = resin.manager.get_names();
         for expected in &[
             "needs_checkup_cause_0(w1)",
             "needs_checkup_cause_0(w2)",
             "needs_checkup_cause_0(w3)",
             "needs_checkup_cause_0(w4)",
-            "distance_hospital_gt_100",
-            "distance_airport_gt_100",
-            "speed_lt_25",
-            "flight_hours_w1_gt_100",
-            "flight_hours_w2_gt_100",
-            "flight_hours_w3_gt_100",
-            "flight_hours_w4_gt_100",
+            "u_distance_hospital_0",
+            "u_distance_hospital_1",
+            "u_distance_airport_0",
+            "u_distance_airport_1",
+            "u_speed_0",
+            "u_speed_1",
+            "u_flight_hours_w1_0",
+            "u_flight_hours_w1_1",
+            "u_flight_hours_w2_0",
+            "u_flight_hours_w2_1",
+            "u_flight_hours_w3_0",
+            "u_flight_hours_w3_1",
+            "u_flight_hours_w4_0",
+            "u_flight_hours_w4_1",
         ] {
             assert!(
                 names.iter().any(|n| n == expected),

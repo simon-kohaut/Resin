@@ -167,6 +167,45 @@ pub fn canonical_comparison_name(atom: &str, op: char, threshold: f64) -> String
     format!("{}_{}_{}", sanitized, op_str, t_str)
 }
 
+/// Sorted, deduplicated thresholds for one source's registered comparisons.
+/// Registry entries are `(threshold, upper_tail, canonical_name)`.
+pub fn sorted_thresholds(entries: &[(f64, bool, String)]) -> Vec<f64> {
+    let mut ts: Vec<f64> = entries.iter().map(|(t, _, _)| *t).collect();
+    ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    ts.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+    ts
+}
+
+/// Interval atom name for the k-th interval of `source_atom`.
+/// E.g. `("distance(hospital)", 0)` -> `"u_distance_hospital_0"`.
+pub fn interval_atom_name(source_atom: &str, k: usize) -> String {
+    let sanitized: String = source_atom
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("u_{}_{}", sanitized.trim_matches('_'), k)
+}
+
+/// Indices of the intervals subsumed by a comparison, given sorted thresholds.
+/// `< t_i` holds on I_0..=I_i;  `> t_i` holds on I_{i+1}..=I_K.
+pub fn subsumed_intervals(thresholds: &[f64], threshold: f64, upper_tail: bool) -> Vec<usize> {
+    let i = thresholds
+        .iter()
+        .position(|t| (t - threshold).abs() < 1e-12)
+        .expect("threshold not in registry");
+    if upper_tail {
+        (i + 1..=thresholds.len()).collect()
+    } else {
+        (0..=i).collect()
+    }
+}
+
 /// Extracts all atom literals from a body string by stripping the `and`
 /// conjunctive keyword and applying `LITERAL_REGEX`.
 /// Returns the matching substrings in order.
@@ -360,6 +399,49 @@ mod tests {
         assert_eq!(predicate_of("distance(hospital)"), "distance");
         assert_eq!(predicate_of("distance(A, B)"), "distance");
         assert_eq!(predicate_of("speed"), "speed");
+    }
+
+    #[test]
+    fn test_sorted_thresholds() {
+        let entries = vec![
+            (30.0, false, "a".to_string()),
+            (10.0, true, "b".to_string()),
+            (20.0, false, "c".to_string()),
+            (10.0, false, "d".to_string()), // duplicate threshold, different entry
+        ];
+        assert_eq!(sorted_thresholds(&entries), vec![10.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn test_interval_atom_name() {
+        assert_eq!(
+            interval_atom_name("distance(hospital)", 0),
+            "u_distance_hospital_0"
+        );
+        assert_eq!(interval_atom_name("speed", 2), "u_speed_2");
+    }
+
+    #[test]
+    fn test_subsumed_intervals_single_threshold() {
+        // One threshold at 10: `> 10` holds on I_1 only.
+        let thresholds = vec![10.0];
+        assert_eq!(subsumed_intervals(&thresholds, 10.0, true), vec![1]);
+        // `< 10` holds on I_0 only.
+        assert_eq!(subsumed_intervals(&thresholds, 10.0, false), vec![0]);
+    }
+
+    #[test]
+    fn test_subsumed_intervals_multiple_thresholds() {
+        // Thresholds at 20, 30 → intervals I_0=(-inf,20], I_1=(20,30], I_2=(30,inf).
+        let thresholds = vec![20.0, 30.0];
+        // `< 20` holds on I_0.
+        assert_eq!(subsumed_intervals(&thresholds, 20.0, false), vec![0]);
+        // `< 30` holds on I_0, I_1.
+        assert_eq!(subsumed_intervals(&thresholds, 30.0, false), vec![0, 1]);
+        // `> 20` holds on I_1, I_2.
+        assert_eq!(subsumed_intervals(&thresholds, 20.0, true), vec![1, 2]);
+        // `> 30` holds on I_2.
+        assert_eq!(subsumed_intervals(&thresholds, 30.0, true), vec![2]);
     }
 
     #[test]

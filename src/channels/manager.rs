@@ -6,8 +6,9 @@ use std::{
 };
 
 use super::ipc::{
-    IpcBooleanWriter, IpcCategoricalReader, IpcCategoricalWriter, IpcDensityWriter, IpcDualReader,
-    IpcNumberWriter, IpcProbabilityWriter, IpcReader, IpcWriter, TimedIpcWriter,
+    IpcBooleanWriter, IpcCategoricalReader, IpcCategoricalWriter, IpcDensityIntervalWriter,
+    IpcDensityWriter, IpcDualReader, IpcNumberIntervalWriter, IpcNumberWriter,
+    IpcProbabilityWriter, IpcReader, IpcWriter, TimedIpcWriter,
 };
 use super::Vector;
 use crate::circuit::{
@@ -54,17 +55,11 @@ impl<S: Semiring> Manager<S> {
     /// # Returns
     /// The index of the newly created leaf as a `u16`.
     pub fn create_leaf(&mut self, name: &str, value: Vector, frequency: f64) -> u32 {
+        let mut rc = self.reactive_circuit.lock().unwrap();
+        let leaf_index = rc.leafs.len();
         // This should never grow beyong u16.MAX since we use that range for indexing
-        assert!(self.reactive_circuit.lock().unwrap().leafs.len() + 1 < u32::MAX as usize);
-
-        // Create a new leaf with given parameters and return the index
-        let leaf_index = self.reactive_circuit.lock().unwrap().leafs.len();
-        self.reactive_circuit.lock().unwrap().leafs.push(Leaf::new(
-            value.clone(),
-            frequency,
-            name,
-            leaf_index,
-        ));
+        assert!(leaf_index + 1 < u32::MAX as usize);
+        rc.leafs.push(Leaf::new(value, frequency, name, leaf_index));
         leaf_index as u32
     }
 
@@ -138,14 +133,8 @@ impl<S: Semiring> Manager<S> {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let (tx, rx) = mpsc::channel();
         self.senders.insert(channel.to_string(), tx);
-        let value_size = self.reactive_circuit.lock().unwrap().value_size;
-        let reader = IpcCategoricalReader::new(
-            self.reactive_circuit.clone(),
-            category_indices,
-            value_size,
-            channel,
-            rx,
-        );
+        let reader =
+            IpcCategoricalReader::new(self.reactive_circuit.clone(), category_indices, channel, rx);
         self.categorical_readers.push(reader);
         Ok(())
     }
@@ -221,38 +210,32 @@ impl<S: Semiring> Manager<S> {
         ))
     }
 
-    /// Creates a fan-out density writer from a set of pre-registered comparison channels.
-    /// `channels` is a slice of `(threshold, upper_tail, canonical_channel_name)` tuples
-    /// as produced by the Resin compiler's `comparison_registry`.
-    pub fn make_density_writer_for_channels(
-        &self,
-        channels: &[(f64, bool, String)],
-    ) -> IpcDensityWriter {
-        let channel_data = channels
-            .iter()
-            .filter_map(|(threshold, upper_tail, canonical)| {
-                self.senders
-                    .get(canonical)
-                    .map(|s| (*threshold, *upper_tail, s.clone()))
-            })
-            .collect();
-        IpcDensityWriter::from_channels(channel_data)
+    /// Creates an interval writer for a `Density` source.  `thresholds` are the
+    /// comparison thresholds registered for that source; the writer emits one
+    /// mass per induced interval on the source's own channel, in the flat
+    /// layout expected by `IpcCategoricalReader`.
+    pub fn make_density_interval_writer(
+        &mut self,
+        channel: &str,
+        thresholds: Vec<f64>,
+    ) -> Result<IpcDensityIntervalWriter, Box<dyn std::error::Error>> {
+        Ok(IpcDensityIntervalWriter::new(
+            self.get_or_create_sender(channel),
+            thresholds,
+        ))
     }
 
-    /// Creates a fan-out number writer from a set of pre-registered comparison channels.
-    pub fn make_number_writer_for_channels(
-        &self,
-        channels: &[(f64, bool, String)],
-    ) -> IpcNumberWriter {
-        let channel_data = channels
-            .iter()
-            .filter_map(|(threshold, upper_tail, canonical)| {
-                self.senders
-                    .get(canonical)
-                    .map(|s| (*threshold, *upper_tail, s.clone()))
-            })
-            .collect();
-        IpcNumberWriter::from_channels(channel_data)
+    /// Creates an interval writer for a `Number` source: one-hot on the
+    /// interval containing the observed value.
+    pub fn make_number_interval_writer(
+        &mut self,
+        channel: &str,
+        thresholds: Vec<f64>,
+    ) -> Result<IpcNumberIntervalWriter, Box<dyn std::error::Error>> {
+        Ok(IpcNumberIntervalWriter::new(
+            self.get_or_create_sender(channel),
+            thresholds,
+        ))
     }
 
     /// Creates a typed boolean writer that maps `true` → 1.0 and `false` → 0.0.
@@ -352,18 +335,14 @@ impl<S: Semiring> Manager<S> {
 
     /// Returns a `HashMap` mapping leaf names to their indices.
     pub fn get_index_map(&self) -> HashMap<String, usize> {
-        let names = self.get_names();
-        let mut map = HashMap::new();
-
-        for name in &names {
-            let position = names
-                .iter()
-                .position(|leaf_name| *leaf_name == *name)
-                .expect("Error during creation of index map!");
-            map.insert(name.to_owned(), position);
-        }
-
-        map
+        self.reactive_circuit
+            .lock()
+            .unwrap()
+            .leafs
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (l.name.clone(), i))
+            .collect()
     }
 }
 

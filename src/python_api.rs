@@ -5,7 +5,7 @@ use pyo3::types::PyDict;
 use std::sync::{Arc, Mutex};
 
 use crate::channels::ipc::{
-    IpcBooleanWriter, IpcCategoricalWriter, IpcDensityWriter, IpcNumberWriter,
+    IpcBooleanWriter, IpcCategoricalWriter, IpcDensityIntervalWriter, IpcNumberIntervalWriter,
     IpcProbabilityWriter, TypedWriter, VectorDistribution,
 };
 use crate::circuit::leaf::{self, Leaf};
@@ -161,7 +161,7 @@ impl PyProbabilityWriter {
 /// - `"uniform"`     → `[lows, highs]`
 #[pyclass(name = "DensityWriter")]
 struct PyDensityWriter {
-    writer: IpcDensityWriter,
+    writer: IpcDensityIntervalWriter,
 }
 
 #[pymethods]
@@ -228,7 +228,7 @@ impl PyDensityWriter {
 /// threshold element-wise: 1.0 where the comparison holds, else 0.0.
 #[pyclass(name = "NumberWriter")]
 struct PyNumberWriter {
-    writer: IpcNumberWriter,
+    writer: IpcNumberIntervalWriter,
 }
 
 #[pymethods]

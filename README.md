@@ -31,8 +31,8 @@ A Resin program declares **sources** (incoming signals), **rules** (first-order 
 |---|---|---|
 | `Probability` | a value in `[0, 1]` | choice atom `{name}.` |
 | `Boolean` | `true`/`false` | choice atom `{name}.` |
-| `Density` | a continuous distribution | one choice per comparison threshold |
-| `Number` | a scalar value | one choice per comparison threshold |
+| `Density` | a continuous distribution | exactly-one choice over the intervals induced by the source's thresholds |
+| `Number` | a scalar value | exactly-one choice over the intervals induced by the source's thresholds |
 | `Categorical` | a vector of class probabilities | `1 { c₀ ; c₁ ; … } 1.` exactly-one constraint |
 
 ### Syntax
@@ -70,7 +70,7 @@ safe -> target("/output/safe").
 ```
 
 Rules supports variables (uppercase arguments, in the example above `W`, `T`) and conjunctions (`and`); disjunctions are implemented through multiple clauses.
-Comparison literals (`<`, `>`) on `Number` and `Density` sources (ground atom left, constant literal value right) are mapped to the independent boolean or probability leafs, respectively.
+Comparison literals (`<`, `>`) on `Number` and `Density` sources (ground atom left, constant literal value right) are derived from the exactly-one interval choice of their source: all thresholds registered for a source partition it into mutually exclusive intervals, so two comparisons on the same source (e.g. `s < 20` and `s < 30`) are never treated as independent.
 Categorical sources provide probabilities for mutually exclusive ground atoms that are assumed to sum up to 1.
 
 In Python, using the Resin code from above, inference can be run over one of the supported commutative semirings:
