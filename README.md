@@ -77,7 +77,7 @@ In Python, using the Resin code from above, inference can be run over one of the
 
 ```python
 from resin import Resin
-semiring = "LogProb"  # default, otherwise use boolean, fuzzy, maxproduct, or probgradient
+semiring = "LogProb"  # default, otherwise use boolean, fuzzy, maxproduct, probgradient, or criticalexplanation
 resin = Resin.compile(code, value_size=1, semiring=semiring)
 result = resin.get_reactive_circuit().update()
 # result["/output/safe"] contains resulting value
@@ -211,6 +211,23 @@ When leaf probabilities come from a neural network, the `gradients` dict provide
 You can access all gradients related to your source channel via `resin.source_gradients(channel_name)` or `resin.source_gradients_for(atom_name)`.
 
 Note that you may have to combine gradients depending on your networks output layer, e.g., for a single output neuron that was used to provide a probability you need to compute `full_gradient = gradient[atom] - gradient[-atom]` to include the gradient on the negation.
+
+### `CriticalExplanation` — weakest link of the most probable explanation
+
+Computes the marginal probability together with **the most probable explanation and its least-probable fact**.
+For `n` cells, `value_size` must be `4 * n`, and the result vector has layout:
+
+```
+[P | v | tag | w]   (each block of length n)
+```
+
+- `P`: probability of the target (as in `LogProb`)
+- `v`: probability of the most probable explanation (as in `MaxProduct`)
+- `tag`: index of the least-probable circuit leaf within that explanation
+- `w`: probability of that leaf
+
+Sources are still written with `n` values, one per cell.
+Because `⊕` decides by `v` alone, `⊗` distributes over `⊕` and the result is independent of how the circuit is restructured by adaptation.
 
 ## Python API
 

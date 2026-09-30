@@ -853,7 +853,9 @@ impl<S: Semiring> FromStr for Resin<S> {
 mod tests {
 
     use super::*;
-    use crate::circuit::semiring::{Boolean, Fuzzy, LogProb, MaxProduct, ProbGradient};
+    use crate::circuit::semiring::{
+        Boolean, CriticalExplanation, Fuzzy, LogProb, MaxProduct, ProbGradient,
+    };
 
     type TestResin = Resin<LogProb>;
 
@@ -1296,6 +1298,115 @@ mod tests {
             "∂/∂p3      expected 0.8,   got {}",
             grad[4]
         );
+    }
+
+    /// Two rules sharing a precondition.
+    const SHARED_PRECONDITION_MODEL: &str = "
+        shared <- P(0.6).
+        b <- P(0.5).
+        c <- P(0.3).
+        target if shared and b.
+        target if shared and c.
+        target -> target(\"/out\").
+    ";
+
+    /// Two rules without shared literals, which can still hold simultaneously.
+    const DISJOINT_BRANCHES_MODEL: &str = "
+        a1 <- P(0.5).
+        a2 <- P(0.6).
+        a3 <- P(0.7).
+        b1 <- P(0.4).
+        b2 <- P(0.3).
+        b3 <- P(0.9).
+        target if a1 and a2 and a3.
+        target if b1 and b2 and b3.
+        target -> target(\"/out\").
+    ";
+
+    /// P = 0.39. The MPE is `shared & b & not-c` (0.6·0.5·0.7 = 0.21), whose
+    /// least-probable leaf is `b` (0.5).
+    #[test]
+    fn test_critical_explanation_identifies_weakest_link() {
+        let resin =
+            Resin::<CriticalExplanation>::compile(SHARED_PRECONDITION_MODEL, 4, 1e-3, false, None)
+                .expect("compile failed");
+        let mut rc = resin.manager.reactive_circuit.lock().unwrap();
+        let result = rc.full_update();
+        let out = &result["/out"];
+
+        let tol = 1e-9_f64;
+        let p = out[0];
+        let v = out[1];
+        let tag = out[2];
+        let w = out[3];
+        assert!((p - 0.39).abs() < tol, "P(target) expected 0.39, got {}", p);
+        assert!((v - 0.21).abs() < tol, "v (MPE) expected 0.21, got {}", v);
+
+        let b_idx = rc
+            .leafs
+            .iter()
+            .position(|l| l.name == "b_cause_0")
+            .expect("b_cause_0 leaf not found") as f64;
+        assert_eq!(tag, b_idx, "tag should identify b as the MPE's weakest link, got leaf index {}", tag);
+        assert!((w - 0.5).abs() < tol, "w expected 0.5 (b's own raw probability), got {}", w);
+    }
+
+    /// The MPE over the 15 compiled minterms is `a1 & a2 & a3 & not-b1 & not-b2 & b3`
+    /// (0.07938), whose least-probable leaf is `a1` (0.5).
+    #[test]
+    fn test_critical_explanation_disjoint_branches() {
+        let resin =
+            Resin::<CriticalExplanation>::compile(DISJOINT_BRANCHES_MODEL, 4, 1e-3, false, None)
+                .expect("compile failed");
+        let mut rc = resin.manager.reactive_circuit.lock().unwrap();
+        let result = rc.full_update();
+        let out = &result["/out"];
+
+        let tol = 1e-6_f64;
+        let p = out[0];
+        let v = out[1];
+        let tag = out[2];
+        let w = out[3];
+        assert!((p - 0.29532).abs() < tol, "P(target) expected 0.29532, got {}", p);
+        assert!((v - 0.07938).abs() < tol, "v (MPE) expected 0.07938, got {}", v);
+
+        let a1_idx = rc
+            .leafs
+            .iter()
+            .position(|l| l.name == "a1_cause_0")
+            .expect("a1_cause_0 leaf not found") as f64;
+        assert_eq!(tag, a1_idx, "tag should identify a1 as the MPE's weakest link, got leaf index {}", tag);
+        assert!((w - 0.5).abs() < tol, "w expected 0.5 (a1's own raw probability), got {}", w);
+    }
+
+    #[test]
+    #[should_panic(expected = "value_size must be 4 * n_cells")]
+    fn test_critical_explanation_rejects_bad_value_size() {
+        let _ =
+            Resin::<CriticalExplanation>::compile(SHARED_PRECONDITION_MODEL, 3, 1e-3, false, None);
+    }
+
+    /// Restructuring the circuit must not change any component of the result.
+    #[test]
+    fn test_critical_explanation_invariant_under_lift_leaf() {
+        for leaf_to_lift in ["shared_cause_0", "b_cause_0", "c_cause_0"] {
+            let resin =
+                Resin::<CriticalExplanation>::compile(SHARED_PRECONDITION_MODEL, 4, 1e-3, false, None)
+                    .expect("compile failed");
+            let mut rc = resin.manager.reactive_circuit.lock().unwrap();
+            let out = rc.full_update()["/out"].clone();
+
+            let idx = rc.leafs.iter().position(|l| l.name == leaf_to_lift).unwrap() as u32;
+            rc.lift_leaf(idx);
+            let result2 = rc.full_update();
+            let out2 = &result2["/out"];
+
+            let tol = 1e-9_f64;
+            assert!((out2[0] - out[0]).abs() < tol, "lift_leaf({leaf_to_lift}) changed P");
+            assert!((out2[1] - out[1]).abs() < tol, "lift_leaf({leaf_to_lift}) changed v");
+            assert!((out2[2] - out[2]).abs() < tol, "lift_leaf({leaf_to_lift}) changed tag");
+            assert!((out2[3] - out[3]).abs() < tol, "lift_leaf({leaf_to_lift}) changed w");
+        }
     }
 
     /// Gradient descent on leaf probabilities using `ProbGradient`.

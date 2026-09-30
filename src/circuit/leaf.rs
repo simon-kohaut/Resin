@@ -84,7 +84,7 @@ impl<S: Semiring> Leaf<S> {
 
     /// Returns the probability vector, decoded from the internal representation.
     pub fn get_value(&self) -> Vector {
-        self.encoded_value.mapv(S::decode).into_shared()
+        S::decode_vec(self.encoded_value.to_owned()).into_shared()
     }
 
     /// Resets the FoC estimator and sets `frequency` to `0.0` if the leaf has

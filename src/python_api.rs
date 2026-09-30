@@ -10,7 +10,9 @@ use crate::channels::ipc::{
 };
 use crate::circuit::leaf::{self, Leaf};
 use crate::circuit::reactive::ReactiveCircuit;
-use crate::circuit::semiring::{Boolean, Fuzzy, LogProb, MaxProduct, ProbGradient};
+use crate::circuit::semiring::{
+    Boolean, CriticalExplanation, Fuzzy, LogProb, MaxProduct, ProbGradient,
+};
 use crate::circuit::Vector;
 use crate::language::Resin;
 
@@ -51,6 +53,7 @@ enum ResinVariant {
     Fuzzy(Resin<Fuzzy>),
     Boolean(Resin<Boolean>),
     ProbGradient(Resin<ProbGradient>),
+    CriticalExplanation(Resin<CriticalExplanation>),
 }
 
 /// Holds a shared `ReactiveCircuit` handle for any supported semiring.
@@ -61,6 +64,7 @@ enum RCVariant {
     Fuzzy(Arc<Mutex<ReactiveCircuit<Fuzzy>>>),
     Boolean(Arc<Mutex<ReactiveCircuit<Boolean>>>),
     ProbGradient(Arc<Mutex<ReactiveCircuit<ProbGradient>>>),
+    CriticalExplanation(Arc<Mutex<ReactiveCircuit<CriticalExplanation>>>),
 }
 
 /// Dispatch a method call over all `ResinVariant` arms.
@@ -73,6 +77,7 @@ macro_rules! with_resin {
             ResinVariant::Fuzzy($r) => $body,
             ResinVariant::Boolean($r) => $body,
             ResinVariant::ProbGradient($r) => $body,
+            ResinVariant::CriticalExplanation($r) => $body,
         }
     };
 }
@@ -104,6 +109,11 @@ macro_rules! with_rc {
             }
             #[allow(unused_mut)]
             RCVariant::ProbGradient(arc) => {
+                let mut $c = arc.lock().unwrap();
+                $body
+            }
+            #[allow(unused_mut)]
+            RCVariant::CriticalExplanation(arc) => {
                 let mut $c = arc.lock().unwrap();
                 $body
             }
@@ -309,7 +319,8 @@ impl PyResin {
     /// Compiles a Resin model string into a runtime instance.
     ///
     /// `semiring` selects the inference algebra.  Supported values (case-insensitive):
-    /// `"LogProb"` (default), `"MaxProduct"`, `"Fuzzy"`, `"Boolean"`, `"ProbGradient"`.
+    /// `"LogProb"` (default), `"MaxProduct"`, `"Fuzzy"`, `"Boolean"`, `"ProbGradient"`,
+    /// `"CriticalExplanation"`.
     #[staticmethod]
     #[pyo3(signature = (model, value_size=1, verbose=false, semiring=None, update_threshold=1e-3, max_models=None))]
     fn compile(
@@ -325,75 +336,32 @@ impl PyResin {
         let semiring = semiring.unwrap_or("logprob").to_ascii_lowercase();
         let variant = py
             .detach(move || -> Result<ResinVariant, String> {
+                macro_rules! compile_as {
+                    ($s:ident) => {
+                        Resin::<$s>::compile(
+                            &model,
+                            value_size,
+                            update_threshold,
+                            verbose,
+                            max_models,
+                        )
+                        .map(ResinVariant::$s)
+                        .map_err(|e| e.to_string())
+                    };
+                }
                 match semiring.as_str() {
-                    "logprob" | "log_prob" => Resin::<LogProb>::compile(
-                        &model,
-                        value_size,
-                        update_threshold,
-                        verbose,
-                        max_models,
-                    )
-                    .inspect(|r| {
-                        r.manager.reactive_circuit.lock().unwrap().update_threshold =
-                            update_threshold;
-                    })
-                    .map(ResinVariant::LogProb)
-                    .map_err(|e| e.to_string()),
-                    "maxproduct" | "max_product" => Resin::<MaxProduct>::compile(
-                        &model,
-                        value_size,
-                        update_threshold,
-                        verbose,
-                        max_models,
-                    )
-                    .inspect(|r| {
-                        r.manager.reactive_circuit.lock().unwrap().update_threshold =
-                            update_threshold;
-                    })
-                    .map(ResinVariant::MaxProduct)
-                    .map_err(|e| e.to_string()),
-                    "fuzzy" => Resin::<Fuzzy>::compile(
-                        &model,
-                        value_size,
-                        update_threshold,
-                        verbose,
-                        max_models,
-                    )
-                    .inspect(|r| {
-                        r.manager.reactive_circuit.lock().unwrap().update_threshold =
-                            update_threshold;
-                    })
-                    .map(ResinVariant::Fuzzy)
-                    .map_err(|e| e.to_string()),
-                    "boolean" => Resin::<Boolean>::compile(
-                        &model,
-                        value_size,
-                        update_threshold,
-                        verbose,
-                        max_models,
-                    )
-                    .inspect(|r| {
-                        r.manager.reactive_circuit.lock().unwrap().update_threshold =
-                            update_threshold;
-                    })
-                    .map(ResinVariant::Boolean)
-                    .map_err(|e| e.to_string()),
-                    "probgradient" | "prob_gradient" => Resin::<ProbGradient>::compile(
-                        &model,
-                        value_size,
-                        update_threshold,
-                        verbose,
-                        max_models,
-                    )
-                    .inspect(|r| {
-                        r.manager.reactive_circuit.lock().unwrap().update_threshold =
-                            update_threshold;
-                    })
-                    .map(ResinVariant::ProbGradient)
-                    .map_err(|e| e.to_string()),
+                    "logprob" | "log_prob" => compile_as!(LogProb),
+                    "maxproduct" | "max_product" => compile_as!(MaxProduct),
+                    "fuzzy" => compile_as!(Fuzzy),
+                    "boolean" => compile_as!(Boolean),
+                    "probgradient" | "prob_gradient" => compile_as!(ProbGradient),
+                    "criticalexplanation" | "critical_explanation" => {
+                        compile_as!(CriticalExplanation)
+                    }
                     other => Err(format!(
                         "Unknown semiring '{other}'. \
-                         Supported: LogProb, MaxProduct, Fuzzy, Boolean, ProbGradient"
+                         Supported: LogProb, MaxProduct, Fuzzy, Boolean, ProbGradient, \
+                         CriticalExplanation"
                     )),
                 }
             })
@@ -413,6 +381,9 @@ impl PyResin {
             ResinVariant::Boolean(r) => RCVariant::Boolean(r.manager.reactive_circuit.clone()),
             ResinVariant::ProbGradient(r) => {
                 RCVariant::ProbGradient(r.manager.reactive_circuit.clone())
+            }
+            ResinVariant::CriticalExplanation(r) => {
+                RCVariant::CriticalExplanation(r.manager.reactive_circuit.clone())
             }
         };
         PyReactiveCircuit { circuit }
@@ -557,6 +528,7 @@ impl PyResin {
                 ResinVariant::Fuzzy(r) => r.get_parameter_groups().clone(),
                 ResinVariant::Boolean(r) => r.get_parameter_groups().clone(),
                 ResinVariant::ProbGradient(r) => r.get_parameter_groups().clone(),
+                ResinVariant::CriticalExplanation(r) => r.get_parameter_groups().clone(),
             }
         });
         let dict = PyDict::new(py);

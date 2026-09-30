@@ -365,7 +365,7 @@ impl AlgebraicCircuit {
 
     /// Returns `P(formula)` decoded to probability space (for tests and external callers).
     pub fn value<S: Semiring>(&self, rc: &ReactiveCircuit<S>) -> Vector {
-        self.evaluate::<S>(rc).mapv(S::decode).into_shared()
+        S::decode_vec(self.evaluate::<S>(rc).into_owned()).into_shared()
     }
 
     // ── visualisation ─────────────────────────────────────────────────────────

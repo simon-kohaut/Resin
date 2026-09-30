@@ -32,23 +32,19 @@ pub struct ReactiveCircuit<S: Semiring = LogProb> {
     pub structure: StableGraph<AlgebraicCircuit, Vector>,
     pub value_size: usize,
     pub leafs: Vec<Leaf<S>>,
-    /// Node indices pending recomputation. Keys are internal `u32` indices on
-    /// the hot leaf-update path, so a non-cryptographic hasher is used instead
-    /// of the DoS-resistant default.
+    /// Node indices pending recomputation (FxHash: small internal keys on the hot path).
     pub queue: FxHashSet<u32>,
     pub targets: HashMap<String, NodeIndex>,
     pub partitioning: Vec<usize>,
     /// Minimum change in encoded leaf value required to trigger recomputation of
     /// dependent nodes.  Defaults to `1e-3`.
     pub update_threshold: f64,
-    /// Nodes grouped by evaluation level: level 0 = leaf ACs (no child circuits),
-    /// higher levels depend only on nodes at lower levels.  Cached across updates,
-    /// invalidated whenever the graph structure changes.
+    /// Cached evaluation levels (0 = ACs without children); reset on structural change.
     topo_levels: Option<Vec<Vec<NodeIndex>>>,
 }
 
 impl<S: Semiring> ReactiveCircuit<S> {
-    /// Create a new `ReactiveCircuit` with the given `value_size` and set of `leafs`.
+    /// Create an empty `ReactiveCircuit` with the given `value_size`.
     pub fn new(value_size: usize) -> Self {
         assert!(
             value_size > 0,
@@ -100,14 +96,8 @@ impl<S: Semiring> ReactiveCircuit<S> {
         reactive_circuit
     }
 
-    /// Adds a new empty target node with the given token.
-    ///
-    /// **Warning:** the resulting node contains an empty `AlgebraicCircuit`
-    /// and will fail the circuit invariants until a formula is added via
-    /// `add_sum_product`.  Prefer `add_sum_product` directly.
+    /// Adds an empty target node. Fails invariants until `add_sum_product` fills it; prefer that instead.
     pub fn new_target(&mut self, target_token: &str) -> NodeIndex {
-        // TODO: Using this function leaves the RC in a bad state (empty AC node)
-        // Maybe remove method or require formula?
         self.topo_levels = None;
         assert!(
             !self.targets.contains_key(target_token),
@@ -181,7 +171,6 @@ impl<S: Semiring> ReactiveCircuit<S> {
             .map(|leaf| leaf.get_frequency())
             .collect::<Vec<f64>>();
         let partitioning = partitioning(&frequencies, boundaries);
-        println!("{:?}", partitioning);
 
         if self.partitioning.is_empty() {
             for (index, &count) in partitioning.iter().enumerate() {
@@ -217,10 +206,7 @@ impl<S: Semiring> ReactiveCircuit<S> {
         self.check_invariants();
     }
 
-    /// Returns a list of all descendant nodes, grouped by their depth relative to the given `node`.
-    ///
-    /// The result is a `Vec<Vec<NodeIndex>>`, where the outer vector's index corresponds to the depth
-    /// (e.g., index 0 contains all direct children, index 1 contains grandchildren, and so on).
+    /// Descendants of `node` grouped by depth (index 0 = direct children).
     pub fn get_descendants_by_depth(&self, node: &NodeIndex) -> Vec<Vec<NodeIndex>> {
         let mut descendants_by_depth: Vec<Vec<NodeIndex>> = Vec::new();
         if self.structure.node_weight(*node).is_none() {
@@ -257,12 +243,8 @@ impl<S: Semiring> ReactiveCircuit<S> {
     /// Marks every node in the circuit as outdated by adding all node indices
     /// to the queue, so the next `update` call recomputes the entire circuit.
     pub fn invalidate(&mut self) {
-        // Invalidate in a bottom-up fashion so that the update queue can be processed from bottom to top
-        let sorted_nodes =
-            toposort(&self.structure, None).expect("ReactiveCircuit should be a DAG");
         self.queue
-            .extend(sorted_nodes.iter().map(|node| node.index() as u32));
-        self.queue = self.queue.iter().unique().cloned().collect();
+            .extend(self.structure.node_indices().map(|node| node.index() as u32));
     }
 
     /// Remove RC nodes whose AC has no leaves and no memories, cleaning up any
@@ -377,18 +359,20 @@ impl<S: Semiring> ReactiveCircuit<S> {
     /// Recomputes the dependency set for every leaf by walking all circuit nodes
     /// and collecting the ancestors of any node that contains the leaf.
     pub fn update_dependencies(&mut self) {
-        for index in 0..self.leafs.len() as u32 {
-            let mut new_dependencies = BTreeSet::new();
+        let mut dependencies = vec![BTreeSet::new(); self.leafs.len()];
 
-            for node in self.structure.node_indices() {
-                if self.structure[node].get_leaf(index).is_some() {
-                    for ancestor in self.get_ancestors(node) {
-                        new_dependencies.insert(ancestor.index() as u32);
-                    }
-                }
+        for node in self.structure.node_indices() {
+            if self.structure[node].leafs.is_empty() {
+                continue;
             }
+            let ancestors = self.get_ancestors(node);
+            for &index in self.structure[node].leafs.keys() {
+                dependencies[index as usize].extend(ancestors.iter().map(|a| a.index() as u32));
+            }
+        }
 
-            self.leafs[index as usize].dependencies = new_dependencies;
+        for (leaf, deps) in self.leafs.iter_mut().zip(dependencies) {
+            leaf.dependencies = deps;
         }
     }
 
@@ -644,8 +628,7 @@ impl<S: Semiring> ReactiveCircuit<S> {
     pub fn update(&mut self) -> HashMap<String, Vector> {
         // We collect data to share to the outside world
         let mut target_results = HashMap::new();
-        let outdated_nodes = self.queue.clone();
-        self.queue.clear();
+        let outdated_nodes = std::mem::take(&mut self.queue);
 
         // Build level decomposition once; invalidated on structural changes.
         // Level 0 = leaf ACs (no child circuits); level k depends only on levels < k.
@@ -682,7 +665,7 @@ impl<S: Semiring> ReactiveCircuit<S> {
         for lvl in 0..n_levels {
             // Phase 1 — parallel: compute values for every queued node in this level.
             // All reads; the children's edge weights (levels < lvl) are fully written already.
-            let level_nodes = self.topo_levels.as_ref().unwrap()[lvl].clone();
+            let level_nodes = &self.topo_levels.as_ref().unwrap()[lvl];
             let level_results: Vec<(NodeIndex, Vector)> = level_nodes
                 .par_iter()
                 .filter(|&&node| outdated_nodes.contains(&(node.index() as u32)))
@@ -696,8 +679,10 @@ impl<S: Semiring> ReactiveCircuit<S> {
             for (node, result) in level_results {
                 for (token, &target_node) in &self.targets {
                     if target_node == node {
-                        target_results
-                            .insert(token.to_owned(), result.mapv(S::decode).into_shared());
+                        target_results.insert(
+                            token.to_owned(),
+                            S::decode_vec(result.to_owned()).into_shared(),
+                        );
                     }
                 }
                 let edges: Vec<EdgeIndex> = self
@@ -749,20 +734,13 @@ impl<S: Semiring> ReactiveCircuit<S> {
             .collect()
     }
 
-    /// Runs the reactive update and returns `ProbGradient` results unpacked by leaf name.
-    ///
-    /// Only recomputes circuits whose inputs have changed since the last call.
-    /// The returned map has the form `{ target → (wmc, { leaf_name → gradient }) }`.
+    /// `update()` followed by `unpack_gradients`.
     pub fn gradient_update(&mut self) -> HashMap<String, (f64, HashMap<String, f64>)> {
         let results = self.update();
         self.unpack_gradients(&results)
     }
 
-    /// Invalidates the entire circuit, then runs an update and returns
-    /// `ProbGradient` results unpacked by leaf name.
-    ///
-    /// Use this when you need every target recomputed unconditionally.
-    /// The returned map has the form `{ target → (wmc, { leaf_name → gradient }) }`.
+    /// `full_update()` followed by `unpack_gradients`.
     pub fn full_gradient_update(&mut self) -> HashMap<String, (f64, HashMap<String, f64>)> {
         let results = self.full_update();
         self.unpack_gradients(&results)
