@@ -19,7 +19,28 @@ use crate::channels::clustering::partitioning;
 use crate::circuit::leaf;
 use crate::circuit::semiring::{LogProb, Semiring};
 
-use super::{algebraic::AlgebraicCircuit, leaf::Leaf, Vector};
+use super::{
+    algebraic::{AlgebraicCircuit, Column},
+    leaf::Leaf,
+    Vector,
+};
+
+/// How `lift_leaf`/`drop_leaf` restructure the circuit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Topology {
+    /// Merge nodes with identical polynomials, so sub-circuits are shared across parents and targets.
+    #[default]
+    Dag,
+    /// Every node has its own sub-circuits.
+    Tree,
+}
+
+/// A variable of a node's polynomial, with memories identified by their child node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum Var {
+    Leaf(u32),
+    Child(u32),
+}
 
 /// A dynamic computation graph where each node contains an `AlgebraicCircuit` for which the result is
 /// stored as weight of the incoming edges.
@@ -162,7 +183,7 @@ impl<S: Semiring> ReactiveCircuit<S> {
 
     /// Re-partitions leaves by their current FoC using `boundaries` as bin
     /// edges, then lifts or drops leaves to match the new partitioning.
-    pub fn adapt(&mut self, boundaries: &[f64]) {
+    pub fn adapt(&mut self, boundaries: &[f64], topology: Topology) {
         self.check_invariants();
 
         let frequencies = self
@@ -173,9 +194,19 @@ impl<S: Semiring> ReactiveCircuit<S> {
         let partitioning = partitioning(&frequencies, boundaries);
 
         if self.partitioning.is_empty() {
-            for (index, &count) in partitioning.iter().enumerate() {
-                for _ in 0..count {
-                    self.drop_leaf(index as u32);
+            // Only relative levels matter, so move every leaf relative to the
+            // median band: the fewest lifts and drops for the same structure.
+            let mut sorted = partitioning.clone();
+            sorted.sort_unstable();
+            let median = sorted.get(sorted.len() / 2).copied().unwrap_or(0) as i32;
+            for (index, &band) in partitioning.iter().enumerate() {
+                let moves = band as i32 - median;
+                for _ in 0..moves.abs() {
+                    if moves < 0 {
+                        self.lift_leaf(index as u32, topology);
+                    } else {
+                        self.drop_leaf(index as u32, topology);
+                    }
                 }
             }
         } else {
@@ -185,18 +216,12 @@ impl<S: Semiring> ReactiveCircuit<S> {
                 .take(self.partitioning.len())
             {
                 let difference = self.partitioning[index] as i32 - new_count as i32;
-                match difference.signum() {
-                    -1 => {
-                        for _ in 0..-difference {
-                            self.lift_leaf(index as u32);
-                        }
+                for _ in 0..difference.abs() {
+                    if difference < 0 {
+                        self.lift_leaf(index as u32, topology);
+                    } else {
+                        self.drop_leaf(index as u32, topology);
                     }
-                    1 => {
-                        for _ in 0..difference {
-                            self.drop_leaf(index as u32);
-                        }
-                    }
-                    _ => unreachable!(),
                 }
             }
         }
@@ -243,8 +268,11 @@ impl<S: Semiring> ReactiveCircuit<S> {
     /// Marks every node in the circuit as outdated by adding all node indices
     /// to the queue, so the next `update` call recomputes the entire circuit.
     pub fn invalidate(&mut self) {
-        self.queue
-            .extend(self.structure.node_indices().map(|node| node.index() as u32));
+        self.queue.extend(
+            self.structure
+                .node_indices()
+                .map(|node| node.index() as u32),
+        );
     }
 
     /// Remove RC nodes whose AC has no leaves and no memories, cleaning up any
@@ -303,36 +331,71 @@ impl<S: Semiring> ReactiveCircuit<S> {
             .collect();
 
         if parents_and_edges.is_empty() {
-            let parent = self
-                .structure
-                .add_node(AlgebraicCircuit::new(self.value_size));
-            let edge = self.structure.add_edge(
-                parent,
-                index,
-                Array1::from_elem(self.value_size, S::zero()).into_shared(),
-            );
-
-            self.queue.insert(parent.index() as u32);
-
-            let ac = self.structure.node_weight_mut(parent).unwrap();
-            let mem_col = ac.create_memory(edge);
-            ac.push_single(mem_col);
-
-            let tokens_to_update: Vec<String> = self
-                .targets
-                .iter()
-                .filter(|(_, &node_index)| node_index == index)
-                .map(|(token, _)| token.clone())
-                .collect();
-            for token in tokens_to_update {
-                self.targets.insert(token, parent);
-            }
-
-            return vec![(parent, edge)];
+            return vec![self.add_root(index)];
         }
 
         self.check_invariants();
         parents_and_edges
+    }
+
+    /// Add a new parent `P = node` above `node` and move all targets of `node` to it.
+    fn add_root(&mut self, node: NodeIndex) -> (NodeIndex, EdgeIndex) {
+        self.topo_levels = None;
+        let parent = self
+            .structure
+            .add_node(AlgebraicCircuit::new(self.value_size));
+        let edge = self.structure.add_edge(
+            parent,
+            node,
+            Array1::from_elem(self.value_size, S::zero()).into_shared(),
+        );
+
+        self.queue.insert(parent.index() as u32);
+
+        let ac = self.structure.node_weight_mut(parent).unwrap();
+        let mem_col = ac.create_memory(edge);
+        ac.push_single(mem_col);
+
+        for target in self.targets.values_mut() {
+            if *target == node {
+                *target = parent;
+            }
+        }
+
+        (parent, edge)
+    }
+
+    /// Add `circuit` as a new node. Its memory columns still refer to another
+    /// node's outgoing edges; each is copied to a new edge from the new node.
+    fn add_node_with_copied_edges(&mut self, circuit: AlgebraicCircuit) -> NodeIndex {
+        self.topo_levels = None;
+        let node = self.structure.add_node(circuit);
+        let old_memories: Vec<(u32, usize)> = self.structure[node]
+            .memories
+            .iter()
+            .map(|(&k, &v)| (k, v))
+            .collect();
+        for (old_key, col) in old_memories {
+            let old_edge = EdgeIndex::new(old_key as usize);
+            let weight = self.structure[old_edge].clone();
+            let target = self.structure.edge_endpoints(old_edge).unwrap().1;
+            let new_edge = self.structure.add_edge(node, target, weight);
+            self.structure[node].remap_memory(col, old_key, new_edge);
+        }
+        node
+    }
+
+    /// Point `edge` at `new_target`, keeping its source's memory column and weight.
+    fn retarget_edge(&mut self, edge: EdgeIndex, new_target: NodeIndex) -> EdgeIndex {
+        self.topo_levels = None;
+        let source = self.structure.edge_endpoints(edge).unwrap().0;
+        let weight = self.structure[edge].clone();
+        let new_edge = self.structure.add_edge(source, new_target, weight);
+        let ac = &mut self.structure[source];
+        let col = ac.get_memory(edge).unwrap();
+        ac.remap_memory(col, edge.index() as u32, new_edge);
+        self.structure.remove_edge(edge);
+        new_edge
     }
 
     /// Get all ancestors of a node, including the node itself.
@@ -377,55 +440,35 @@ impl<S: Semiring> ReactiveCircuit<S> {
     }
 
     /// Lift the leaf with `index` out of its current circuits into its ancestors.
-    pub fn lift_leaf(&mut self, index: u32) {
+    pub fn lift_leaf(&mut self, index: u32, topology: Topology) {
         self.topo_levels = None;
-        for dependency in self.leafs[index as usize].get_dependencies() {
+        // Parents first: the leaf only moves into already processed parents,
+        // so it goes up exactly one level.
+        for node_to_lift in self.nodes_with_leaf(index, true) {
             self.check_invariants();
 
-            let node_to_lift: NodeIndex = dependency.into();
-            if self
-                .structure
-                .node_weight(node_to_lift)
-                .unwrap()
-                .get_leaf(index)
-                .is_none()
+            // `node_to_lift` is removed below, so a target on it needs its own root
+            // (`ensure_parent` only adds one if there are no parents yet).
+            if self.targets.values().any(|&t| t == node_to_lift)
+                && self
+                    .structure
+                    .neighbors_directed(node_to_lift, Incoming)
+                    .next()
+                    .is_some()
             {
-                continue;
+                self.add_root(node_to_lift);
             }
 
             let parents_and_edges = self.ensure_parent(node_to_lift);
             let ac = self.structure.node_weight_mut(node_to_lift).unwrap();
             let (in_scope_circuit, out_of_scope_circuit) = ac.split(index);
 
-            // Helper: add a freshly-cloned child AC to the graph, rewiring its
-            // memory columns to new edges that originate from the new node.
+            // Add a split-off circuit (without the lifted leaf) as a new node.
             let reattach = |this: &mut Self, mut circuit: AlgebraicCircuit| -> NodeIndex {
-                // Remove the split leaf if present (in-scope circuit still has it).
                 if let Some(col) = circuit.get_leaf(index) {
                     circuit.remove_col(col);
                 }
-                let node = this.structure.add_node(circuit);
-                // Remap each memory column: the cloned AC refers to old edge indices
-                // that belonged to node_to_lift; create new edges from the new node.
-                let old_memories: Vec<(u32, usize)> = this
-                    .structure
-                    .node_weight(node)
-                    .unwrap()
-                    .memories
-                    .iter()
-                    .map(|(&k, &v)| (k, v))
-                    .collect();
-                for (old_key, col) in old_memories {
-                    let old_edge = EdgeIndex::new(old_key as usize);
-                    let weight = this.structure.edge_weight(old_edge).unwrap().clone();
-                    let target = this.structure.edge_endpoints(old_edge).unwrap().1;
-                    let new_edge = this.structure.add_edge(node, target, weight);
-                    this.structure
-                        .node_weight_mut(node)
-                        .unwrap()
-                        .remap_memory(col, old_key, new_edge);
-                }
-                node
+                this.add_node_with_copied_edges(circuit)
             };
 
             let out_of_scope_node = out_of_scope_circuit.map(|c| reattach(self, c));
@@ -506,26 +549,31 @@ impl<S: Semiring> ReactiveCircuit<S> {
             self.structure.remove_node(node_to_lift);
         }
 
+        self.group_all_rows();
+        if topology == Topology::Dag {
+            self.merge_equivalent_nodes();
+        }
         self.update_dependencies();
         self.check_invariants();
     }
 
     /// Remove the leaf with `index` from every circuit that directly contains
     /// it, pushing its contribution down into descendant circuits.
-    pub fn drop_leaf(&mut self, index: u32) {
+    pub fn drop_leaf(&mut self, index: u32, topology: Topology) {
         self.topo_levels = None;
         self.check_invariants();
 
-        for dependency in self.leafs[index as usize].get_dependencies() {
-            let dependency: NodeIndex = dependency.into();
-            let leaf_col = match self.structure[dependency].get_leaf(index) {
-                Some(col) => col,
-                None => continue,
-            };
+        // In DAG mode, all rows without a child share one new `{leaf}` node.
+        let mut leaf_node = None;
+        // Children first: the leaf only moves into already processed children,
+        // so it goes down exactly one level.
+        for dependency in self.nodes_with_leaf(index, false) {
+            let leaf_col = self.structure[dependency].get_leaf(index).unwrap();
 
             let rows = self.structure[dependency].minterms_containing_col(leaf_col);
             for row in rows {
-                self.handle_leaf_drop_for_product(index, dependency, row);
+                let shared = (topology == Topology::Dag).then_some(&mut leaf_node);
+                self.handle_leaf_drop_for_product(index, dependency, row, shared);
             }
 
             self.structure
@@ -538,14 +586,259 @@ impl<S: Semiring> ReactiveCircuit<S> {
             }
         }
 
+        self.group_all_rows();
+        if topology == Topology::Dag {
+            self.merge_equivalent_nodes();
+        }
         self.update_dependencies();
         self.check_invariants();
     }
 
+    /// Nodes that directly contain leaf `index`, in topological order
+    /// (parents before children if `parents_first`, otherwise reversed).
+    fn nodes_with_leaf(&self, index: u32, parents_first: bool) -> Vec<NodeIndex> {
+        let mut nodes: Vec<NodeIndex> = toposort(&self.structure, None)
+            .expect("ReactiveCircuit should be a DAG")
+            .into_iter()
+            .filter(|&node| self.structure[node].get_leaf(index).is_some())
+            .collect();
+        if !parents_first {
+            nodes.reverse();
+        }
+        nodes
+    }
+
+    /// Merge all nodes whose polynomials are identical, bottom-up, so that
+    /// merged children can make their parents identical too. Returns the
+    /// number of removed nodes. Leaf dependencies must be updated afterwards.
+    ///
+    /// Only identically structured nodes merge; `lift_leaf` and `drop_leaf` run
+    /// `group_rows` first, so the structure depends only on the leaf levels.
+    pub fn merge_equivalent_nodes(&mut self) -> usize {
+        let order = toposort(&self.structure, None).expect("ReactiveCircuit should be a DAG");
+        let mut seen: HashMap<Vec<Vec<Var>>, NodeIndex> = HashMap::new();
+        let mut merged = 0;
+
+        for &node in order.iter().rev() {
+            let key = self.polynomial_key(node);
+            match seen.get(&key) {
+                Some(&survivor) => {
+                    self.merge_into(node, survivor);
+                    merged += 1;
+                }
+                None => {
+                    seen.insert(key, node);
+                }
+            }
+        }
+
+        if merged > 0 {
+            self.topo_levels = None;
+        }
+        merged
+    }
+
+    /// The rows of `node`'s polynomial as sorted variables, in sorted order.
+    fn polynomial_key(&self, node: NodeIndex) -> Vec<Vec<Var>> {
+        let ac = &self.structure[node];
+        let vars: Vec<Var> = ac
+            .columns
+            .iter()
+            .map(|col| match col {
+                Column::Leaf(i) => Var::Leaf(*i),
+                Column::Memory(k) => {
+                    let (_, child) = self
+                        .structure
+                        .edge_endpoints(EdgeIndex::new(*k as usize))
+                        .unwrap();
+                    Var::Child(child.index() as u32)
+                }
+            })
+            .collect();
+        let mut rows: Vec<Vec<Var>> = ac
+            .minterms
+            .iter()
+            .map(|row| {
+                let mut vars: Vec<Var> = row.iter().map(|&c| vars[c]).collect();
+                vars.sort_unstable();
+                vars
+            })
+            .collect();
+        rows.sort_unstable();
+        rows
+    }
+
+    /// Replace `victim` by the equivalent `survivor` in all parents, targets and the queue.
+    fn merge_into(&mut self, victim: NodeIndex, survivor: NodeIndex) {
+        let incoming: Vec<EdgeIndex> = self
+            .structure
+            .edges_directed(victim, Incoming)
+            .map(|e| e.id())
+            .collect();
+        for edge in incoming {
+            self.retarget_edge(edge, survivor);
+        }
+        for target in self.targets.values_mut() {
+            if *target == victim {
+                *target = survivor;
+            }
+        }
+        if self.queue.remove(&(victim.index() as u32)) {
+            self.queue.insert(survivor.index() as u32);
+        }
+        self.structure.remove_node(victim);
+    }
+
+    /// Group rows in every node, parents first. See `group_rows`.
+    fn group_all_rows(&mut self) {
+        let order = toposort(&self.structure, None).expect("ReactiveCircuit should be a DAG");
+        for node in order {
+            if self.structure.contains_node(node) {
+                self.group_rows(node);
+            }
+        }
+    }
+
+    /// Combine rows of `node` with the same leaves and one child each into a
+    /// single row, `L·M(C1) + L·M(C2) → L·M(S)`, where `S` holds the rows of all
+    /// those children and is grouped in turn. Children left without parents or
+    /// targets are removed. Rows without a child are kept as they are.
+    fn group_rows(&mut self, node: NodeIndex) {
+        let groups: Vec<Vec<usize>> = {
+            let ac = &self.structure[node];
+            let mut by_leaves: HashMap<Vec<u32>, Vec<usize>> = HashMap::new();
+            for (row, cols) in ac.minterms.iter().enumerate() {
+                if cols.iter().filter(|&&c| ac.col_is_memory(c)).count() != 1 {
+                    continue;
+                }
+                let mut leaves: Vec<u32> = cols
+                    .iter()
+                    .filter_map(|&c| match ac.columns[c] {
+                        Column::Leaf(i) => Some(i),
+                        Column::Memory(_) => None,
+                    })
+                    .collect();
+                leaves.sort_unstable();
+                by_leaves.entry(leaves).or_default().push(row);
+            }
+            by_leaves
+                .into_values()
+                .filter(|rows| rows.len() > 1)
+                .collect()
+        };
+        if groups.is_empty() {
+            return;
+        }
+        self.topo_levels = None;
+
+        let mut removed_rows = HashSet::new();
+        let mut old_edges = Vec::new();
+        let mut sums = Vec::new();
+        for rows in groups {
+            let edges: Vec<EdgeIndex> = rows
+                .iter()
+                .map(|&row| {
+                    let ac = &self.structure[node];
+                    let col = ac.minterms[row]
+                        .iter()
+                        .copied()
+                        .find(|&c| ac.col_is_memory(c))
+                        .unwrap();
+                    ac.col_memory_edge(col).unwrap()
+                })
+                .collect();
+
+            let sum = self
+                .structure
+                .add_node(AlgebraicCircuit::new(self.value_size));
+            for &edge in &edges {
+                let child = self.structure.edge_endpoints(edge).unwrap().1;
+                self.append_rows(sum, child);
+            }
+
+            // The first row now points to the sum; the others are removed below.
+            let new_edge = self.structure.add_edge(
+                node,
+                sum,
+                Array1::from_elem(self.value_size, S::zero()).into_shared(),
+            );
+            let ac = &mut self.structure[node];
+            let old_col = ac.get_memory(edges[0]).unwrap();
+            let new_col = ac.create_memory(new_edge);
+            let row = &mut ac.minterms[rows[0]];
+            row.retain(|&c| c != old_col);
+            row.push(new_col);
+            row.sort_unstable();
+
+            removed_rows.extend(rows[1..].iter().copied());
+            old_edges.extend(edges);
+            sums.push(sum);
+        }
+
+        for edge in old_edges {
+            let child = self.structure.edge_endpoints(edge).unwrap().1;
+            let ac = &mut self.structure[node];
+            let col = ac.get_memory(edge).unwrap();
+            ac.remove_col_keep_rows(col);
+            self.structure.remove_edge(edge);
+            if self
+                .structure
+                .neighbors_directed(child, Incoming)
+                .next()
+                .is_none()
+                && !self.targets.values().any(|&t| t == child)
+            {
+                self.queue.remove(&(child.index() as u32));
+                self.structure.remove_node(child);
+            }
+        }
+
+        let mut row = 0;
+        self.structure[node].minterms.retain(|_| {
+            let keep = !removed_rows.contains(&row);
+            row += 1;
+            keep
+        });
+
+        self.queue.insert(node.index() as u32);
+        for sum in sums {
+            self.queue.insert(sum.index() as u32);
+            self.group_rows(sum);
+        }
+    }
+
+    /// Append a copy of `source`'s rows to `target`, with new edges to their children.
+    fn append_rows(&mut self, target: NodeIndex, source: NodeIndex) {
+        let source_ac = self.structure[source].clone();
+        for row in &source_ac.minterms {
+            let mut cols = Vec::with_capacity(row.len());
+            for &c in row {
+                match source_ac.columns[c] {
+                    Column::Leaf(i) => cols.push(self.structure[target].ensure_leaf(i)),
+                    Column::Memory(k) => {
+                        let old_edge = EdgeIndex::new(k as usize);
+                        let weight = self.structure[old_edge].clone();
+                        let child = self.structure.edge_endpoints(old_edge).unwrap().1;
+                        let edge = self.structure.add_edge(target, child, weight);
+                        cols.push(self.structure[target].create_memory(edge));
+                    }
+                }
+            }
+            self.structure[target].push_minterm(cols);
+        }
+    }
+
     /// Push leaf `leaf_index` from `dependency`'s row `row` down into a child:
     /// either multiply it into the child that a sibling memory points to, or
-    /// create a new child AC containing only that leaf.
-    fn handle_leaf_drop_for_product(&mut self, leaf_index: u32, dependency: NodeIndex, row: usize) {
+    /// create a new child AC containing only that leaf. If `leaf_node` is given,
+    /// that child is created once and reused across calls.
+    fn handle_leaf_drop_for_product(
+        &mut self,
+        leaf_index: u32,
+        dependency: NodeIndex,
+        row: usize,
+        leaf_node: Option<&mut Option<NodeIndex>>,
+    ) {
         let mem_col = self.structure[dependency]
             .get_minterm_cols(row)
             .iter()
@@ -554,11 +847,22 @@ impl<S: Semiring> ReactiveCircuit<S> {
 
         if let Some(col) = mem_col {
             let edge = self.structure[dependency].col_memory_edge(col).unwrap();
-            let (_, child) = self.structure.edge_endpoints(edge).unwrap();
+            let (_, mut child) = self.structure.edge_endpoints(edge).unwrap();
+            // A child with other parents or targets would change for them too, so copy it first.
+            if self.structure.edges_directed(child, Incoming).count() > 1
+                || self.targets.values().any(|&t| t == child)
+            {
+                child = self.add_node_with_copied_edges(self.structure[child].clone());
+                self.retarget_edge(edge, child);
+            }
             self.structure[child].multiply(leaf_index);
         } else {
-            let new_ac = AlgebraicCircuit::from_sum_product(self.value_size, &[vec![leaf_index]]);
-            let new_node = self.structure.add_node(new_ac);
+            let value_size = self.value_size;
+            let leaf_ac = || AlgebraicCircuit::from_sum_product(value_size, &[vec![leaf_index]]);
+            let new_node = match leaf_node {
+                Some(slot) => *slot.get_or_insert_with(|| self.structure.add_node(leaf_ac())),
+                None => self.structure.add_node(leaf_ac()),
+            };
             let new_edge = self.structure.add_edge(
                 dependency,
                 new_node,
@@ -842,6 +1146,36 @@ impl<S: Semiring> ReactiveCircuit<S> {
             }
         }
 
+        // Invariant 5: every memory column appears in exactly one minterm
+        // (`disconnect` and the per-edge rewiring in `lift_leaf` rely on this).
+        for node in self.structure.node_indices() {
+            let ac = &self.structure[node];
+            for &col in ac.memories.values() {
+                let count = ac.minterms.iter().filter(|row| row.contains(&col)).count();
+                if count != 1 {
+                    violations.push(format!(
+                        "Invariant Violation: Node {:?} uses memory column {} in {} minterms.",
+                        node, col, count
+                    ));
+                }
+            }
+        }
+
+        // Invariant 6: every minterm has at most one memory column
+        // (`group_rows` and `handle_leaf_drop_for_product` rely on this).
+        for node in self.structure.node_indices() {
+            let ac = &self.structure[node];
+            for (row, cols) in ac.minterms.iter().enumerate() {
+                let count = cols.iter().filter(|&&c| ac.col_is_memory(c)).count();
+                if count > 1 {
+                    violations.push(format!(
+                        "Invariant Violation: Node {:?} minterm {} has {} memory columns.",
+                        node, row, count
+                    ));
+                }
+            }
+        }
+
         if !violations.is_empty() {
             let _ = self.to_svg("invariant_violation.svg", true);
             panic!("Invariant violations found:\n{}", violations.join("\n"));
@@ -860,28 +1194,39 @@ impl<S: Semiring> ReactiveCircuit<S> {
         dot.push_str("    node [color=\"chartreuse3\" margin=0 penwidth=2];\n");
         dot.push_str("    edge [color=\"gray25\" penwidth=2];\n");
 
-        // Iterate over the nodes
+        // Iterate over the nodes, labelled with their targets and polynomial
         for node in self.structure.node_indices() {
             let ac = &self.structure[node];
-            let scope: Vec<String> = ac
+            let names: Vec<String> = ac
                 .columns
                 .iter()
                 .map(|col| match col {
-                    super::algebraic::Column::Leaf(i) => format!("L{}", i),
-                    super::algebraic::Column::Memory(k) => format!("M{}", k),
+                    Column::Leaf(i) => match self.leafs.get(*i as usize) {
+                        Some(leaf) if !leaf.name.is_empty() => leaf.name.clone(),
+                        _ => format!("L{}", i),
+                    },
+                    Column::Memory(k) => format!("M{}", k),
                 })
                 .collect();
-            let node_label = format!(
-                "P({}) = ΣΠ\\n{}",
-                self.targets
-                    .iter()
-                    .filter(|(_, v)| **v == node)
-                    .map(|(k, _)| k)
-                    .join(""),
-                scope.join(" "),
-            );
+            let polynomial = ac
+                .minterms
+                .iter()
+                .map(|row| row.iter().map(|&c| names[c].as_str()).join("·"))
+                .join(" + ");
+            let mut targets: Vec<&str> = self
+                .targets
+                .iter()
+                .filter(|(_, v)| **v == node)
+                .map(|(k, _)| k.as_str())
+                .collect();
+            targets.sort_unstable();
+            let node_label = if targets.is_empty() {
+                polynomial
+            } else {
+                format!("{}\\n{}", targets.join(", "), polynomial)
+            };
             dot.push_str(&format!(
-                "    {} [shape=\"circle\" label=\"{}\"];\n",
+                "    {} [shape=\"box\" style=\"rounded\" label=\"{}\"];\n",
                 node.index(),
                 node_label
             ));
@@ -895,7 +1240,7 @@ impl<S: Semiring> ReactiveCircuit<S> {
                 source.index(),
                 target.index(),
                 edge.index(),
-                self.structure[edge][0]
+                S::decode(self.structure[edge][0])
             ));
         }
 
@@ -1019,84 +1364,75 @@ mod tests {
             .fold(Vector::zeros(value_size), |a, b| a + b)
     }
 
-    #[test]
-    fn test_randomized_adaptation() {
+    /// Several targets drawn from a shared pool of products, checked against
+    /// their flat formulas while leaves are updated and lifted/dropped at random.
+    fn run_randomized_adaptation(topology: Topology) {
         let mut rng = rand::rng();
         let value_size = 1;
-        let number_leafs = 50;
-        let number_products = 250;
-        let product_size = 25;
+        let number_leafs = 30;
+        let pool_size = 60;
+        let products_per_target = 30;
+        let product_size = 6;
+        let targets = ["target_a", "target_b", "target_c"];
         let simulation_steps = 100;
 
-        // 1. Setup Manager and ReactiveCircuit
         let manager = TestManager::new(value_size);
         let mut reactive_circuit = manager.reactive_circuit.lock().unwrap();
 
-        // 2. Create a large, random formula
         for i in 0..number_leafs {
             reactive_circuit.leafs.push(Leaf::new(
                 Vector::from(vec![rng.random_range(0.0..1.0)]),
                 0.0,
                 &format!("leaf_{}", i),
-                i, // leaf_index
+                i,
             ));
         }
 
-        let mut sum_of_products = Vec::new();
         let leaf_indices: Vec<u32> = (0..number_leafs as u32).collect();
-        for _ in 0..number_products {
-            let product: Vec<u32> = leaf_indices
-                .choose_multiple(&mut rng, product_size)
-                .cloned()
-                .collect();
-            sum_of_products.push(product);
+        let pool: Vec<Vec<u32>> = (0..pool_size)
+            .map(|_| {
+                leaf_indices
+                    .choose_multiple(&mut rng, product_size)
+                    .cloned()
+                    .collect()
+            })
+            .collect();
+        let formulas: Vec<Vec<Vec<u32>>> = targets
+            .iter()
+            .map(|_| {
+                pool.choose_multiple(&mut rng, products_per_target)
+                    .cloned()
+                    .collect()
+            })
+            .collect();
+        for (target, formula) in targets.iter().zip(&formulas) {
+            reactive_circuit.add_sum_product(formula, target);
         }
 
-        reactive_circuit.add_sum_product(&sum_of_products, "random_target");
-        let _ = reactive_circuit.to_svg("test_randomized_rc.svg", false);
-
-        // 3. Simulation loop
         for step in 0..simulation_steps + 1 {
-            // Calculate expected value before any changes in this step
             let leaf_values = reactive_circuit
                 .leafs
                 .iter()
                 .map(|l| l.get_value())
                 .collect::<Vec<_>>();
-            let expected_value =
-                calculate_expected_value(&sum_of_products, &leaf_values, value_size);
 
-            // Check if reactive update results in expected value
-            let result = reactive_circuit.update();
-            if result.contains_key("random_target") {
-                println!(
-                    "RC result = {} | Expected = {}",
-                    result["random_target"].clone(),
-                    expected_value.clone()
-                );
+            let partial = reactive_circuit.update();
+            let full = reactive_circuit.full_update();
+            for (target, formula) in targets.iter().zip(&formulas) {
+                let expected = calculate_expected_value(formula, &leaf_values, value_size);
+                if let Some(result) = partial.get(*target) {
+                    assert!(
+                        (result - &expected).sum().abs() < 1e-9,
+                        "step {step}, {target}: update {result} != {expected}"
+                    );
+                }
                 assert!(
-                    (result["random_target"].clone() - expected_value.clone())
-                        .sum()
-                        .abs()
-                        < 1e-9
+                    (&full[*target] - &expected).sum().abs() < 1e-9,
+                    "step {step}, {target}: full_update {} != {expected}",
+                    full[*target]
                 );
             }
 
-            // Check if full update results in expected value
-            let result = reactive_circuit.full_update();
-            println!(
-                "RC result = {} | Expected = {}",
-                result["random_target"].clone(),
-                expected_value.clone()
-            );
-            assert!(
-                (result["random_target"].clone() - expected_value.clone())
-                    .sum()
-                    .abs()
-                    < 1e-9
-            );
-
-            // Randomly update a leaf
             let leaf_to_update = rng.random_range(0..number_leafs) as u32;
             let new_value = Vector::from(vec![rng.random_range(0.0..1.0)]);
             update(
@@ -1106,15 +1442,289 @@ mod tests {
                 step as f64,
             );
 
-            // Randomly adapt structure
             let leaf_to_adapt = rng.random_range(0..number_leafs) as u32;
             if rng.random_bool(0.5) {
-                println!("Leaf to lift: {}", leaf_to_adapt);
-                reactive_circuit.lift_leaf(leaf_to_adapt);
+                reactive_circuit.lift_leaf(leaf_to_adapt, topology);
             } else {
-                println!("Leaf to drop: {}", leaf_to_adapt);
-                reactive_circuit.drop_leaf(leaf_to_adapt);
+                reactive_circuit.drop_leaf(leaf_to_adapt, topology);
             }
+        }
+
+        println!(
+            "{topology:?}: {} nodes, {} edges",
+            reactive_circuit.structure.node_count(),
+            reactive_circuit.structure.edge_count()
+        );
+    }
+
+    #[test]
+    fn test_randomized_adaptation_tree() {
+        run_randomized_adaptation(Topology::Tree);
+    }
+
+    #[test]
+    fn test_randomized_adaptation_dag() {
+        run_randomized_adaptation(Topology::Dag);
+    }
+
+    /// Two targets with the same formula collapse into one node.
+    #[test]
+    fn test_identical_targets_merge() {
+        let mut rc = TestRC::new(1);
+        rc.leafs.push(Leaf::new(array![0.5].into(), 0.0, "x", 0));
+        rc.leafs.push(Leaf::new(array![0.4].into(), 0.0, "y", 1));
+        rc.leafs.push(Leaf::new(array![0.3].into(), 0.0, "z", 2));
+        rc.add_sum_product(&[vec![0, 1], vec![2]], "a");
+        rc.add_sum_product(&[vec![0, 1], vec![2]], "b");
+        let expected = 0.5 * 0.4 + 0.3;
+
+        rc.lift_leaf(0, Topology::Dag);
+
+        assert_eq!(rc.targets["a"], rc.targets["b"]);
+        let result = rc.full_update();
+        assert!((result["a"][0] - expected).abs() < 1e-9);
+        assert!((result["b"][0] - expected).abs() < 1e-9);
+    }
+
+    /// `a = x·y + x·z` and `b = w·x·y + w·x·z` start as separate circuits.
+    /// After lifting `x` and `w`, both share the node for `y + z`, and dropping
+    /// `x` again (copy-on-write, then merge) keeps it shared.
+    #[test]
+    fn test_targets_grow_together() {
+        let mut rc = TestRC::new(1);
+        for (i, (name, p)) in [("x", 0.5), ("y", 0.4), ("z", 0.3), ("w", 0.8)]
+            .iter()
+            .enumerate()
+        {
+            rc.leafs.push(Leaf::new(array![*p].into(), 0.0, name, i));
+        }
+        rc.add_sum_product(&[vec![0, 1], vec![0, 2]], "a");
+        rc.add_sum_product(&[vec![3, 0, 1], vec![3, 0, 2]], "b");
+        let expected_a = 0.5 * (0.4 + 0.3);
+        let expected_b = 0.8 * expected_a;
+
+        let only_child = |rc: &TestRC, target: &str| {
+            let children: Vec<NodeIndex> = rc
+                .structure
+                .neighbors_directed(rc.targets[target], Outgoing)
+                .collect();
+            assert_eq!(children.len(), 1, "{target} should have exactly one child");
+            children[0]
+        };
+        let check_values = |rc: &mut TestRC| {
+            for result in [rc.update(), rc.full_update()] {
+                if let Some(a) = result.get("a") {
+                    assert!(
+                        (a[0] - expected_a).abs() < 1e-9,
+                        "a: {} != {expected_a}",
+                        a[0]
+                    );
+                }
+                if let Some(b) = result.get("b") {
+                    assert!(
+                        (b[0] - expected_b).abs() < 1e-9,
+                        "b: {} != {expected_b}",
+                        b[0]
+                    );
+                }
+            }
+        };
+
+        rc.lift_leaf(0, Topology::Dag);
+        check_values(&mut rc);
+        assert_ne!(only_child(&rc, "a"), only_child(&rc, "b"));
+
+        rc.lift_leaf(3, Topology::Dag);
+        check_values(&mut rc);
+        assert_eq!(only_child(&rc, "a"), only_child(&rc, "b"));
+        assert_eq!(rc.structure.node_count(), 3);
+
+        rc.drop_leaf(0, Topology::Dag);
+        check_values(&mut rc);
+        assert_eq!(only_child(&rc, "a"), only_child(&rc, "b"));
+        assert_eq!(rc.structure.node_count(), 3);
+    }
+
+    /// `a = x·y + x·z` merges into `b = w·(x·y + x·z)` after lifting `w`.
+    /// Dropping `w` again must not multiply `w` into the node that holds `a`.
+    #[test]
+    fn test_drop_does_not_modify_target_node() {
+        let mut rc = TestRC::new(1);
+        for (i, (name, p)) in [("x", 0.5), ("y", 0.4), ("z", 0.3), ("w", 0.8)]
+            .iter()
+            .enumerate()
+        {
+            rc.leafs.push(Leaf::new(array![*p].into(), 0.0, name, i));
+        }
+        rc.add_sum_product(&[vec![0, 1], vec![0, 2]], "a");
+        rc.add_sum_product(&[vec![3, 0, 1], vec![3, 0, 2]], "b");
+        let expected_a = 0.5 * (0.4 + 0.3);
+        let expected_b = 0.8 * expected_a;
+
+        rc.lift_leaf(3, Topology::Dag);
+        rc.drop_leaf(3, Topology::Dag);
+
+        let result = rc.full_update();
+        assert!(
+            (result["a"][0] - expected_a).abs() < 1e-9,
+            "a: {}",
+            result["a"][0]
+        );
+        assert!(
+            (result["b"][0] - expected_b).abs() < 1e-9,
+            "b: {}",
+            result["b"][0]
+        );
+    }
+
+    /// Structure of the circuit below `node` as a string, looking through wrapper nodes.
+    fn signature(rc: &TestRC, node: NodeIndex) -> String {
+        let ac = &rc.structure[node];
+        let child_of = |col: usize| {
+            let edge = ac.col_memory_edge(col).unwrap();
+            rc.structure.edge_endpoints(edge).unwrap().1
+        };
+        if ac.minterms.len() == 1
+            && ac.minterms[0].len() == 1
+            && ac.col_is_memory(ac.minterms[0][0])
+        {
+            return signature(rc, child_of(ac.minterms[0][0]));
+        }
+        let mut rows: Vec<String> = ac
+            .minterms
+            .iter()
+            .map(|row| {
+                let mut leaves: Vec<u32> = row
+                    .iter()
+                    .filter_map(|&c| match ac.columns[c] {
+                        Column::Leaf(i) => Some(i),
+                        Column::Memory(_) => None,
+                    })
+                    .collect();
+                leaves.sort_unstable();
+                let child = row
+                    .iter()
+                    .find(|&&c| ac.col_is_memory(c))
+                    .map(|&c| signature(rc, child_of(c)))
+                    .unwrap_or_default();
+                format!("{leaves:?}{child}")
+            })
+            .collect();
+        rows.sort_unstable();
+        format!("({})", rows.join(" + "))
+    }
+
+    /// Reaching the same leaf levels by lifting only, dropping only, or a random
+    /// mix of both yields the same structure and values.
+    #[test]
+    fn test_adaptation_is_path_independent() {
+        use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
+        const VARIABLES: usize = 5;
+        const BANDS: i32 = 3;
+
+        for seed in 0..200u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            // Variable v has leaves 2v (true) and 2v + 1 (false); rows are full worlds.
+            let formulas: Vec<Vec<Vec<u32>>> = (0..2)
+                .map(|_| {
+                    (0..1u32 << VARIABLES)
+                        .filter(|_| rng.random_bool(0.5))
+                        .map(|world| {
+                            (0..VARIABLES as u32)
+                                .map(|v| 2 * v + ((world >> v) & 1))
+                                .collect()
+                        })
+                        .collect()
+                })
+                .filter(|rows: &Vec<Vec<u32>>| !rows.is_empty())
+                .collect();
+            let levels: Vec<i32> = (0..VARIABLES).map(|_| rng.random_range(0..BANDS)).collect();
+            let values: Vec<f64> = (0..VARIABLES).map(|_| rng.random_range(0.1..0.9)).collect();
+
+            // Relative level `level + offset`: negative means lifts, positive drops.
+            let operations = |offset: i32, rng: &mut StdRng| {
+                let mut ops: Vec<(bool, u32)> = Vec::new();
+                for (v, &level) in levels.iter().enumerate() {
+                    let moves = level + offset;
+                    for leaf in [2 * v as u32, 2 * v as u32 + 1] {
+                        for _ in 0..moves.abs() {
+                            ops.push((moves < 0, leaf));
+                        }
+                    }
+                }
+                ops.shuffle(rng);
+                ops
+            };
+            let paths = [
+                ("lift", operations(-(BANDS - 1), &mut rng)),
+                ("drop", operations(0, &mut rng)),
+                (
+                    "mixed",
+                    operations(-rng.random_range(1..BANDS - 1 + 1), &mut rng),
+                ),
+            ];
+
+            for topology in [Topology::Tree, Topology::Dag] {
+                let mut results: Vec<(&str, Vec<String>, Vec<f64>)> = Vec::new();
+                for (name, ops) in &paths {
+                    let mut rc = TestRC::new(1);
+                    for (v, &p) in values.iter().enumerate() {
+                        rc.leafs.push(Leaf::new(array![p].into(), 0.0, "", 2 * v));
+                        rc.leafs
+                            .push(Leaf::new(array![1.0 - p].into(), 0.0, "", 2 * v + 1));
+                    }
+                    for (t, formula) in formulas.iter().enumerate() {
+                        rc.add_sum_product(formula, &format!("t{t}"));
+                    }
+                    for &(lift, leaf) in ops {
+                        if lift {
+                            rc.lift_leaf(leaf, topology);
+                        } else {
+                            rc.drop_leaf(leaf, topology);
+                        }
+                    }
+                    let result = rc.full_update();
+                    let targets = (0..formulas.len()).map(|t| format!("t{t}"));
+                    let signatures = targets
+                        .clone()
+                        .map(|t| signature(&rc, rc.targets[&t]))
+                        .collect();
+                    let target_values = targets.map(|t| result[&t][0]).collect();
+                    results.push((name, signatures, target_values));
+                }
+
+                let (reference, reference_signatures, reference_values) = &results[0];
+                for (name, signatures, target_values) in &results[1..] {
+                    for (a, b) in reference_values.iter().zip(target_values) {
+                        assert!(
+                            (a - b).abs() < 1e-9,
+                            "seed {seed} {topology:?}: values differ"
+                        );
+                    }
+                    assert_eq!(
+                        reference_signatures, signatures,
+                        "seed {seed} {topology:?}: {reference} vs {name}, levels {levels:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Dropping a leaf from many rows without children creates one shared node in DAG mode.
+    #[test]
+    fn test_drop_shares_leaf_node() {
+        for (topology, expected_nodes) in [(Topology::Tree, 4), (Topology::Dag, 2)] {
+            let mut rc = TestRC::new(1);
+            for i in 0..4 {
+                rc.leafs.push(Leaf::new(array![0.5].into(), 0.0, "", i));
+            }
+            rc.add_sum_product(&[vec![0, 1], vec![0, 2], vec![0, 3]], "t");
+            let expected = rc.full_update()["t"][0];
+
+            rc.drop_leaf(0, topology);
+
+            assert_eq!(rc.structure.node_count(), expected_nodes, "{topology:?}");
+            assert!((rc.full_update()["t"][0] - expected).abs() < 1e-9);
         }
     }
 
@@ -1136,7 +1746,7 @@ mod tests {
             "before lift: {v_before} != {expected}"
         );
 
-        rc.lift_leaf(0);
+        rc.lift_leaf(0, Topology::Tree);
 
         let v_after = rc.full_update()["test"][0];
         assert!(
@@ -1186,7 +1796,7 @@ mod tests {
 
         // Structural changes require updates
         // Partial and full updates always gives the same result
-        reactive_circuit.lift_leaf(0);
+        reactive_circuit.lift_leaf(0, Topology::Tree);
         reactive_circuit.to_combined_svg("output/test/test_rc_lift_l0_rc.svg")?;
         assert_eq!(
             reactive_circuit
@@ -1196,7 +1806,7 @@ mod tests {
             &value
         );
 
-        reactive_circuit.drop_leaf(0);
+        reactive_circuit.drop_leaf(0, Topology::Tree);
         reactive_circuit.to_combined_svg("output/test/test_rc_lift_drop_l0_rc.svg")?;
         assert_eq!(
             reactive_circuit
@@ -1206,7 +1816,7 @@ mod tests {
             &value
         );
 
-        reactive_circuit.drop_leaf(0);
+        reactive_circuit.drop_leaf(0, Topology::Tree);
         reactive_circuit.to_combined_svg("output/test/test_rc_lift_drop_drop_l0_rc.svg")?;
         assert_eq!(
             reactive_circuit

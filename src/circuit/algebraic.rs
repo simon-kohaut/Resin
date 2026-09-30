@@ -203,6 +203,11 @@ impl AlgebraicCircuit {
         self.minterms.is_empty()
     }
 
+    /// Number of minterms (rows).
+    pub fn minterm_count(&self) -> usize {
+        self.minterms.len()
+    }
+
     // ── bulk mutation ─────────────────────────────────────────────────────────
 
     /// Add one minterm given leaf indices.

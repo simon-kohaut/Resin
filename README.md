@@ -69,6 +69,8 @@ safe if permitted and safety_distance(T) and not any_wing_needs_checkup and not 
 safe -> target("/output/safe").
 ```
 
+A program may declare several targets, each with its own channel. Every target is solved separately into a DNF over the shared source leaves, and all targets live in one reactive circuit, where adaptation lets them share sub-circuits (see [Reactive Circuit adaptation](#reactive-circuit-adaptation)).
+
 Rules supports variables (uppercase arguments, in the example above `W`, `T`) and conjunctions (`and`); disjunctions are implemented through multiple clauses.
 Comparison literals (`<`, `>`) on `Number` and `Density` sources (ground atom left, constant literal value right) are derived from the exactly-one interval choice of their source: all thresholds registered for a source partition it into mutually exclusive intervals, so two comparisons on the same source (e.g. `s < 20` and `s < 30`) are never treated as independent.
 Categorical sources provide probabilities for mutually exclusive ground atoms that are assumed to sum up to 1.
@@ -293,6 +295,9 @@ names = resin.get_names()
 rc.lift_leaf(names.index("alarm"))
 rc.drop_leaf(names.index("raining"))
 ```
+
+By default, adaptation builds a DAG: sub-circuits with identical formulas are merged, so targets of the same program grow into one another and share computation.
+Pass `dag=False` to `adapt`, `lift_leaf` or `drop_leaf` to keep a separate tree per target instead, e.g., for comparison.
 
 ## Building from source
 

@@ -9,7 +9,7 @@ use crate::channels::ipc::{
     IpcProbabilityWriter, TypedWriter, VectorDistribution,
 };
 use crate::circuit::leaf::{self, Leaf};
-use crate::circuit::reactive::ReactiveCircuit;
+use crate::circuit::reactive::{ReactiveCircuit, Topology};
 use crate::circuit::semiring::{
     Boolean, CriticalExplanation, Fuzzy, LogProb, MaxProduct, ProbGradient,
 };
@@ -65,6 +65,14 @@ enum RCVariant {
     Boolean(Arc<Mutex<ReactiveCircuit<Boolean>>>),
     ProbGradient(Arc<Mutex<ReactiveCircuit<ProbGradient>>>),
     CriticalExplanation(Arc<Mutex<ReactiveCircuit<CriticalExplanation>>>),
+}
+
+fn topology(dag: bool) -> Topology {
+    if dag {
+        Topology::Dag
+    } else {
+        Topology::Tree
+    }
 }
 
 /// Dispatch a method call over all `ResinVariant` arms.
@@ -669,11 +677,14 @@ impl PyReactiveCircuit {
         py.detach(move || with_rc!(circuit, c => c.add_sum_product(&sum_product, &target_token)))
     }
 
-    fn adapt(&self, py: Python<'_>, bin_size: f64, number_bins: usize) {
+    /// `dag=True` merges equivalent sub-circuits; `dag=False` keeps a tree.
+    #[pyo3(signature = (bin_size, number_bins, dag=true))]
+    fn adapt(&self, py: Python<'_>, bin_size: f64, number_bins: usize, dag: bool) {
         let circuit = self.circuit.clone();
+        let topology = topology(dag);
         py.detach(move || {
             let boundaries = crate::channels::clustering::create_boundaries(bin_size, number_bins);
-            with_rc!(circuit, c => c.adapt(&boundaries))
+            with_rc!(circuit, c => c.adapt(&boundaries, topology))
         })
     }
 
@@ -747,14 +758,20 @@ impl PyReactiveCircuit {
         .map_err(PyRuntimeError::new_err)
     }
 
-    fn lift_leaf(&self, py: Python<'_>, index: u32) {
+    /// `dag=True` merges equivalent sub-circuits; `dag=False` keeps a tree.
+    #[pyo3(signature = (index, dag=true))]
+    fn lift_leaf(&self, py: Python<'_>, index: u32, dag: bool) {
         let circuit = self.circuit.clone();
-        py.detach(move || with_rc!(circuit, c => c.lift_leaf(index)))
+        let topology = topology(dag);
+        py.detach(move || with_rc!(circuit, c => c.lift_leaf(index, topology)))
     }
 
-    fn drop_leaf(&self, py: Python<'_>, index: u32) {
+    /// `dag=True` merges equivalent sub-circuits; `dag=False` keeps a tree.
+    #[pyo3(signature = (index, dag=true))]
+    fn drop_leaf(&self, py: Python<'_>, index: u32, dag: bool) {
         let circuit = self.circuit.clone();
-        py.detach(move || with_rc!(circuit, c => c.drop_leaf(index)))
+        let topology = topology(dag);
+        py.detach(move || with_rc!(circuit, c => c.drop_leaf(index, topology)))
     }
 
     fn to_dot(&self, py: Python<'_>, path: &str) -> PyResult<()> {

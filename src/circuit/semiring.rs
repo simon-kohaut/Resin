@@ -536,8 +536,10 @@ impl Semiring for CriticalExplanation {
         // Additive identity per cell: (-inf, -inf, +inf, +inf), i.e. P = v = 0 and no witness.
         let quarter = n / 4;
         let mut acc = Array1::zeros(n);
-        acc.slice_mut(ndarray::s![..2 * quarter]).fill(f64::NEG_INFINITY);
-        acc.slice_mut(ndarray::s![2 * quarter..]).fill(f64::INFINITY);
+        acc.slice_mut(ndarray::s![..2 * quarter])
+            .fill(f64::NEG_INFINITY);
+        acc.slice_mut(ndarray::s![2 * quarter..])
+            .fill(f64::INFINITY);
         acc
     }
     fn sum_step(acc: &mut Array1<f64>, term: &Array1<f64>) {
@@ -594,7 +596,7 @@ impl Semiring for CriticalExplanation {
 
     fn validate_value_size(value_size: usize) {
         assert!(
-            value_size > 0 && value_size % 4 == 0,
+            value_size > 0 && value_size.is_multiple_of(4),
             "CriticalExplanation's value_size must be 4 * n_cells (P, v, tag, w blocks), got {}",
             value_size
         );
@@ -636,11 +638,19 @@ mod critical_explanation_axiom_tests {
     fn test_commutative_on_exact_ties() {
         let x = quad(0.7, 0.7, 0.0, 0.3);
         let y = quad(0.4, 0.4, 1.0, 0.3); // tie in w with different tags
-        assert_eq!(mul(&x, &y), mul(&y, &x), "mul_inplace must be commutative on ties");
+        assert_eq!(
+            mul(&x, &y),
+            mul(&y, &x),
+            "mul_inplace must be commutative on ties"
+        );
 
         let a = quad(0.5, 0.6, 0.0, 0.4);
         let b = quad(0.2, 0.6, 1.0, 0.9); // tie in v with different tags
-        assert_eq!(add(&a, &b), add(&b, &a), "sum_step must be commutative on v-ties");
+        assert_eq!(
+            add(&a, &b),
+            add(&b, &a),
+            "sum_step must be commutative on v-ties"
+        );
     }
 
     #[test]
@@ -648,8 +658,16 @@ mod critical_explanation_axiom_tests {
         let x = quad(0.9, 0.9, 0.0, 0.9);
         let y = quad(0.8, 0.8, 1.0, 0.8);
         let z = quad(0.9, 0.9, 2.0, 0.85);
-        assert_eq!(mul(&mul(&x, &y), &z), mul(&x, &mul(&y, &z)), "mul_inplace assoc");
-        assert_eq!(add(&add(&x, &y), &z), add(&x, &add(&y, &z)), "sum_step assoc");
+        assert_eq!(
+            mul(&mul(&x, &y), &z),
+            mul(&x, &mul(&y, &z)),
+            "mul_inplace assoc"
+        );
+        assert_eq!(
+            add(&add(&x, &y), &z),
+            add(&x, &add(&y, &z)),
+            "sum_step assoc"
+        );
     }
 
     /// `x ⊗ (y ⊕ z) = (x ⊗ y) ⊕ (x ⊗ z)`, which makes results invariant under `lift_leaf`/`drop_leaf`.
@@ -671,7 +689,12 @@ mod critical_explanation_axiom_tests {
         let z = quad(0.1, 0.3, 2.0, 0.3);
         let lhs = mul(&x, &add(&y, &z));
         let rhs = add(&mul(&x, &y), &mul(&x, &z));
-        assert!((lhs[0] - rhs[0]).abs() < 1e-12, "P: x*(y+z) must equal x*y+x*z, got {} vs {}", lhs[0], rhs[0]);
+        assert!(
+            (lhs[0] - rhs[0]).abs() < 1e-12,
+            "P: x*(y+z) must equal x*y+x*z, got {} vs {}",
+            lhs[0],
+            rhs[0]
+        );
         assert_eq!(lhs[1], rhs[1], "v: x*(y+z) must equal x*y+x*z exactly");
         assert_eq!(lhs[2], rhs[2], "tag: x*(y+z) must equal x*y+x*z exactly");
         assert_eq!(lhs[3], rhs[3], "w: x*(y+z) must equal x*y+x*z exactly");
@@ -688,16 +711,19 @@ mod critical_explanation_axiom_tests {
         assert_eq!(mul(&x, &one), x, "x*1 = x");
         assert_eq!(add(&zero, &x), x, "0+x = x");
         assert_eq!(add(&x, &zero), x, "x+0 = x");
-        assert_eq!(mul(&zero, &x), zero, "0*x = 0 exactly (annihilation, v/tag/w included)");
+        assert_eq!(
+            mul(&zero, &x),
+            zero,
+            "0*x = 0 exactly (annihilation, v/tag/w included)"
+        );
     }
 
     /// Certain leaves are never tagged: p=0 makes the branch's `v` zero so it
     /// never wins ⊕; p=1 has the largest possible `w` so it never wins ⊗.
     #[test]
     fn test_degenerate_leaf_never_wins() {
-        let encode = |p: f64, idx| {
-            CriticalExplanation::encode_leaf_vec(Array1::from_elem(4, p).view(), idx)
-        };
+        let encode =
+            |p: f64, idx| CriticalExplanation::encode_leaf_vec(Array1::from_elem(4, p).view(), idx);
         let certain_true = encode(1.0, 7);
         let certain_false = encode(0.0, 8);
         let uncertain = encode(0.5, 9);
@@ -708,12 +734,19 @@ mod critical_explanation_axiom_tests {
         let live = mul(&certain_true, &uncertain);
         assert_eq!(live[0], ln_half);
         assert_eq!(live[1], ln_half);
-        assert_eq!(live[2], 9.0, "certain leaf 7 must not be tagged as the weakest link");
+        assert_eq!(
+            live[2], 9.0,
+            "certain leaf 7 must not be tagged as the weakest link"
+        );
         assert_eq!(live[3], ln_half);
 
         let dead = mul(&certain_false, &uncertain);
         assert_eq!(dead[1], f64::NEG_INFINITY);
-        assert_eq!(dead[2], f64::INFINITY, "impossible branch must not leak a witness");
+        assert_eq!(
+            dead[2],
+            f64::INFINITY,
+            "impossible branch must not leak a witness"
+        );
         assert_eq!(dead[3], f64::INFINITY);
 
         let summed = add(&dead, &live);

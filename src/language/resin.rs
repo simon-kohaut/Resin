@@ -52,8 +52,7 @@ impl<S: Semiring> Resin<S> {
     ///
     /// `value_size` is the number of parallel value slots (e.g. particles).
     /// Set `verbose` to `true` to print intermediate ASP and circuit info.
-    ///
-    /// Currently only the first target is compiled (see the `TODO` in the body).
+    /// `max_models` limits the number of stable models per target.
     pub fn compile(
         model: &str,
         value_size: usize,
@@ -82,32 +81,46 @@ impl<S: Semiring> Resin<S> {
             );
         }
 
-        // Pass data to Clingo and obtain stable models
-        // TODO: Handle multiple targets
-        if !resin.targets.is_empty() {
-            let target_index = 0;
-
-            // Compile Resin into ASP
-            let program = resin.to_asp(target_index);
-            if verbose {
-                println!("Generated ASP program:\n{program}");
-            }
-
-            // Solve ASP and obtain DNF formula from which the target is removed
-            let mut dnf = solve(&program, max_models)?;
-            dnf.remove(&resin.targets[target_index].name);
-
-            if verbose {
-                println!(
-                    "Compiled Resin for target atom {} into formula over {} models",
-                    resin.targets[target_index].name,
-                    dnf.clauses.len()
+        // Each target channel names one circuit output, so it must be unique.
+        let mut channels = std::collections::HashSet::new();
+        for target in &resin.targets {
+            if !channels.insert(target.channel.as_str()) {
+                return Err(
+                    format!("Target channel '{}' is declared twice", target.channel).into(),
                 );
+            }
+        }
+
+        // Solve one ASP program per target. All targets share the same leaves,
+        // so their circuits can later grow into one another.
+        if !resin.targets.is_empty() {
+            let mut dnfs = Vec::with_capacity(resin.targets.len());
+            for (target_index, target) in resin.targets.iter().enumerate() {
+                let program = resin.to_asp(target_index);
+                if verbose {
+                    println!(
+                        "Generated ASP program for target {}:\n{program}",
+                        target.name
+                    );
+                }
+
+                // Solve ASP and obtain DNF formula from which the target is removed
+                let mut dnf = solve(&program, max_models)?;
+                dnf.remove(&target.name);
+
+                if verbose {
+                    println!(
+                        "Compiled Resin for target atom {} into formula over {} models",
+                        target.name,
+                        dnf.clauses.len()
+                    );
+                }
+                dnfs.push(dnf);
             }
 
             // Create leaves for grounded FOL probabilistic cause atoms now that
             // Clingo has produced concrete groundings.
-            resin.setup_fol_prob_signals(&dnf);
+            resin.setup_fol_prob_signals(&dnfs);
 
             // Semirings such as ProbGradient require value_size = f(n_leaves).
             // Apply the override now that all leaves are known.
@@ -123,8 +136,10 @@ impl<S: Semiring> Resin<S> {
                 }
             }
 
-            // Build the RC from the DNF
-            resin.circuit_from_dnf(dnf, &resin.targets[target_index].channel);
+            // Build one circuit per target from its DNF
+            for (target, dnf) in resin.targets.iter().zip(dnfs) {
+                resin.circuit_from_dnf(dnf, &target.channel);
+            }
         }
 
         // Return the compiled Resin program
@@ -474,14 +489,14 @@ impl<S: Semiring> Resin<S> {
         Ok(())
     }
 
-    /// Creates circuit leaves for grounded FOL probabilistic cause atoms found in `dnf`.
+    /// Creates circuit leaves for grounded FOL probabilistic cause atoms found in `dnfs`.
     ///
     /// Called after Clingo solving so the concrete groundings are known.  Scans
-    /// every literal in every DNF clause for atoms whose predicate matches a
+    /// every literal in every clause of all targets' DNFs for atoms whose predicate matches a
     /// `*_cause_N` base name derived from a variable-head probabilistic clause,
     /// then creates a `Category` leaf pair (probability `p`, complement `1−p`)
     /// for each distinct grounded atom found.
-    fn setup_fol_prob_signals(&mut self, dnf: &Dnf) {
+    fn setup_fol_prob_signals(&mut self, dnfs: &[Dnf]) {
         // Build base_predicate → (probability, group_key) map for FOL probabilistic clauses.
         let mut prob_map: HashMap<String, (f64, String)> = HashMap::new();
         let mut counts: HashMap<String, usize> = HashMap::new();
@@ -504,7 +519,7 @@ impl<S: Semiring> Resin<S> {
         // Scan all DNF literals; both positive (heads_cause_0(c0)) and negative
         // (-heads_cause_0(c0)) forms appear because Clingo includes the complement.
         let mut created: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for model_clause in &dnf.clauses {
+        for model_clause in dnfs.iter().flat_map(|dnf| &dnf.clauses) {
             for literal in model_clause {
                 let atom = literal.trim_start_matches('-');
                 for (base, (p, group_key)) in &prob_map {
@@ -853,6 +868,7 @@ impl<S: Semiring> FromStr for Resin<S> {
 mod tests {
 
     use super::*;
+    use crate::circuit::reactive::Topology;
     use crate::circuit::semiring::{
         Boolean, CriticalExplanation, Fuzzy, LogProb, MaxProduct, ProbGradient,
     };
@@ -1347,8 +1363,16 @@ mod tests {
             .iter()
             .position(|l| l.name == "b_cause_0")
             .expect("b_cause_0 leaf not found") as f64;
-        assert_eq!(tag, b_idx, "tag should identify b as the MPE's weakest link, got leaf index {}", tag);
-        assert!((w - 0.5).abs() < tol, "w expected 0.5 (b's own raw probability), got {}", w);
+        assert_eq!(
+            tag, b_idx,
+            "tag should identify b as the MPE's weakest link, got leaf index {}",
+            tag
+        );
+        assert!(
+            (w - 0.5).abs() < tol,
+            "w expected 0.5 (b's own raw probability), got {}",
+            w
+        );
     }
 
     /// The MPE over the 15 compiled minterms is `a1 & a2 & a3 & not-b1 & not-b2 & b3`
@@ -1367,16 +1391,32 @@ mod tests {
         let v = out[1];
         let tag = out[2];
         let w = out[3];
-        assert!((p - 0.29532).abs() < tol, "P(target) expected 0.29532, got {}", p);
-        assert!((v - 0.07938).abs() < tol, "v (MPE) expected 0.07938, got {}", v);
+        assert!(
+            (p - 0.29532).abs() < tol,
+            "P(target) expected 0.29532, got {}",
+            p
+        );
+        assert!(
+            (v - 0.07938).abs() < tol,
+            "v (MPE) expected 0.07938, got {}",
+            v
+        );
 
         let a1_idx = rc
             .leafs
             .iter()
             .position(|l| l.name == "a1_cause_0")
             .expect("a1_cause_0 leaf not found") as f64;
-        assert_eq!(tag, a1_idx, "tag should identify a1 as the MPE's weakest link, got leaf index {}", tag);
-        assert!((w - 0.5).abs() < tol, "w expected 0.5 (a1's own raw probability), got {}", w);
+        assert_eq!(
+            tag, a1_idx,
+            "tag should identify a1 as the MPE's weakest link, got leaf index {}",
+            tag
+        );
+        assert!(
+            (w - 0.5).abs() < tol,
+            "w expected 0.5 (a1's own raw probability), got {}",
+            w
+        );
     }
 
     #[test]
@@ -1389,23 +1429,159 @@ mod tests {
     /// Restructuring the circuit must not change any component of the result.
     #[test]
     fn test_critical_explanation_invariant_under_lift_leaf() {
-        for leaf_to_lift in ["shared_cause_0", "b_cause_0", "c_cause_0"] {
-            let resin =
-                Resin::<CriticalExplanation>::compile(SHARED_PRECONDITION_MODEL, 4, 1e-3, false, None)
-                    .expect("compile failed");
+        let cases = ["shared_cause_0", "b_cause_0", "c_cause_0"]
+            .into_iter()
+            .flat_map(|leaf| [(leaf, Topology::Tree), (leaf, Topology::Dag)]);
+        for (leaf_to_lift, topology) in cases {
+            let resin = Resin::<CriticalExplanation>::compile(
+                SHARED_PRECONDITION_MODEL,
+                4,
+                1e-3,
+                false,
+                None,
+            )
+            .expect("compile failed");
             let mut rc = resin.manager.reactive_circuit.lock().unwrap();
             let out = rc.full_update()["/out"].clone();
 
-            let idx = rc.leafs.iter().position(|l| l.name == leaf_to_lift).unwrap() as u32;
-            rc.lift_leaf(idx);
+            let idx = rc
+                .leafs
+                .iter()
+                .position(|l| l.name == leaf_to_lift)
+                .unwrap() as u32;
+            rc.lift_leaf(idx, topology);
             let result2 = rc.full_update();
             let out2 = &result2["/out"];
 
             let tol = 1e-9_f64;
-            assert!((out2[0] - out[0]).abs() < tol, "lift_leaf({leaf_to_lift}) changed P");
-            assert!((out2[1] - out[1]).abs() < tol, "lift_leaf({leaf_to_lift}) changed v");
-            assert!((out2[2] - out[2]).abs() < tol, "lift_leaf({leaf_to_lift}) changed tag");
-            assert!((out2[3] - out[3]).abs() < tol, "lift_leaf({leaf_to_lift}) changed w");
+            assert!(
+                (out2[0] - out[0]).abs() < tol,
+                "lift_leaf({leaf_to_lift}) changed P"
+            );
+            assert!(
+                (out2[1] - out[1]).abs() < tol,
+                "lift_leaf({leaf_to_lift}) changed v"
+            );
+            assert!(
+                (out2[2] - out[2]).abs() < tol,
+                "lift_leaf({leaf_to_lift}) changed tag"
+            );
+            assert!(
+                (out2[3] - out[3]).abs() < tol,
+                "lift_leaf({leaf_to_lift}) changed w"
+            );
+        }
+    }
+
+    /// Two targets of one program, where `outer` depends on `inner`.
+    const NESTED_TARGETS_MODEL: &str = r#"
+        a <- P(0.5).
+        b <- P(0.4).
+        c <- P(0.3).
+        w <- P(0.8).
+        inner if a and b.
+        inner if a and c.
+        outer if inner and w.
+        inner -> target("/inner").
+        outer -> target("/outer").
+    "#;
+    const NESTED_INNER: f64 = 0.5 * (1.0 - 0.6 * 0.7);
+    const NESTED_OUTER: f64 = 0.8 * NESTED_INNER;
+
+    #[test]
+    fn test_multiple_targets() {
+        let resin =
+            TestResin::compile(NESTED_TARGETS_MODEL, 1, 1e-3, false, None).expect("compile failed");
+        let mut rc = resin.manager.reactive_circuit.lock().unwrap();
+        assert_eq!(rc.targets.len(), 2);
+
+        let result = rc.full_update();
+        assert!((result["/inner"][0] - NESTED_INNER).abs() < 1e-9);
+        assert!((result["/outer"][0] - NESTED_OUTER).abs() < 1e-9);
+    }
+
+    /// Grounded probabilistic leaves are created once, even if several targets use them.
+    #[test]
+    fn test_multiple_targets_share_fol_leaves() {
+        let model = r#"
+            coin(c0).
+            coin(c1).
+            heads(C) <- P(0.6) if coin(C).
+            any_heads if heads(C).
+            all_heads if heads(c0) and heads(c1).
+            any_heads -> target("/any_heads").
+            all_heads -> target("/all_heads").
+        "#;
+        let resin = TestResin::compile(model, 1, 1e-3, false, None).expect("compile failed");
+        let mut rc = resin.manager.reactive_circuit.lock().unwrap();
+
+        let mut names: Vec<&str> = rc.leafs.iter().map(|l| l.name.as_str()).collect();
+        let count = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), count, "duplicate leaves: {names:?}");
+
+        let result = rc.full_update();
+        assert!((result["/any_heads"][0] - (1.0 - 0.4 * 0.4)).abs() < 1e-9);
+        assert!((result["/all_heads"][0] - 0.6 * 0.6).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_duplicate_target_channel_is_rejected() {
+        let model = r#"
+            a <- P(0.5).
+            b <- P(0.4).
+            a -> target("/out").
+            b -> target("/out").
+        "#;
+        assert!(TestResin::compile(model, 1, 1e-3, false, None).is_err());
+    }
+
+    /// After adapting with `w` as the fastest leaf, the targets share sub-circuits
+    /// in DAG mode but not in tree mode, and both keep the correct values.
+    #[test]
+    fn test_multiple_targets_grow_together() {
+        for topology in [Topology::Tree, Topology::Dag] {
+            let resin = TestResin::compile(NESTED_TARGETS_MODEL, 1, 1e-3, false, None)
+                .expect("compile failed");
+            let mut rc = resin.manager.reactive_circuit.lock().unwrap();
+            for leaf in rc.leafs.iter_mut() {
+                let frequency = if leaf.name.contains("w_cause") {
+                    10.0
+                } else {
+                    1.0
+                };
+                leaf.set_frequency(&frequency);
+            }
+            rc.adapt(&[2.0], topology);
+
+            let reachable = |target: &str| {
+                let mut seen = std::collections::HashSet::new();
+                let mut stack = vec![rc.targets[target]];
+                while let Some(node) = stack.pop() {
+                    if seen.insert(node) {
+                        stack.extend(rc.structure.neighbors(node));
+                    }
+                }
+                seen
+            };
+            let shared = reachable("/inner")
+                .intersection(&reachable("/outer"))
+                .count();
+            match topology {
+                Topology::Tree => assert_eq!(shared, 0, "tree mode must not share nodes"),
+                Topology::Dag => assert!(shared > 0, "dag mode should share nodes"),
+            }
+
+            let result = rc.full_update();
+            assert!(
+                (result["/inner"][0] - NESTED_INNER).abs() < 1e-9,
+                "{topology:?}"
+            );
+            assert!(
+                (result["/outer"][0] - NESTED_OUTER).abs() < 1e-9,
+                "{topology:?}"
+            );
         }
     }
 
