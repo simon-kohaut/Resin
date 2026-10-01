@@ -1,5 +1,6 @@
 # Resin — Reactive Signal Inference
 
+[![arXiv](https://img.shields.io/badge/arXiv-2602.05625-b31b1b.svg)](https://arxiv.org/abs/2602.05625)
 [![CI](https://github.com/simon-kohaut/resin/actions/workflows/ci.yml/badge.svg)](https://github.com/simon-kohaut/resin/actions/workflows/ci.yml)
 [![Release](https://github.com/simon-kohaut/resin/actions/workflows/pypi_release.yml/badge.svg)](https://github.com/simon-kohaut/resin/actions/workflows/pypi_release.yml)
 [![PyPI version](https://img.shields.io/pypi/v/pyresin)](https://pypi.org/project/pyresin/)
@@ -13,8 +14,20 @@
   </picture>
 </p>
 
+<p align="center">
+  <b>Reactive Knowledge Representation and Asynchronous Reasoning</b><br>
+  Simon Kohaut, Benedict Flade, Julian Eggert, Kristian Kersting, Devendra Singh Dhami<br>
+  <a href="https://arxiv.org/abs/2602.05625">Paper</a> · <a href="#citation">Citation</a>
+</p>
+
 **Resin** is a probabilistic first-order logic programming language for building reactive inference pipelines over continuous, asynchronous data streams. 
 Resin programs are compiled via Answer Set Programming (ASP) into **Reactive Circuits**: vectorised, self-adapting computation graphs that perform Algebraic Model Counting (AMC) in real time.
+
+### Highlights
+
+- **Resin** merges probabilistic first-order logic with reactive programming: programs declare asynchronous data streams as sources and query targets over them.
+- **Reactive Circuits** are time-dynamic DAGs over Algebraic Circuits that adapt their own structure to the estimated *Frequency of Change* of each input, as in the animation above.
+- **Exact and incremental:** inference is partitioned into individually memoized sub-problems, so a new input only re-evaluates the parts of the model it affects.
 
 The core library is written in Rust. A Python package (`pyresin`) is published to [PyPI](https://pypi.org/p/pyresin) and built with [Maturin](https://github.com/PyO3/maturin).
 
@@ -342,13 +355,15 @@ See [LICENSE.md](LICENSE.md).
 
 ## Citation
 
-If you find our work useful, please consider citing the paper `Reactive Knowledge Representation and Asynchronous Reasoning`:
+If you find our work useful, please consider citing the paper [Reactive Knowledge Representation and Asynchronous Reasoning](https://arxiv.org/abs/2602.05625) (also available via *Cite this repository* on GitHub):
 
-```
+```bibtex
 @article{kohaut2026reactive,
   title={Reactive Knowledge Representation and Asynchronous Reasoning},
   author={Kohaut, Simon and Flade, Benedict and Eggert, Julian and Kersting, Kristian and Dhami, Devendra Singh},
   journal={arXiv preprint arXiv:2602.05625},
-  year={2026}
+  year={2026},
+  doi={10.48550/arXiv.2602.05625},
+  url={https://arxiv.org/abs/2602.05625}
 }
 ```

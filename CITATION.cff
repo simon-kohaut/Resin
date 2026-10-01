@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use Resin, please cite the paper below."
+title: "Resin: Reactive Signal Inference"
+type: software
+license: MIT
+repository-code: "https://github.com/simon-kohaut/resin"
+authors:
+  - family-names: Kohaut
+    given-names: Simon
+preferred-citation:
+  type: article
+  title: "Reactive Knowledge Representation and Asynchronous Reasoning"
+  authors:
+    - family-names: Kohaut
+      given-names: Simon
+    - family-names: Flade
+      given-names: Benedict
+    - family-names: Eggert
+      given-names: Julian
+    - family-names: Kersting
+      given-names: Kristian
+    - family-names: Dhami
+      given-names: Devendra Singh
+  year: 2026
+  journal: "arXiv preprint arXiv:2602.05625"
+  doi: "10.48550/arXiv.2602.05625"
+  url: "https://arxiv.org/abs/2602.05625"
+  identifiers:
+    - type: other
+      value: "arXiv:2602.05625"
+      description: arXiv identifier

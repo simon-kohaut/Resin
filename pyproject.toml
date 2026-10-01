@@ -28,6 +28,7 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://github.com/simon-kohaut/resin"
+Paper = "https://arxiv.org/abs/2602.05625"
 Repository = "https://github.com/simon-kohaut/resin"
 Issues = "https://github.com/simon-kohaut/resin/issues"
 
