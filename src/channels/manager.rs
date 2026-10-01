@@ -145,7 +145,7 @@ impl<S: Semiring> Manager<S> {
         channel: &str,
         n_categories: usize,
     ) -> Result<IpcCategoricalWriter, Box<dyn std::error::Error>> {
-        let value_size = self.reactive_circuit.lock().unwrap().value_size;
+        let value_size = self.reactive_circuit.lock().unwrap().input_value_size();
         Ok(IpcCategoricalWriter::new(
             self.get_or_create_sender(channel),
             n_categories,
@@ -264,8 +264,8 @@ impl<S: Semiring> Manager<S> {
                 .leafs
                 .iter()
                 .find(|l| l.name == channel.strip_prefix('/').unwrap_or(channel))
-                .map(|l| l.get_value())
-                .unwrap_or_else(|| Vector::zeros(rc_guard.value_size))
+                .map(|l| l.get_input_value())
+                .unwrap_or_else(|| Vector::zeros(rc_guard.input_value_size()))
         };
         let mut writer = TimedIpcWriter::new(frequency, writer_tx, initial_value)?;
 
@@ -311,14 +311,14 @@ impl<S: Semiring> Manager<S> {
             .collect()
     }
 
-    /// Returns the current value vector for every leaf, in index order.
+    /// Returns every leaf's current value as written to a source, in index order.
     pub fn get_values(&self) -> Vec<Vector> {
         let reactive_circuit_guard = self.reactive_circuit.lock().unwrap();
 
         reactive_circuit_guard
             .leafs
             .iter()
-            .map(|leaf| leaf.get_value().clone())
+            .map(|leaf| leaf.get_input_value())
             .collect()
     }
 

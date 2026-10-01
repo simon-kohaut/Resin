@@ -6,6 +6,13 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/pyresin)](https://pypi.org/project/pyresin/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/reactive_circuits_dark.gif">
+    <img src="docs/reactive_circuits_light.gif" width="800" alt="Animation: four Reactive Circuits start as flat formulas over shared input leaves, grow downward as leaves are sorted by update frequency, and merge identical sub-circuits into a shared graph. Leaf updates travel upward as pulses; once adapted, frequent updates only touch the top.">
+  </picture>
+</p>
+
 **Resin** is a probabilistic first-order logic programming language for building reactive inference pipelines over continuous, asynchronous data streams. 
 Resin programs are compiled via Answer Set Programming (ASP) into **Reactive Circuits**: vectorised, self-adapting computation graphs that perform Algebraic Model Counting (AMC) in real time.
 
@@ -217,10 +224,10 @@ Note that you may have to combine gradients depending on your networks output la
 ### `CriticalExplanation` — weakest link of the most probable explanation
 
 Computes the marginal probability together with **the most probable explanation and its least-probable fact**.
-For `n` cells, `value_size` must be `4 * n`, and the result vector has layout:
+Sources are written with `value_size` probabilities as usual, and the result vector has four blocks of `value_size` values each:
 
 ```
-[P | v | tag | w]   (each block of length n)
+[P | v | tag | w]
 ```
 
 - `P`: probability of the target (as in `LogProb`)
@@ -228,7 +235,6 @@ For `n` cells, `value_size` must be `4 * n`, and the result vector has layout:
 - `tag`: index of the least-probable circuit leaf within that explanation
 - `w`: probability of that leaf
 
-Sources are still written with `n` values, one per cell.
 Because `⊕` decides by `v` alone, `⊗` distributes over `⊕` and the result is independent of how the circuit is restructured by adaptation.
 
 ## Python API
@@ -321,6 +327,12 @@ maturin develop --release  # Optional for building the Python package
 **Run tests**
 ```bash
 cargo test
+```
+
+**Update the Python type stub** after changing the Python API (fails if `resin.pyi` and the module disagree):
+```bash
+maturin develop --release
+python scripts/generate_stub.py
 ```
 
 ## License

@@ -84,37 +84,44 @@ impl<S: Semiring> ReactiveCircuit<S> {
         }
     }
 
-    /// Initialize the ReactiveCircuit from a single sum-product formula.
-    pub fn from_sum_product(
-        value_size: usize,
-        sum_product: &[Vec<u32>],
-        target_token: String,
-    ) -> Self {
-        // Preconditions
-        assert!(!sum_product.is_empty(), "sum_product cannot be empty!");
-        assert!(!target_token.is_empty(), "target_token cannot be empty!");
+    /// Adds a leaf with an initial `value` as written to a source
+    /// (`input_value_size()` probabilities) and returns its index. For
+    /// semirings whose value size depends on the number of leaves
+    /// (`ProbGradient`), the whole circuit is resized.
+    pub fn add_leaf(&mut self, value: Vector, frequency: f64, name: &str) -> u32 {
+        let index = self.leafs.len();
+        let value = S::expand_input(value, self.value_size);
+        self.leafs.push(Leaf::new(value, frequency, name, index));
+        if let Some(value_size) = S::auto_value_size(self.leafs.len()) {
+            self.set_value_size(value_size);
+        }
+        index as u32
+    }
 
-        // Initialize ReactiveCircuit with a single AlgebraicCircuit inside
-        let mut reactive_circuit = ReactiveCircuit::new(value_size);
+    /// Number of values a leaf takes as input (see `Semiring::input_value_size`).
+    pub fn input_value_size(&self) -> usize {
+        S::input_value_size(self.value_size)
+    }
 
-        // Create single node and set as target
-        let index = reactive_circuit
-            .structure
-            .add_node(AlgebraicCircuit::from_sum_product(value_size, sum_product));
-        reactive_circuit.targets.insert(target_token, index);
-
-        // Make leafs remember this node as dependency
-        reactive_circuit.update_dependencies();
-
-        // Queue up the node for recomputation
-        reactive_circuit.queue.insert(index.index() as u32);
-
-        // Postconditions
-        assert!(reactive_circuit.leafs.len() == sum_product.len());
-        assert!(reactive_circuit.structure.node_indices().count() == 1);
-        assert!(reactive_circuit.structure.edge_indices().count() == 0);
-
-        reactive_circuit
+    /// Changes the number of values per node, for semirings whose size depends
+    /// on the number of leaves (`ProbGradient`). Leaves keep their first value
+    /// (`Leaf::resize_for_value_size`), edge weights are reset and the whole
+    /// circuit is queued for recomputation.
+    pub(crate) fn set_value_size(&mut self, value_size: usize) {
+        if value_size == self.value_size {
+            return;
+        }
+        self.value_size = value_size;
+        for leaf in self.leafs.iter_mut() {
+            leaf.resize_for_value_size(value_size);
+        }
+        for node in self.structure.node_indices().collect::<Vec<_>>() {
+            self.structure[node].value_size = value_size;
+        }
+        for edge in self.structure.edge_indices().collect::<Vec<_>>() {
+            self.structure[edge] = Array1::from_elem(value_size, S::zero()).into_shared();
+        }
+        self.invalidate();
     }
 
     /// Adds an empty target node. Fails invariants until `add_sum_product` fills it; prefer that instead.
@@ -1708,6 +1715,38 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// `add_leaf` takes values as written to a source for every semiring.
+    #[test]
+    fn test_add_leaf_any_semiring() {
+        use crate::circuit::semiring::{CriticalExplanation, ProbGradient};
+
+        // ProbGradient grows to 1 + n_leaves: [P, dP/dx, dP/dy] for x·y.
+        let mut rc = ReactiveCircuit::<ProbGradient>::new(1);
+        let x = rc.add_leaf(array![0.5].into(), 0.0, "x");
+        let y = rc.add_leaf(array![0.4].into(), 0.0, "y");
+        rc.add_sum_product(&[vec![x, y]], "t");
+        let result = rc.full_update()["t"].clone();
+        assert_eq!(rc.value_size, 3);
+        for (got, expected) in result.iter().zip([0.2, 0.4, 0.5]) {
+            assert!((got - expected).abs() < 1e-9, "{result}");
+        }
+        leaf::update(&mut rc, x, array![1.0].into(), 1.0);
+        assert!((rc.update()["t"][0] - 0.4).abs() < 1e-9);
+
+        // CriticalExplanation takes `value_size` probabilities and returns
+        // four blocks of `value_size` values each.
+        let mut rc =
+            ReactiveCircuit::<CriticalExplanation>::new(CriticalExplanation::circuit_value_size(2));
+        let x = rc.add_leaf(array![0.5, 0.2].into(), 0.0, "x");
+        let y = rc.add_leaf(array![0.4, 0.9].into(), 0.0, "y");
+        rc.add_sum_product(&[vec![x, y]], "t");
+        let result = rc.full_update()["t"].clone();
+        assert_eq!(rc.input_value_size(), 2);
+        assert_eq!(result.len(), 8);
+        assert!((result[0] - 0.2).abs() < 1e-9 && (result[1] - 0.18).abs() < 1e-9);
+        assert_eq!(rc.leafs[x as usize].get_input_value().len(), 2);
     }
 
     /// Dropping a leaf from many rows without children creates one shared node in DAG mode.

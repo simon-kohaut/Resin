@@ -78,11 +78,31 @@ pub trait Semiring: Clone + Send + Sync + 'static {
         None
     }
 
-    /// Assert that the caller-supplied `value_size` (= batch size) is
+    /// Number of values per node and edge for `value_size` values per leaf
+    /// input. Defaults to `value_size`; `CriticalExplanation` carries four
+    /// blocks per value.
+    fn circuit_value_size(value_size: usize) -> usize {
+        value_size
+    }
+
+    /// Number of input values per leaf for a circuit with `circuit_value_size`
+    /// values per node; the inverse of `circuit_value_size`.
+    fn input_value_size(circuit_value_size: usize) -> usize {
+        circuit_value_size
+    }
+
+    /// Decodes a leaf's encoded value back to its input values, as written to
+    /// a source. Defaults to `decode_vec`.
+    fn decode_input(encoded: Array1<f64>) -> Array1<f64> {
+        Self::decode_vec(encoded)
+    }
+
+    /// Check that the caller-supplied `value_size` (= batch size) is
     /// compatible with this semiring.  The default is permissive.
     /// `ProbGradient` overrides this to reject batch sizes other than 1.
-    fn validate_value_size(value_size: usize) {
+    fn validate_value_size(value_size: usize) -> Result<(), String> {
         let _ = value_size;
+        Ok(())
     }
 
     /// Expand an externally-supplied raw value to the semiring's internal
@@ -430,12 +450,23 @@ impl Semiring for ProbGradient {
         Some(1 + n_leaves)
     }
 
-    fn validate_value_size(value_size: usize) {
-        assert!(
-            value_size == 1,
-            "ProbGradient does not support batching (value_size must be 1, got {})",
-            value_size
-        );
+    /// Leaves take a single probability; the other values are gradients.
+    fn input_value_size(_circuit_value_size: usize) -> usize {
+        1
+    }
+
+    fn decode_input(encoded: Array1<f64>) -> Array1<f64> {
+        Array1::from_elem(1, Self::decode(encoded[0]))
+    }
+
+    fn validate_value_size(value_size: usize) -> Result<(), String> {
+        if value_size == 1 {
+            Ok(())
+        } else {
+            Err(format!(
+                "ProbGradient does not support batching (value_size must be 1, got {value_size})"
+            ))
+        }
     }
 
     fn expand_input(value: ArcArray1<f64>, value_size: usize) -> ArcArray1<f64> {
@@ -458,8 +489,8 @@ impl Semiring for ProbGradient {
 // larger v and never compares witnesses across branches otherwise, which keeps
 // `⊗` distributive over `⊕`.
 //
-// Layout: value_size = 4 * n_cells, blocks [P | v | tag | w]; `tag` is not
-// log-encoded.
+// Layout: leaves take `value_size` probabilities; nodes and edges carry the
+// `4 * value_size` blocks [P | v | tag | w]; `tag` is not log-encoded.
 #[derive(Clone)]
 pub struct CriticalExplanation;
 
@@ -573,12 +604,12 @@ impl Semiring for CriticalExplanation {
         acc
     }
 
+    /// Encodes `n` probabilities into the `4 * n` blocks `[P | v | tag | w]`.
     fn encode_leaf_vec(value: ArrayView1<f64>, leaf_index: usize) -> Array1<f64> {
-        let n = value.len() / 4;
-        let mut encoded = Array1::zeros(value.len());
-        let raw = value.slice(ndarray::s![..n]);
-        for i in 0..n {
-            let lp = clamp_unit(raw[i]).ln();
+        let n = value.len();
+        let mut encoded = Array1::zeros(4 * n);
+        for (i, &p) in value.iter().enumerate() {
+            let lp = clamp_unit(p).ln();
             encoded[i] = lp; // P = log p
             encoded[n + i] = lp; // v = log p
             encoded[2 * n + i] = leaf_index as f64; // tag = self
@@ -594,24 +625,18 @@ impl Semiring for CriticalExplanation {
         term.slice_mut(ndarray::s![2 * n..]).fill(f64::INFINITY); // tag, w
     }
 
-    fn validate_value_size(value_size: usize) {
-        assert!(
-            value_size > 0 && value_size.is_multiple_of(4),
-            "CriticalExplanation's value_size must be 4 * n_cells (P, v, tag, w blocks), got {}",
-            value_size
-        );
+    fn circuit_value_size(value_size: usize) -> usize {
+        4 * value_size
     }
 
-    fn expand_input(value: ArcArray1<f64>, value_size: usize) -> ArcArray1<f64> {
-        let n = value_size / 4;
-        debug_assert_eq!(
-            value.len(),
-            n,
-            "CriticalExplanation expects a raw n_cells-length write"
-        );
-        let mut expanded = Array1::zeros(value_size);
-        expanded.slice_mut(ndarray::s![..n]).assign(&value);
-        expanded.into_shared()
+    fn input_value_size(circuit_value_size: usize) -> usize {
+        circuit_value_size / 4
+    }
+
+    /// The input probabilities are the `P` block.
+    fn decode_input(encoded: Array1<f64>) -> Array1<f64> {
+        let n = encoded.len() / 4;
+        encoded.slice(ndarray::s![..n]).mapv(f64::exp)
     }
 }
 
@@ -723,7 +748,7 @@ mod critical_explanation_axiom_tests {
     #[test]
     fn test_degenerate_leaf_never_wins() {
         let encode =
-            |p: f64, idx| CriticalExplanation::encode_leaf_vec(Array1::from_elem(4, p).view(), idx);
+            |p: f64, idx| CriticalExplanation::encode_leaf_vec(Array1::from_elem(1, p).view(), idx);
         let certain_true = encode(1.0, 7);
         let certain_false = encode(0.0, 8);
         let uncertain = encode(0.5, 9);

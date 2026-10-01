@@ -87,6 +87,11 @@ impl<S: Semiring> Leaf<S> {
         S::decode_vec(self.encoded_value.to_owned()).into_shared()
     }
 
+    /// Returns the value as written to a source (see `Semiring::decode_input`).
+    pub fn get_input_value(&self) -> Vector {
+        S::decode_input(self.encoded_value.to_owned()).into_shared()
+    }
+
     /// Resets the FoC estimator and sets `frequency` to `0.0` if the leaf has
     /// not been updated within `threshold` seconds of `timestamp`.
     pub fn prune_frequency(&mut self, timestamp: f64, threshold: f64) {

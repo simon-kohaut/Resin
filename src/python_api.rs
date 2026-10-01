@@ -8,10 +8,10 @@ use crate::channels::ipc::{
     IpcBooleanWriter, IpcCategoricalWriter, IpcDensityIntervalWriter, IpcNumberIntervalWriter,
     IpcProbabilityWriter, TypedWriter, VectorDistribution,
 };
-use crate::circuit::leaf::{self, Leaf};
+use crate::circuit::leaf;
 use crate::circuit::reactive::{ReactiveCircuit, Topology};
 use crate::circuit::semiring::{
-    Boolean, CriticalExplanation, Fuzzy, LogProb, MaxProduct, ProbGradient,
+    Boolean, CriticalExplanation, Fuzzy, LogProb, MaxProduct, ProbGradient, Semiring,
 };
 use crate::circuit::Vector;
 use crate::language::Resin;
@@ -75,6 +75,27 @@ fn topology(dag: bool) -> Topology {
     }
 }
 
+/// Calls `$callback!(Semiring)` for the semiring named `$name` (case-insensitive),
+/// or returns an error naming the supported semirings. Semiring types and the
+/// `ResinVariant` / `RCVariant` arms share their names.
+macro_rules! with_semiring {
+    ($name:expr, $callback:ident) => {
+        match $name.to_ascii_lowercase().as_str() {
+            "logprob" | "log_prob" => $callback!(LogProb),
+            "maxproduct" | "max_product" => $callback!(MaxProduct),
+            "fuzzy" => $callback!(Fuzzy),
+            "boolean" => $callback!(Boolean),
+            "probgradient" | "prob_gradient" => $callback!(ProbGradient),
+            "criticalexplanation" | "critical_explanation" => $callback!(CriticalExplanation),
+            other => Err(format!(
+                "Unknown semiring '{other}'. \
+                 Supported: LogProb, MaxProduct, Fuzzy, Boolean, ProbGradient, \
+                 CriticalExplanation"
+            )),
+        }
+    };
+}
+
 /// Dispatch a method call over all `ResinVariant` arms.
 /// `$guard` must be a `MutexGuard<ResinVariant>`; `$r` is bound as `&mut Resin<S>`.
 macro_rules! with_resin {
@@ -133,7 +154,8 @@ macro_rules! with_rc {
 // Typed writer wrappers
 // ---------------------------------------------------------------------------
 
-/// A wrapper around a shared, mutable `Vector` for timed writers.
+/// The value of a timed writer (see `Resin.make_timed_writer`), which sends it
+/// to its channel at a fixed frequency.
 #[pyclass(name = "SharedVector")]
 struct PySharedVector {
     vec: Arc<Mutex<Vector>>,
@@ -141,6 +163,7 @@ struct PySharedVector {
 
 #[pymethods]
 impl PySharedVector {
+    /// Replaces the value that the timed writer sends from now on.
     pub fn set(&self, py: Python<'_>, value: PyArrayLike1<'_, f64>) {
         let value = array_like_to_vector(value);
         py.detach(move || {
@@ -148,13 +171,15 @@ impl PySharedVector {
         })
     }
 
+    /// Returns the value that the timed writer currently sends.
     pub fn get<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         let vector = py.detach(|| self.vec.lock().unwrap().clone());
         vector_to_pyarray(py, &vector)
     }
 }
 
-/// Passes a probability vector straight through to the circuit.
+/// Writer for a `Probability` source: passes probabilities straight through to
+/// the circuit.
 #[pyclass(name = "ProbabilityWriter")]
 struct PyProbabilityWriter {
     writer: IpcProbabilityWriter,
@@ -162,14 +187,17 @@ struct PyProbabilityWriter {
 
 #[pymethods]
 impl PyProbabilityWriter {
+    /// Sends `value`, one probability in `[0, 1]` per value slot (length
+    /// `value_size`). `timestamp` is in seconds; `None` uses the current Unix time.
+    #[pyo3(signature = (value, timestamp=None))]
     pub fn write(&self, _py: Python<'_>, value: PyArrayLike1<'_, f64>, timestamp: Option<f64>) {
         self.writer.write(array_like_to_vector(value), timestamp);
     }
 }
 
-/// Fan-out density writer.  A single call dispatches to every comparison
+/// Writer for a `Density` source. A single call dispatches to every comparison
 /// threshold registered for the source, computing CDF or SF element-wise
-/// across all value-space slots (e.g. particle-filter particles).
+/// across all value slots (e.g. particle-filter particles).
 ///
 /// Supported distributions and their `params` layout (each inner list is a
 /// Vector with one value per particle / value-space slot):
@@ -184,6 +212,10 @@ struct PyDensityWriter {
 
 #[pymethods]
 impl PyDensityWriter {
+    /// Sends a distribution, e.g. `write("normal", [[25.0], [5.0]])`.
+    /// `timestamp` is in seconds; `None` uses the current Unix time.
+    /// Raises `ValueError` for an unknown distribution or missing parameters.
+    #[pyo3(signature = (distribution, params, timestamp=None))]
     pub fn write(
         &self,
         _py: Python<'_>,
@@ -242,8 +274,8 @@ impl PyDensityWriter {
     }
 }
 
-/// Fan-out number writer.  Compares a value vector against every registered
-/// threshold element-wise: 1.0 where the comparison holds, else 0.0.
+/// Writer for a `Number` source. Compares a value vector against every
+/// registered threshold element-wise: 1.0 where the comparison holds, else 0.0.
 #[pyclass(name = "NumberWriter")]
 struct PyNumberWriter {
     writer: IpcNumberIntervalWriter,
@@ -251,12 +283,16 @@ struct PyNumberWriter {
 
 #[pymethods]
 impl PyNumberWriter {
+    /// Sends `value`, one number per value slot (length `value_size`).
+    /// `timestamp` is in seconds; `None` uses the current Unix time.
+    #[pyo3(signature = (value, timestamp=None))]
     pub fn write(&self, _py: Python<'_>, value: PyArrayLike1<'_, f64>, timestamp: Option<f64>) {
         self.writer.write(array_like_to_vector(value), timestamp);
     }
 }
 
-/// Maps a Python bool to a probability: `True` → 1.0, `False` → 0.0.
+/// Writer for a `Boolean` source. Maps a Python bool to a probability:
+/// `True` → 1.0, `False` → 0.0.
 #[pyclass(name = "BooleanWriter")]
 struct PyBooleanWriter {
     writer: IpcBooleanWriter,
@@ -264,14 +300,17 @@ struct PyBooleanWriter {
 
 #[pymethods]
 impl PyBooleanWriter {
+    /// Sends `value` to all value slots.
+    /// `timestamp` is in seconds; `None` uses the current Unix time.
+    #[pyo3(signature = (value, timestamp=None))]
     pub fn write(&self, _py: Python<'_>, value: bool, timestamp: Option<f64>) {
         self.writer.write(value, timestamp);
     }
 }
 
-/// Sends a flat probability matrix `[col₀, col₁, …]` where each column has
-/// `value_size` entries, one per batch slot.  Accepts a flat list of length
-/// `n_categories * value_size`.
+/// Writer for a `Categorical` source. Sends a flat probability matrix
+/// `[col₀, col₁, …]` where each column has `value_size` entries, one per
+/// value slot.
 #[pyclass(name = "CategoricalWriter")]
 struct PyCategoricalWriter {
     writer: IpcCategoricalWriter,
@@ -279,6 +318,10 @@ struct PyCategoricalWriter {
 
 #[pymethods]
 impl PyCategoricalWriter {
+    /// Sends class probabilities as a flat list of length
+    /// `n_categories() * value_size()`, category by category.
+    /// `timestamp` is in seconds; `None` uses the current Unix time.
+    #[pyo3(signature = (probabilities, timestamp=None))]
     pub fn write(
         &self,
         _py: Python<'_>,
@@ -289,9 +332,12 @@ impl PyCategoricalWriter {
             .write(array_like_to_vector(probabilities), timestamp);
     }
 
+    /// Number of categories of the source.
     pub fn n_categories(&self) -> usize {
         self.writer.n_categories()
     }
+
+    /// Number of value slots per category.
     pub fn value_size(&self) -> usize {
         self.writer.value_size()
     }
@@ -316,7 +362,10 @@ fn typed_writer_to_py(py: Python<'_>, writer: TypedWriter) -> PyResult<Py<PyAny>
 // PyResin
 // ---------------------------------------------------------------------------
 
-/// A Python wrapper for the high-level `Resin` language compiler and runtime.
+/// A compiled Resin program: its sources, reactive circuit and writers.
+///
+/// Create it with `Resin.compile(model)`, feed source values through writers
+/// from `make_writer`, and read target values from `get_reactive_circuit()`.
 #[pyclass(name = "Resin")]
 struct PyResin {
     resin: Arc<Mutex<ResinVariant>>,
@@ -324,11 +373,21 @@ struct PyResin {
 
 #[pymethods]
 impl PyResin {
-    /// Compiles a Resin model string into a runtime instance.
+    /// Compiles a Resin program into a runtime instance. Every declared target
+    /// is solved with Clingo and added to one shared reactive circuit.
     ///
-    /// `semiring` selects the inference algebra.  Supported values (case-insensitive):
-    /// `"LogProb"` (default), `"MaxProduct"`, `"Fuzzy"`, `"Boolean"`, `"ProbGradient"`,
-    /// `"CriticalExplanation"`.
+    /// - `model`: the Resin program text.
+    /// - `value_size`: number of values (probabilities) per source, e.g.
+    ///   particles or grid cells evaluated in parallel. `ProbGradient` only
+    ///   supports `1`.
+    /// - `verbose`: print the generated ASP programs and model counts.
+    /// - `semiring` (case-insensitive): `"LogProb"` (default), `"MaxProduct"`,
+    ///   `"Fuzzy"`, `"Boolean"`, `"ProbGradient"` or `"CriticalExplanation"`.
+    /// - `update_threshold`: minimum change of a leaf value that triggers
+    ///   recomputation.
+    /// - `max_models`: raise an error if a target has more stable models.
+    ///
+    /// Raises `RuntimeError` if the program cannot be compiled.
     #[staticmethod]
     #[pyo3(signature = (model, value_size=1, verbose=false, semiring=None, update_threshold=1e-3, max_models=None))]
     fn compile(
@@ -341,7 +400,7 @@ impl PyResin {
         max_models: Option<usize>,
     ) -> PyResult<Self> {
         let model = model.to_string();
-        let semiring = semiring.unwrap_or("logprob").to_ascii_lowercase();
+        let semiring = semiring.unwrap_or("LogProb").to_string();
         let variant = py
             .detach(move || -> Result<ResinVariant, String> {
                 macro_rules! compile_as {
@@ -357,21 +416,7 @@ impl PyResin {
                         .map_err(|e| e.to_string())
                     };
                 }
-                match semiring.as_str() {
-                    "logprob" | "log_prob" => compile_as!(LogProb),
-                    "maxproduct" | "max_product" => compile_as!(MaxProduct),
-                    "fuzzy" => compile_as!(Fuzzy),
-                    "boolean" => compile_as!(Boolean),
-                    "probgradient" | "prob_gradient" => compile_as!(ProbGradient),
-                    "criticalexplanation" | "critical_explanation" => {
-                        compile_as!(CriticalExplanation)
-                    }
-                    other => Err(format!(
-                        "Unknown semiring '{other}'. \
-                         Supported: LogProb, MaxProduct, Fuzzy, Boolean, ProbGradient, \
-                         CriticalExplanation"
-                    )),
-                }
+                with_semiring!(semiring, compile_as)
             })
             .map_err(PyRuntimeError::new_err)?;
         Ok(PyResin {
@@ -379,6 +424,8 @@ impl PyResin {
         })
     }
 
+    /// Returns the reactive circuit of this program, which computes the
+    /// targets (`update`, `full_update`) and adapts to source frequencies.
     fn get_reactive_circuit(&self) -> PyReactiveCircuit {
         let circuit = match &*self.resin.lock().unwrap() {
             ResinVariant::LogProb(r) => RCVariant::LogProb(r.manager.reactive_circuit.clone()),
@@ -397,6 +444,10 @@ impl PyResin {
         PyReactiveCircuit { circuit }
     }
 
+    /// Connects leaf `receiver_idx` to IPC `channel`: values sent there update
+    /// the leaf, as `1 - value` if `invert`. Sources are connected
+    /// automatically; this is only needed for custom wiring.
+    /// Raises `IOError` if the channel cannot be opened.
     fn read(&self, py: Python<'_>, receiver_idx: u32, channel: &str, invert: bool) -> PyResult<()> {
         let channel = channel.to_string();
         let resin = self.resin.clone();
@@ -407,6 +458,11 @@ impl PyResin {
         .map_err(PyIOError::new_err)
     }
 
+    /// Returns the writer for the source declared on `channel`, e.g.
+    /// `make_writer("/sensors/speed")`. Its type follows the source type:
+    /// `ProbabilityWriter`, `DensityWriter`, `NumberWriter` or `BooleanWriter`.
+    /// For categorical sources, use `make_categorical_writer`.
+    /// Raises `RuntimeError` if no such source uses `channel`.
     fn make_writer(&self, py: Python<'_>, channel: &str) -> PyResult<Py<PyAny>> {
         let channel = channel.to_string();
         let resin = self.resin.clone();
@@ -419,6 +475,9 @@ impl PyResin {
         typed_writer_to_py(py, typed_writer)
     }
 
+    /// Like `make_writer`, but looks the source up by its atom name, e.g.
+    /// `make_writer_for("speed")` or `make_writer_for("distance(hospital)")`.
+    /// Raises `RuntimeError` if no source has that name.
     fn make_writer_for(&self, py: Python<'_>, source_name: &str) -> PyResult<Py<PyAny>> {
         let source_name = source_name.to_string();
         let resin = self.resin.clone();
@@ -431,6 +490,8 @@ impl PyResin {
         typed_writer_to_py(py, typed_writer)
     }
 
+    /// Returns the `CategoricalWriter` for the categorical source on `channel`.
+    /// Raises `RuntimeError` if no categorical source uses `channel`.
     fn make_categorical_writer(&self, py: Python<'_>, channel: &str) -> PyResult<Py<PyAny>> {
         let channel = channel.to_string();
         let resin = self.resin.clone();
@@ -443,6 +504,10 @@ impl PyResin {
         typed_writer_to_py(py, typed_writer)
     }
 
+    /// Starts a background writer that sends a value to `channel` at
+    /// `frequency` Hz, e.g. to simulate a sensor. Returns the `SharedVector`
+    /// holding the value it sends; change it with `set`.
+    /// Raises `IOError` if the writer cannot be created.
     fn make_timed_writer(
         &self,
         py: Python<'_>,
@@ -460,6 +525,7 @@ impl PyResin {
         Ok(PySharedVector { vec: value_arc })
     }
 
+    /// Stops all writers started with `make_timed_writer`.
     fn stop_timed_writers(&self, py: Python<'_>) {
         let resin = self.resin.clone();
         py.detach(move || {
@@ -468,6 +534,9 @@ impl PyResin {
         })
     }
 
+    /// Names of all circuit leaves in index order, e.g. `"alarm"` and its
+    /// complement `"-alarm"`. The position of a name is the leaf index used
+    /// by `ReactiveCircuit.lift_leaf` and `drop_leaf`.
     fn get_names(&self, py: Python<'_>) -> Vec<String> {
         let resin = self.resin.clone();
         py.detach(move || {
@@ -476,6 +545,7 @@ impl PyResin {
         })
     }
 
+    /// Estimated update frequency (Hz) of every leaf, in index order.
     fn get_frequencies<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
         let resin = self.resin.clone();
         let frequencies = py.detach(move || {
@@ -485,6 +555,8 @@ impl PyResin {
         PyArray1::from_vec(py, frequencies)
     }
 
+    /// Current value of every leaf as an array of length `value_size`, in
+    /// index order.
     fn get_values<'py>(&self, py: Python<'py>) -> Vec<Bound<'py, PyArray1<f64>>> {
         let resin = self.resin.clone();
         let values = py.detach(move || {
@@ -494,10 +566,6 @@ impl PyResin {
         values.iter().map(|v| vector_to_pyarray(py, v)).collect()
     }
 
-    /// Returns the parameter groups discovered during compilation.
-    ///
-    /// Each key is `"{predicate}/{clause_index}"` and maps to the names of the
-    /// positive-polarity cause leaves sharing that `P(...)` value.
     /// Returns the gradients for a single source looked up by **atom name**.
     ///
     /// `gradients` is the inner `"gradients"` dict from a `gradient_update` /
@@ -526,6 +594,11 @@ impl PyResin {
         Self::source_gradients_impl(py, self.resin.clone(), gradients, channel.to_string())
     }
 
+    /// Returns the learnable parameters found during compilation.
+    ///
+    /// Each key is `"{predicate}#{clause_index}"`, e.g. `"needs_checkup#0"`,
+    /// and maps to the names of the leaves sharing that clause's `P(...)` value.
+    /// The keys are what `fit_parameters` accepts as `parameters`.
     fn get_parameter_groups(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let resin = self.resin.clone();
         let groups = py.detach(move || {
@@ -551,6 +624,15 @@ impl PyResin {
     /// Aggregates gradients across all groundings of each parameter group,
     /// then applies a single shared update so all groundings stay in sync.
     /// Source atoms and comparison atoms are never modified.
+    ///
+    /// - `gradients`: the `"gradients"` dict of one target from
+    ///   `ReactiveCircuit.gradient_update()`.
+    /// - `lr`: learning rate.
+    /// - `loss`: derivative of the loss with respect to the target
+    ///   probability, e.g. `2 * (p - label)` for squared error.
+    /// - `parameters`: keys from `get_parameter_groups()` to update, or `None`
+    ///   for all.
+    /// - `timestamp`: time of the update in seconds.
     ///
     /// Raises `RuntimeError` if the semiring is not `ProbGradient`.
     fn fit_parameters(
@@ -606,6 +688,13 @@ impl PyResin {
 // PyReactiveCircuit
 // ---------------------------------------------------------------------------
 
+/// The reactive circuit computing a program's targets. Obtain it with
+/// `Resin.get_reactive_circuit()`, or build one by hand from leaves and
+/// sum-products.
+///
+/// Leaves are addressed by index (see `Resin.get_names()`). Writing to a
+/// source marks the dependent circuit nodes as outdated; `update()` then
+/// recomputes only those, `full_update()` everything.
 #[pyclass(name = "ReactiveCircuit")]
 struct PyReactiveCircuit {
     circuit: RCVariant,
@@ -613,49 +702,52 @@ struct PyReactiveCircuit {
 
 #[pymethods]
 impl PyReactiveCircuit {
+    /// Creates an empty circuit with `value_size` values per leaf.
+    ///
+    /// `semiring` and `value_size` are chosen as in `Resin.compile` (default
+    /// `"LogProb"`).
+    /// Leaf changes below `update_threshold` do not trigger recomputation.
+    /// Raises `ValueError` for an unknown semiring or invalid `value_size`.
     #[new]
-    #[pyo3(signature = (value_size, update_threshold=1e-3))]
-    fn new(value_size: usize, update_threshold: f64) -> PyResult<Self> {
-        let mut rc = ReactiveCircuit::new(value_size);
-        rc.update_threshold = update_threshold;
-        Ok(PyReactiveCircuit {
-            circuit: RCVariant::LogProb(Arc::new(Mutex::new(rc))),
-        })
+    #[pyo3(signature = (value_size, update_threshold=1e-3, semiring=None))]
+    fn new(value_size: usize, update_threshold: f64, semiring: Option<&str>) -> PyResult<Self> {
+        macro_rules! new_circuit {
+            ($s:ident) => {
+                $s::validate_value_size(value_size).map(|()| {
+                    let mut rc = ReactiveCircuit::<$s>::new($s::circuit_value_size(value_size));
+                    rc.update_threshold = update_threshold;
+                    if let Some(size) = $s::auto_value_size(0) {
+                        rc.set_value_size(size);
+                    }
+                    RCVariant::$s(Arc::new(Mutex::new(rc)))
+                })
+            };
+        }
+        let circuit = with_semiring!(semiring.unwrap_or("LogProb"), new_circuit)
+            .map_err(PyValueError::new_err)?;
+        Ok(PyReactiveCircuit { circuit })
     }
 
-    #[staticmethod]
-    fn from_sum_product(
-        value_size: usize,
-        sum_product: Vec<Vec<u32>>,
-        target_token: String,
-    ) -> PyResult<Self> {
-        Ok(PyReactiveCircuit {
-            circuit: RCVariant::LogProb(Arc::new(Mutex::new(ReactiveCircuit::from_sum_product(
-                value_size,
-                &sum_product,
-                target_token,
-            )))),
-        })
-    }
-
+    /// Adds a leaf with an initial value (`value_size` probabilities), an
+    /// initial update frequency in Hz and a name. Returns its leaf index.
     fn add_leaf(
         &self,
         py: Python<'_>,
         initial_value: PyArrayLike1<'_, f64>,
-        initial_timestamp: f64,
+        frequency: f64,
         token: String,
     ) -> PyResult<usize> {
         let initial_value = array_like_to_vector(initial_value);
         let circuit = self.circuit.clone();
-        Ok(py.detach(move || {
-            with_rc!(circuit, c => {
-                let leaf_index = c.leafs.len();
-                c.leafs.push(Leaf::new(initial_value, initial_timestamp, &token, leaf_index));
-                leaf_index
-            })
-        }))
+        Ok(py.detach(
+            move || with_rc!(circuit, c => c.add_leaf(initial_value, frequency, &token) as usize),
+        ))
     }
 
+    /// Sets the value of leaf `leaf_index` (`value_size` probabilities) at
+    /// `timestamp` (seconds), updates its frequency estimate and marks
+    /// dependent nodes as outdated if the value changed by more than the
+    /// update threshold.
     fn update_leaf(
         &self,
         py: Python<'_>,
@@ -671,13 +763,20 @@ impl PyReactiveCircuit {
         Ok(())
     }
 
+    /// Adds a sum of products of leaf indices to target `target_token`, e.g.
+    /// `[[0, 1], [2]]` for `x0·x1 + x2`. Creates the target if needed.
     fn add_sum_product(&self, py: Python<'_>, sum_product: Vec<Vec<u32>>, target_token: &str) {
         let target_token = target_token.to_string();
         let circuit = self.circuit.clone();
         py.detach(move || with_rc!(circuit, c => c.add_sum_product(&sum_product, &target_token)))
     }
 
-    /// `dag=True` merges equivalent sub-circuits; `dag=False` keeps a tree.
+    /// Restructures the circuit by leaf update frequency: leaves are grouped
+    /// into `number_bins` bands of `bin_size` Hz, and faster leaves are placed
+    /// higher, so frequent updates recompute only small parts of the circuit.
+    ///
+    /// `dag=True` (default) shares identical sub-circuits between targets;
+    /// `dag=False` keeps a separate tree per target.
     #[pyo3(signature = (bin_size, number_bins, dag=true))]
     fn adapt(&self, py: Python<'_>, bin_size: f64, number_bins: usize, dag: bool) {
         let circuit = self.circuit.clone();
@@ -688,6 +787,11 @@ impl PyReactiveCircuit {
         })
     }
 
+    /// Recomputes the outdated parts of the circuit. Returns a dict from target
+    /// channel to its value array, containing only the targets that were
+    /// recomputed. Each array has `value_size` values; for
+    /// `CriticalExplanation`, it holds the four blocks `[P | v | tag | w]` of
+    /// `value_size` values each.
     fn update(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let circuit = self.circuit.clone();
         let results = py.detach(move || with_rc!(circuit, c => c.update()));
@@ -698,6 +802,8 @@ impl PyReactiveCircuit {
         Ok(dict.into())
     }
 
+    /// Recomputes the whole circuit and returns the values of all targets,
+    /// in the same format as `update()`.
     fn full_update(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let circuit = self.circuit.clone();
         let results = py.detach(move || with_rc!(circuit, c => c.full_update()));
@@ -708,7 +814,8 @@ impl PyReactiveCircuit {
         Ok(dict.into())
     }
 
-    /// Reactive update with gradients unpacked by leaf name.
+    /// Like `update()`, but returns `{target: {"probability": p, "gradients":
+    /// {leaf_name: dp/dleaf}}}` for the recomputed targets.
     /// Raises `RuntimeError` if the semiring is not `ProbGradient`.
     fn gradient_update(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let circuit = self.circuit.clone();
@@ -721,7 +828,7 @@ impl PyReactiveCircuit {
         Self::gradients_to_py(py, unpacked)
     }
 
-    /// Full (invalidating) update with gradients unpacked by leaf name.
+    /// Like `full_update()`, in the format of `gradient_update()`.
     /// Raises `RuntimeError` if the semiring is not `ProbGradient`.
     fn full_gradient_update(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let circuit = self.circuit.clone();
@@ -734,7 +841,14 @@ impl PyReactiveCircuit {
         Self::gradients_to_py(py, unpacked)
     }
 
-    /// One gradient-descent step over leaf probabilities.
+    /// One gradient-descent step on leaf probabilities:
+    /// `p ← clamp(p - lr * loss * gradient, 0, 1)`.
+    ///
+    /// `gradients` is the `"gradients"` dict of one target from
+    /// `gradient_update()`, `loss` the derivative of the loss with respect to
+    /// the target probability, `atoms` the leaf names to update (`None` for
+    /// all) and `timestamp` the time of the update in seconds. To learn
+    /// `P(...)` clause parameters of a program, use `Resin.fit_parameters`.
     /// Raises `RuntimeError` if the semiring is not `ProbGradient`.
     fn fit(
         &self,
@@ -758,7 +872,9 @@ impl PyReactiveCircuit {
         .map_err(PyRuntimeError::new_err)
     }
 
-    /// `dag=True` merges equivalent sub-circuits; `dag=False` keeps a tree.
+    /// Moves leaf `index` one level up, into the parents of the nodes that
+    /// contain it. Use this for a leaf that changes more often than others.
+    /// `dag` as in `adapt`.
     #[pyo3(signature = (index, dag=true))]
     fn lift_leaf(&self, py: Python<'_>, index: u32, dag: bool) {
         let circuit = self.circuit.clone();
@@ -766,7 +882,9 @@ impl PyReactiveCircuit {
         py.detach(move || with_rc!(circuit, c => c.lift_leaf(index, topology)))
     }
 
-    /// `dag=True` merges equivalent sub-circuits; `dag=False` keeps a tree.
+    /// Moves leaf `index` one level down, into the children of the nodes that
+    /// contain it. Use this for a leaf that changes less often than others.
+    /// `dag` as in `adapt`.
     #[pyo3(signature = (index, dag=true))]
     fn drop_leaf(&self, py: Python<'_>, index: u32, dag: bool) {
         let circuit = self.circuit.clone();
@@ -774,6 +892,7 @@ impl PyReactiveCircuit {
         py.detach(move || with_rc!(circuit, c => c.drop_leaf(index, topology)))
     }
 
+    /// Writes the circuit structure as a Graphviz dot file to `path`.
     fn to_dot(&self, py: Python<'_>, path: &str) -> PyResult<()> {
         let path = path.to_string();
         let circuit = self.circuit.clone();
@@ -781,6 +900,9 @@ impl PyReactiveCircuit {
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
     }
 
+    /// Renders the circuit structure to an SVG at `path` (requires Graphviz);
+    /// with `keep_dot`, the dot source is kept as `path + ".dot"`.
+    #[pyo3(signature = (path, keep_dot=false))]
     fn to_svg(&self, py: Python<'_>, path: &str, keep_dot: bool) -> PyResult<()> {
         let path = path.to_string();
         let circuit = self.circuit.clone();
@@ -788,6 +910,8 @@ impl PyReactiveCircuit {
             .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
     }
 
+    /// Renders the circuit together with the formula inside every node to an
+    /// SVG at `path` (requires Graphviz).
     fn to_combined_svg(&self, py: Python<'_>, path: &str) -> PyResult<()> {
         let path = path.to_string();
         let circuit = self.circuit.clone();
@@ -816,6 +940,28 @@ impl PyReactiveCircuit {
     }
 }
 
+/// Resin: reactive probabilistic logic programming with Reactive Circuits.
+///
+/// A Resin program declares sources (incoming signals), rules and targets.
+/// `Resin.compile` turns it into a reactive circuit that recomputes only what
+/// changed when sources are written.
+///
+/// Example:
+///
+///     from resin import Resin
+///
+///     resin = Resin.compile('''
+///         rain <- source("/weather/rain", Probability).
+///         wet if rain.
+///         wet -> target("/wet").
+///     ''')
+///     resin.make_writer("/weather/rain").write([0.3])
+///     rc = resin.get_reactive_circuit()
+///     print(rc.update())  # {'/wet': array([0.3])}
+///
+/// Main classes: `Resin` (compile programs, create writers), `ReactiveCircuit`
+/// (update targets, adapt to source frequencies) and one writer class per
+/// source type.
 #[pymodule]
 fn resin(_py: Python<'_>, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyResin>()?;

@@ -60,14 +60,14 @@ impl<S: Semiring> Resin<S> {
         verbose: bool,
         max_models: Option<usize>,
     ) -> Result<Resin<S>, Box<dyn std::error::Error>> {
-        S::validate_value_size(value_size);
+        S::validate_value_size(value_size)?;
 
         // Parse and setup Resin runtime environment
         let mut resin: Resin<S> = model.parse().unwrap();
         resin.value_size = value_size;
         {
             let mut rc = resin.manager.reactive_circuit.lock().unwrap();
-            rc.value_size = value_size;
+            rc.value_size = S::circuit_value_size(value_size);
             rc.update_threshold = update_threshold;
         }
 
@@ -474,10 +474,9 @@ impl<S: Semiring> Resin<S> {
                 &aux,
                 clause.probability.unwrap() * Vector::ones(self.value_size),
             );
-            self.manager
-                .create_leaf(&category.leafs[0].name, category.leafs[0].get_value(), 0.0);
-            self.manager
-                .create_leaf(&category.leafs[1].name, category.leafs[1].get_value(), 0.0);
+            for (leaf, value) in category.leafs.iter().zip(&category.values) {
+                self.manager.create_leaf(&leaf.name, value.clone(), 0.0);
+            }
             let group_key = format!("{}#{}", predicate_of(&clause.head), *idx);
             self.parameter_groups
                 .entry(group_key)
@@ -526,16 +525,9 @@ impl<S: Semiring> Resin<S> {
                     let matches = atom == base.as_str() || atom.starts_with(&format!("{}(", base));
                     if matches && created.insert(atom.to_string()) {
                         let category = Category::<S>::new(atom, *p * Vector::ones(self.value_size));
-                        self.manager.create_leaf(
-                            &category.leafs[0].name,
-                            category.leafs[0].get_value(),
-                            0.0,
-                        );
-                        self.manager.create_leaf(
-                            &category.leafs[1].name,
-                            category.leafs[1].get_value(),
-                            0.0,
-                        );
+                        for (leaf, value) in category.leafs.iter().zip(&category.values) {
+                            self.manager.create_leaf(&leaf.name, value.clone(), 0.0);
+                        }
                         self.parameter_groups
                             .entry(group_key.clone())
                             .or_default()
@@ -1344,7 +1336,7 @@ mod tests {
     #[test]
     fn test_critical_explanation_identifies_weakest_link() {
         let resin =
-            Resin::<CriticalExplanation>::compile(SHARED_PRECONDITION_MODEL, 4, 1e-3, false, None)
+            Resin::<CriticalExplanation>::compile(SHARED_PRECONDITION_MODEL, 1, 1e-3, false, None)
                 .expect("compile failed");
         let mut rc = resin.manager.reactive_circuit.lock().unwrap();
         let result = rc.full_update();
@@ -1380,7 +1372,7 @@ mod tests {
     #[test]
     fn test_critical_explanation_disjoint_branches() {
         let resin =
-            Resin::<CriticalExplanation>::compile(DISJOINT_BRANCHES_MODEL, 4, 1e-3, false, None)
+            Resin::<CriticalExplanation>::compile(DISJOINT_BRANCHES_MODEL, 1, 1e-3, false, None)
                 .expect("compile failed");
         let mut rc = resin.manager.reactive_circuit.lock().unwrap();
         let result = rc.full_update();
@@ -1419,11 +1411,29 @@ mod tests {
         );
     }
 
+    /// `value_size` counts input values for every semiring: with 3 values,
+    /// `CriticalExplanation` returns the four blocks of 3 values each, and its
+    /// `P` block matches `LogProb`.
     #[test]
-    #[should_panic(expected = "value_size must be 4 * n_cells")]
-    fn test_critical_explanation_rejects_bad_value_size() {
-        let _ =
-            Resin::<CriticalExplanation>::compile(SHARED_PRECONDITION_MODEL, 3, 1e-3, false, None);
+    fn test_critical_explanation_value_size() {
+        let resin =
+            Resin::<CriticalExplanation>::compile(SHARED_PRECONDITION_MODEL, 3, 1e-3, false, None)
+                .expect("compile failed");
+        let out = resin.manager.reactive_circuit.lock().unwrap().full_update()["/out"].clone();
+        let reference = TestResin::compile(SHARED_PRECONDITION_MODEL, 3, 1e-3, false, None)
+            .expect("compile failed");
+        let p = reference
+            .manager
+            .reactive_circuit
+            .lock()
+            .unwrap()
+            .full_update()["/out"]
+            .clone();
+
+        assert_eq!(out.len(), 12);
+        for i in 0..3 {
+            assert!((out[i] - p[i]).abs() < 1e-9, "P block differs from LogProb");
+        }
     }
 
     /// Restructuring the circuit must not change any component of the result.
@@ -1435,7 +1445,7 @@ mod tests {
         for (leaf_to_lift, topology) in cases {
             let resin = Resin::<CriticalExplanation>::compile(
                 SHARED_PRECONDITION_MODEL,
-                4,
+                1,
                 1e-3,
                 false,
                 None,
