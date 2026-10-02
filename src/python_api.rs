@@ -948,16 +948,18 @@ impl PyReactiveCircuit {
 ///
 /// Example:
 ///
-///     from resin import Resin
+/// ```python
+/// from resin import Resin
 ///
-///     resin = Resin.compile('''
-///         rain <- source("/weather/rain", Probability).
-///         wet if rain.
-///         wet -> target("/wet").
-///     ''')
-///     resin.make_writer("/weather/rain").write([0.3])
-///     rc = resin.get_reactive_circuit()
-///     print(rc.update())  # {'/wet': array([0.3])}
+/// resin = Resin.compile('''
+///     rain <- source("/weather/rain", Probability).
+///     wet if rain.
+///     wet -> target("/wet").
+/// ''')
+/// resin.make_writer("/weather/rain").write([0.3])
+/// rc = resin.get_reactive_circuit()
+/// print(rc.update())  # {'/wet': array([0.3])}
+/// ```
 ///
 /// Main classes: `Resin` (compile programs, create writers), `ReactiveCircuit`
 /// (update targets, adapt to source frequencies) and one writer class per
