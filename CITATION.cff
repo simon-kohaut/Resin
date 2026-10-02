@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use Resin, please cite the paper below."
 title: "Resin: Reactive Signal Inference"
 type: software
-license: MIT
+license: BSD-3-Clause
 repository-code: "https://github.com/simon-kohaut/resin"
 authors:
   - family-names: Kohaut

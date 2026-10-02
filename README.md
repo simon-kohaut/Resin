@@ -5,7 +5,7 @@
 [![Release](https://github.com/simon-kohaut/resin/actions/workflows/pypi_release.yml/badge.svg)](https://github.com/simon-kohaut/resin/actions/workflows/pypi_release.yml)
 [![PyPI version](https://img.shields.io/pypi/v/pyresin)](https://pypi.org/project/pyresin/)
 [![Python versions](https://img.shields.io/pypi/pyversions/pyresin)](https://pypi.org/project/pyresin/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD_3--Clause-blue.svg)](LICENSE.md)
 
 <p align="center">
   <picture>
@@ -17,7 +17,7 @@
 <p align="center">
   <b>Reactive Knowledge Representation and Asynchronous Reasoning</b><br>
   Simon Kohaut, Benedict Flade, Julian Eggert, Kristian Kersting, Devendra Singh Dhami<br>
-  <a href="https://arxiv.org/abs/2602.05625">Paper</a> · <a href="#citation">Citation</a>
+  <a href="https://arxiv.org/abs/2602.05625">Paper</a> · <a href="https://simon-kohaut.github.io/Resin/">Project Page</a> · <a href="#citation">Citation</a>
 </p>
 
 **Resin** is a probabilistic first-order logic programming language for building reactive inference pipelines over continuous, asynchronous data streams. 

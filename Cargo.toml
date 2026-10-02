@@ -4,6 +4,7 @@ edition = "2021"
 version = "0.2.0"
 description = "A reactive, probabilistic logic programming language using Reactive Circuits."
 repository = "https://github.com/simon-kohaut/resin"
+license = "BSD-3-Clause"
 keywords = [
   "probabilistic logic",
   "reactive circuits",
