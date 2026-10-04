@@ -1547,6 +1547,29 @@ mod tests {
         assert!(TestResin::compile(model, 1, 1e-3, false, None).is_err());
     }
 
+    /// Exceeding `max_models` returns a `TooManyModelsError` that callers can
+    /// tell apart from other compile errors.
+    #[test]
+    fn test_too_many_models_error() {
+        // `t` holds in two stable models: with `b` true and with `b` false.
+        let model = r#"
+            a <- P(0.5).
+            b <- P(0.4).
+            t if a.
+            t if a and b.
+            t -> target("/t").
+        "#;
+        let error = TestResin::compile(model, 1, 1e-3, false, Some(1))
+            .err()
+            .expect("compile should fail");
+        let error = error
+            .downcast_ref::<crate::language::TooManyModelsError>()
+            .expect("error should be a TooManyModelsError");
+        assert_eq!(error.limit, 1);
+
+        assert!(TestResin::compile(model, 1, 1e-3, false, Some(2)).is_ok());
+    }
+
     /// After adapting with `w` as the fastest leaf, the targets share sub-circuits
     /// in DAG mode but not in tree mode, and both keep the correct values.
     #[test]

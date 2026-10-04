@@ -91,9 +91,38 @@ macro_rules! with_semiring {
                 "Unknown semiring '{other}'. \
                  Supported: LogProb, MaxProduct, Fuzzy, Boolean, ProbGradient, \
                  CriticalExplanation"
-            )),
+            )
+            .into()),
         }
     };
+}
+
+pyo3::create_exception!(
+    resin,
+    TooManyModelsError,
+    PyRuntimeError,
+    "Raised by `Resin.compile` when a target has more stable models than `max_models`."
+);
+
+/// Why `Resin.compile` failed; each case becomes its own Python exception.
+enum CompileError {
+    TooManyModels(String),
+    Other(String),
+}
+
+impl From<String> for CompileError {
+    fn from(message: String) -> Self {
+        CompileError::Other(message)
+    }
+}
+
+impl From<CompileError> for PyErr {
+    fn from(error: CompileError) -> Self {
+        match error {
+            CompileError::TooManyModels(message) => TooManyModelsError::new_err(message),
+            CompileError::Other(message) => PyRuntimeError::new_err(message),
+        }
+    }
 }
 
 /// Dispatch a method call over all `ResinVariant` arms.
@@ -385,9 +414,11 @@ impl PyResin {
     ///   `"Fuzzy"`, `"Boolean"`, `"ProbGradient"` or `"CriticalExplanation"`.
     /// - `update_threshold`: minimum change of a leaf value that triggers
     ///   recomputation.
-    /// - `max_models`: raise an error if a target has more stable models.
+    /// - `max_models`: raise `TooManyModelsError` if a target has more stable
+    ///   models.
     ///
-    /// Raises `RuntimeError` if the program cannot be compiled.
+    /// Raises `TooManyModelsError` (a `RuntimeError`) if `max_models` is
+    /// exceeded, and `RuntimeError` if the program cannot be compiled otherwise.
     #[staticmethod]
     #[pyo3(signature = (model, value_size=1, verbose=false, semiring=None, update_threshold=1e-3, max_models=None))]
     fn compile(
@@ -401,24 +432,22 @@ impl PyResin {
     ) -> PyResult<Self> {
         let model = model.to_string();
         let semiring = semiring.unwrap_or("LogProb").to_string();
-        let variant = py
-            .detach(move || -> Result<ResinVariant, String> {
-                macro_rules! compile_as {
-                    ($s:ident) => {
-                        Resin::<$s>::compile(
-                            &model,
-                            value_size,
-                            update_threshold,
-                            verbose,
-                            max_models,
-                        )
+        let variant = py.detach(move || -> Result<ResinVariant, CompileError> {
+            macro_rules! compile_as {
+                ($s:ident) => {
+                    Resin::<$s>::compile(&model, value_size, update_threshold, verbose, max_models)
                         .map(ResinVariant::$s)
-                        .map_err(|e| e.to_string())
-                    };
-                }
-                with_semiring!(semiring, compile_as)
-            })
-            .map_err(PyRuntimeError::new_err)?;
+                        .map_err(|e| {
+                            if e.is::<crate::language::TooManyModelsError>() {
+                                CompileError::TooManyModels(e.to_string())
+                            } else {
+                                CompileError::Other(e.to_string())
+                            }
+                        })
+                };
+            }
+            with_semiring!(semiring, compile_as)
+        })?;
         Ok(PyResin {
             resin: Arc::new(Mutex::new(variant)),
         })
@@ -966,6 +995,10 @@ impl PyReactiveCircuit {
 /// source type.
 #[pymodule]
 fn resin(_py: Python<'_>, m: Bound<'_, PyModule>) -> PyResult<()> {
+    m.add(
+        "TooManyModelsError",
+        m.py().get_type::<TooManyModelsError>(),
+    )?;
     m.add_class::<PyResin>()?;
     m.add_class::<PyReactiveCircuit>()?;
     m.add_class::<PySharedVector>()?;

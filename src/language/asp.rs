@@ -2,6 +2,25 @@ use clingo::{control, Part, ShowType, SolveMode};
 
 use crate::language::Dnf;
 
+/// Returned by `solve` when a program has more stable models than `max_models`.
+#[derive(Debug)]
+pub struct TooManyModelsError {
+    pub limit: usize,
+}
+
+impl std::fmt::Display for TooManyModelsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Stable model limit exceeded: found more than {} stable model(s). \
+             Simplify the program or increase max_models.",
+            self.limit
+        )
+    }
+}
+
+impl std::error::Error for TooManyModelsError {}
+
 /// Passes `asp` to the Clingo solver configured with `--models=0` (enumerate
 /// all stable models) and collects every stable model into a `Dnf`.
 ///
@@ -9,8 +28,9 @@ use crate::language::Dnf;
 /// as-is, complementary atoms are negated with `Dnf::negate`.  If `verbose`
 /// is `true`, each model is printed to stdout.
 ///
-/// If `max_models` is `Some(n)`, returns an error as soon as more than `n`
-/// stable models have been found; the solve handle is closed before returning.
+/// If `max_models` is `Some(n)`, returns a `TooManyModelsError` as soon as
+/// more than `n` stable models have been found; the solve handle is closed
+/// before returning.
 ///
 /// # Panics
 /// Panics if Clingo fails to create, ground, or solve the program, or if the
@@ -64,12 +84,7 @@ pub fn solve(asp: &str, max_models: Option<usize>) -> Result<Dnf, Box<dyn std::e
                 if let Some(limit) = max_models {
                     if formula.clauses.len() > limit {
                         handle.close().expect("Failed to close solve handle.");
-                        return Err(format!(
-                            "Stable model limit exceeded: found more than {} stable model(s). \
-                             Simplify the program or increase max_models.",
-                            limit
-                        )
-                        .into());
+                        return Err(Box::new(TooManyModelsError { limit }));
                     }
                 }
             }

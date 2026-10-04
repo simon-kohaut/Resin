@@ -4,6 +4,8 @@ mod dnf;
 mod matching;
 mod resin;
 
+#[allow(unused_imports)]
+pub use crate::language::asp::TooManyModelsError;
 pub use crate::language::concepts::{CategoricalSource, Clause, Source, Target};
 pub use crate::language::dnf::Dnf;
 #[allow(unused_imports)]

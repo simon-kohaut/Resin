@@ -36,6 +36,9 @@ class GradientResult(TypedDict):
     probability: float
     gradients: dict[str, float]
 
+class TooManyModelsError(RuntimeError):
+    """Raised by `Resin.compile` when a target has more stable models than `max_models`."""
+
 class Resin:
     """A compiled Resin program: its sources, reactive circuit and writers.
 
@@ -57,9 +60,11 @@ class Resin:
           `"Fuzzy"`, `"Boolean"`, `"ProbGradient"` or `"CriticalExplanation"`.
         - `update_threshold`: minimum change of a leaf value that triggers
           recomputation.
-        - `max_models`: raise an error if a target has more stable models.
+        - `max_models`: raise `TooManyModelsError` if a target has more stable
+          models.
 
-        Raises `RuntimeError` if the program cannot be compiled.
+        Raises `TooManyModelsError` (a `RuntimeError`) if `max_models` is
+        exceeded, and `RuntimeError` if the program cannot be compiled otherwise.
         """
 
     def get_reactive_circuit(self) -> ReactiveCircuit:
