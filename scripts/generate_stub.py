@@ -108,6 +108,9 @@ class GradientResult(TypedDict):
 
     probability: float
     gradients: dict[str, float]
+
+class TooManyModelsError(RuntimeError):
+    """Raised by `Resin.compile` when a target has more stable models than `max_models`."""
 '''
 
 

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Formats staged Rust files and, if the Python bindings changed, regenerates
+# the type stub resin.pyi. Enable once per clone with:
+#
+#     git config core.hooksPath scripts/hooks
+#
+# Skip once with `git commit --no-verify`.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+staged() {
+    git diff --cached --name-only --diff-filter=ACMR -- "$@"
+}
+
+# 1. Format the staged Rust files and stage the result.
+rust_files=$(staged '*.rs')
+if [ -n "$rust_files" ]; then
+    echo "pre-commit: formatting staged Rust files"
+    echo "$rust_files" | xargs rustfmt --edition 2021
+    echo "$rust_files" | xargs git add
+fi
+
+# 2. Regenerate resin.pyi when the Python API changed.
+if [ -n "$(staged src/python_api.rs scripts/generate_stub.py)" ]; then
+    venv="${VIRTUAL_ENV:-$PWD/venv}"
+    if [ ! -x "$venv/bin/python" ] || [ ! -x "$venv/bin/maturin" ]; then
+        echo "pre-commit: the Python API changed, but no virtualenv with maturin was found" >&2
+        echo "pre-commit: activate one or create ./venv, or commit with --no-verify" >&2
+        exit 1
+    fi
+    echo "pre-commit: Python API changed, rebuilding the module and regenerating resin.pyi"
+    VIRTUAL_ENV="$venv" PATH="$venv/bin:$PATH" "$venv/bin/maturin" develop --release --quiet
+    "$venv/bin/python" scripts/generate_stub.py
+    git add resin.pyi
+fi

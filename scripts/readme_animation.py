@@ -7,7 +7,7 @@ counters show the number of nodes and edges.
 
 Requires manim (https://www.manim.community), which needs Cairo and Pango but
 no LaTeX, plus ffmpeg:  pip install manim
-Run with: python scripts/render_readme_animation_manim.py [dark|light ...]
+Run with: python scripts/readme_animation.py [dark|light ...]
 """
 
 import sys

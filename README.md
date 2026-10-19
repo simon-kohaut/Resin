@@ -348,6 +348,11 @@ maturin develop --release
 python scripts/generate_stub.py
 ```
 
+**Enable the pre-commit hook** once per clone; it formats staged Rust files and regenerates `resin.pyi` whenever `src/python_api.rs` changes (using the active virtualenv or `./venv`):
+```bash
+git config core.hooksPath scripts/hooks
+```
+
 ## License
 
 See [LICENSE.md](LICENSE.md).
