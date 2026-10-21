@@ -28,3 +28,13 @@ log
 
 # Generated files
 output/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+venv/
+.venv/
+dist/
