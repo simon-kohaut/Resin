@@ -77,7 +77,7 @@ Writing a new value only recomputes the parts of the circuit that depend on it, 
 
 <table>
   <tr>
-    <td align="center" width="33%"><a href="https://github.com/HRI-EU/ProMis"><img src="https://raw.githubusercontent.com/HRI-EU/ProMis/main/images/streaming.gif" alt="ProMis: a reactive mission landscape over New York City with live vessels and drones"></a></td>
+    <td align="center" width="33%"><a href="https://github.com/HRI-EU/ProMis"><img src="https://raw.githubusercontent.com/HRI-EU/ProMis/main/images/landscapes.png" alt="ProMis: a reactive mission landscape over New York City with live vessels and drones"></a></td>
     <td align="center" width="33%"><a href="https://github.com/simon-kohaut/CoFi"><img src="https://raw.githubusercontent.com/simon-kohaut/CoFi/main/docs/drones.gif" alt="CoFi: tracking a drone through an obstacle course by its constitution"></a></td>
     <td align="center" width="33%"><a href="https://github.com/simon-kohaut/CoCo"><img src="https://raw.githubusercontent.com/simon-kohaut/CoCo/main/docs/static/images/coco_comparison.gif" alt="CoCo: steering drones through an obstacle course despite their control inaccuracies"></a></td>
   </tr>
